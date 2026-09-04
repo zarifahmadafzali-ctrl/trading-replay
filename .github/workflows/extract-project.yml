@@ -1,0 +1,43 @@
+name: Extract Project
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract project ZIP
+        run: |
+          ZIP=$(find . -maxdepth 1 -name "trading-replay-v3-true-resolution.zip" -print -quit)
+
+          if [ -z "$ZIP" ]; then
+            echo "Project ZIP not found"
+            exit 1
+          fi
+
+          mkdir -p extracted
+          unzip -q "$ZIP" -d extracted
+
+          if [ -d "extracted/trading-replay-v3" ]; then
+            cp -r extracted/trading-replay-v3/* .
+          else
+            cp -r extracted/* .
+          fi
+
+          rm -rf extracted "$ZIP"
+
+      - name: Commit extracted project
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Extract Trading Replay v3 project" || echo "Nothing to commit"
+          git push
