@@ -1,0 +1,15 @@
+{
+  "name": "Trading Replay",
+  "short_name": "Replay",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#080b0f",
+  "theme_color": "#080b0f",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
