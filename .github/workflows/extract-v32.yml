@@ -1,0 +1,36 @@
+name: Extract Trading Replay v3.2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract v3.2
+        run: |
+          mkdir -p /tmp/project
+          tar -xzf trading-replay-v3.2-grok-upgraded.tar.gz -C /tmp/project
+
+          rm -rf backend frontend README.md package-lock.json
+
+          cp -r /tmp/project/trading-replay/backend .
+          cp -r /tmp/project/trading-replay/frontend .
+          cp /tmp/project/trading-replay/README.md .
+          cp /tmp/project/trading-replay/package-lock.json .
+
+      - name: Commit extracted project
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add backend frontend README.md package-lock.json
+          git commit -m "Extract Trading Replay v3.2 project" || echo "Nothing to commit"
+          git push
