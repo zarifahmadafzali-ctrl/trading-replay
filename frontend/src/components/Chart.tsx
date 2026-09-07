@@ -25,6 +25,15 @@ export type DrawTool =
   | "long"
   | "short";
 
+export type OrderType =
+  | "market"
+  | "buy_limit"
+  | "sell_limit"
+  | "buy_stop"
+  | "sell_stop"
+  | "buy_stop_limit"
+  | "sell_stop_limit";
+
 export type ChartPoint = { time: number; price: number };
 
 export type TrendlineShape = {
@@ -45,8 +54,10 @@ export type PositionShape = {
   id: string;
   kind: "position";
   side: "long" | "short";
+  orderType: OrderType;
   entry: ChartPoint;
-  stop?: ChartPoint;
+  stop: ChartPoint;
+  takeProfit: ChartPoint;
 };
 
 export type Shape = TrendlineShape | RectangleShape | PositionShape;
@@ -55,27 +66,40 @@ function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
 
+function riskReward(side: "long" | "short", entry: number, stop: number, tp: number): number | null {
+  const risk = Math.abs(entry - stop);
+  const reward = Math.abs(tp - entry);
+  if (risk < 1e-12) return null;
+  return reward / risk;
+}
+
 export function Chart({
   bars,
   cursor,
   drawTool = "crosshair",
+  orderType = "market",
   shapes,
   onShapesChange,
 }: {
   bars: Bar[];
   cursor: number;
   drawTool?: DrawTool;
+  orderType?: OrderType;
   shapes: Shape[];
   onShapesChange: (next: Shape[]) => void;
 }) {
-  const wrapRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
   const handlesRef = useRef<ChartHandles | null>(null);
-  const barsRef = useRef(bars);
   const shapesRef = useRef(shapes);
   const drawToolRef = useRef(drawTool);
-  const pendingRef = useRef<ChartPoint | null>(null);
+  const orderTypeRef = useRef(orderType);
+  const crosshairRef = useRef<ChartPoint | null>(null);
+  const stepsRef = useRef<ChartPoint[]>([]);
+  const rafRef = useRef<number | null>(null);
+  const onShapesChangeRef = useRef(onShapesChange);
+  onShapesChangeRef.current = onShapesChange;
+
   const [ohlc, setOhlc] = useState<{
     time: string;
     open: number;
@@ -83,10 +107,19 @@ export function Chart({
     low: number;
     close: number;
   } | null>(null);
+  const [hint, setHint] = useState("");
 
-  barsRef.current = bars;
   shapesRef.current = shapes;
   drawToolRef.current = drawTool;
+  orderTypeRef.current = orderType;
+
+  function scheduleRedraw() {
+    if (rafRef.current != null) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      redrawOverlay();
+    });
+  }
 
   function redrawOverlay() {
     const canvas = overlayRef.current;
@@ -97,9 +130,14 @@ export function Chart({
 
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
+    if (w < 2 || h < 2) return;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.floor(w * dpr);
-    canvas.height = Math.floor(h * dpr);
+    const needW = Math.floor(w * dpr);
+    const needH = Math.floor(h * dpr);
+    if (canvas.width !== needW || canvas.height !== needH) {
+      canvas.width = needW;
+      canvas.height = needH;
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
@@ -139,54 +177,128 @@ export function Chart({
         ctx.strokeRect(x, y, rw, rh);
       } else if (s.kind === "position") {
         const E = toXY(s.entry);
+        const S = toXY(s.stop);
+        const T = toXY(s.takeProfit);
         if (!E) continue;
-        const color = s.side === "long" ? "#26a69a" : "#ef5350";
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.4;
-        ctx.setLineDash([6, 4]);
-        ctx.beginPath();
-        ctx.moveTo(0, E.y);
-        ctx.lineTo(w, E.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = color;
-        ctx.font = "11px system-ui";
+        const long = s.side === "long";
+        const entryColor = long ? "#26a69a" : "#ef5350";
+
+        if (S && T) {
+          const top = Math.min(E.y, T.y);
+          const bot = Math.max(E.y, T.y);
+          ctx.fillStyle = long ? "rgba(38,166,154,0.08)" : "rgba(239,83,80,0.08)";
+          ctx.fillRect(0, top, w, bot - top);
+          const rTop = Math.min(E.y, S.y);
+          const rBot = Math.max(E.y, S.y);
+          ctx.fillStyle = "rgba(245,158,11,0.10)";
+          ctx.fillRect(0, rTop, w, rBot - rTop);
+        }
+
+        const drawHLine = (y: number, color: string, dash: number[]) => {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.4;
+          ctx.setLineDash(dash);
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(w, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        };
+
+        drawHLine(E.y, entryColor, [6, 4]);
+        if (S) drawHLine(S.y, "#f59e0b", [4, 4]);
+        if (T) drawHLine(T.y, "#38bdf8", [4, 4]);
+
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.fillStyle = entryColor;
+        const rr = riskReward(s.side, s.entry.price, s.stop.price, s.takeProfit.price);
+        const rrText = rr != null ? ` · R:R 1:${rr.toFixed(2)}` : "";
         ctx.fillText(
-          `${s.side.toUpperCase()} @ ${s.entry.price.toFixed(2)}`,
+          `${s.side.toUpperCase()} ${s.orderType} @ ${s.entry.price.toFixed(2)}${rrText}`,
           8,
-          Math.max(12, E.y - 6)
+          Math.max(14, E.y - 8)
         );
-        if (s.stop) {
-          const S = toXY(s.stop);
-          if (S) {
-            ctx.strokeStyle = "#f59e0b";
-            ctx.setLineDash([4, 4]);
-            ctx.beginPath();
-            ctx.moveTo(0, S.y);
-            ctx.lineTo(w, S.y);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.fillStyle = "#f59e0b";
-            ctx.fillText(`SL ${s.stop.price.toFixed(2)}`, 8, Math.max(12, S.y - 6));
-          }
+        if (S) {
+          ctx.fillStyle = "#f59e0b";
+          ctx.fillText(`SL ${s.stop.price.toFixed(2)}`, 8, Math.max(14, S.y - 8));
+        }
+        if (T) {
+          ctx.fillStyle = "#38bdf8";
+          ctx.fillText(`TP ${s.takeProfit.price.toFixed(2)}`, 8, Math.max(14, T.y - 8));
         }
       }
     }
 
-    // pending first click marker
-    const pend = pendingRef.current;
-    if (pend) {
-      const P = toXY(pend);
-      if (P) {
-        ctx.fillStyle = "#fbbf24";
-        ctx.beginPath();
-        ctx.arc(P.x, P.y, 4, 0, Math.PI * 2);
-        ctx.fill();
-      }
+    for (const p of stepsRef.current) {
+      const P = toXY(p);
+      if (!P) continue;
+      ctx.fillStyle = "#fbbf24";
+      ctx.beginPath();
+      ctx.arc(P.x, P.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1;
+      ctx.stroke();
     }
   }
 
-  // Create chart once
+  function placePoint(point: ChartPoint) {
+    const tool = drawToolRef.current;
+    if (tool === "none" || tool === "crosshair") return;
+    const steps = stepsRef.current;
+
+    if (tool === "trendline" || tool === "rectangle") {
+      if (steps.length === 0) {
+        stepsRef.current = [point];
+        setHint(tool === "trendline" ? "Double-click 2nd point of trendline" : "Double-click opposite corner");
+        scheduleRedraw();
+        return;
+      }
+      const a = steps[0];
+      const b = point;
+      stepsRef.current = [];
+      if (tool === "trendline") {
+        onShapesChangeRef.current([...shapesRef.current, { id: uid(), kind: "trendline", a, b }]);
+      } else {
+        onShapesChangeRef.current([...shapesRef.current, { id: uid(), kind: "rectangle", a, b }]);
+      }
+      setHint("Done — pick Crosshair to deselect tool, or draw again");
+      return;
+    }
+
+    if (tool === "long" || tool === "short") {
+      if (steps.length === 0) {
+        stepsRef.current = [point];
+        setHint("Double-click Stop Loss");
+        scheduleRedraw();
+        return;
+      }
+      if (steps.length === 1) {
+        stepsRef.current = [steps[0], point];
+        setHint("Double-click Take Profit");
+        scheduleRedraw();
+        return;
+      }
+      const entry = steps[0];
+      const stop = steps[1];
+      const takeProfit = point;
+      stepsRef.current = [];
+      onShapesChangeRef.current([
+        ...shapesRef.current,
+        {
+          id: uid(),
+          kind: "position",
+          side: tool,
+          orderType: orderTypeRef.current,
+          entry,
+          stop,
+          takeProfit,
+        },
+      ]);
+      setHint("Position placed — R:R on entry line");
+    }
+  }
+
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -212,7 +324,12 @@ export function Chart({
           labelBackgroundColor: "#1e293b",
         },
       },
-      handleScroll: { mouseWheel: true, pressedMouseMove: true },
+      handleScroll: {
+        mouseWheel: true,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: true,
+      },
       handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
     });
 
@@ -233,6 +350,18 @@ export function Chart({
     handlesRef.current = { chart, candles, volume };
 
     const onMove = (param: MouseEventParams) => {
+      scheduleRedraw();
+      if (param.point && param.time != null) {
+        const price = candles.coordinateToPrice(param.point.y);
+        if (price != null) {
+          const time =
+            typeof param.time === "number"
+              ? param.time
+              : Number((param.time as { timestamp?: number }).timestamp) || 0;
+          crosshairRef.current = { time, price };
+        }
+      }
+
       if (!param.time || !param.seriesData) {
         setOhlc(null);
         return;
@@ -255,68 +384,25 @@ export function Chart({
     };
     chart.subscribeCrosshairMove(onMove);
 
-    const onClick = (param: MouseEventParams) => {
+    const onRange = () => scheduleRedraw();
+    chart.timeScale().subscribeVisibleLogicalRangeChange(onRange);
+    chart.timeScale().subscribeVisibleTimeRangeChange(onRange);
+
+    const el = containerRef.current;
+    const onPointer = () => scheduleRedraw();
+    el.addEventListener("pointermove", onPointer);
+    el.addEventListener("wheel", onPointer, { passive: true });
+    el.addEventListener("touchmove", onPointer, { passive: true });
+
+    const onDblClick = (ev: MouseEvent) => {
+      ev.preventDefault();
       const tool = drawToolRef.current;
-      if (!param.point || param.time == null) return;
-      const price = candles.coordinateToPrice(param.point.y);
-      if (price == null) return;
-      const time =
-        typeof param.time === "number"
-          ? param.time
-          : (param.time as { timestamp?: number }).timestamp ?? 0;
-      const point: ChartPoint = { time, price };
-
-      if (tool === "trendline" || tool === "rectangle") {
-        if (!pendingRef.current) {
-          pendingRef.current = point;
-          redrawOverlay();
-          return;
-        }
-        const a = pendingRef.current;
-        const b = point;
-        pendingRef.current = null;
-        if (tool === "trendline") {
-          onShapesChange([
-            ...shapesRef.current,
-            { id: uid(), kind: "trendline", a, b },
-          ]);
-        } else {
-          onShapesChange([
-            ...shapesRef.current,
-            { id: uid(), kind: "rectangle", a, b },
-          ]);
-        }
-        return;
-      }
-
-      if (tool === "long" || tool === "short") {
-        if (!pendingRef.current) {
-          // first click = entry
-          pendingRef.current = point;
-          redrawOverlay();
-          return;
-        }
-        // second click = stop loss (optional complete)
-        const entry = pendingRef.current;
-        const stop = point;
-        pendingRef.current = null;
-        onShapesChange([
-          ...shapesRef.current,
-          {
-            id: uid(),
-            kind: "position",
-            side: tool,
-            entry,
-            stop,
-          },
-        ]);
-      }
+      if (tool === "none" || tool === "crosshair") return;
+      const pt = crosshairRef.current;
+      if (!pt) return;
+      placePoint(pt);
     };
-    chart.subscribeClick(onClick);
-
-    const onVisible = () => redrawOverlay();
-    chart.timeScale().subscribeVisibleTimeRangeChange(onVisible);
-    chart.subscribeCrosshairMove(() => redrawOverlay());
+    el.addEventListener("dblclick", onDblClick);
 
     const resizeObserver = new ResizeObserver(() => {
       if (!containerRef.current) return;
@@ -324,18 +410,21 @@ export function Chart({
         width: containerRef.current.clientWidth,
         height: containerRef.current.clientHeight,
       });
-      redrawOverlay();
+      scheduleRedraw();
     });
     resizeObserver.observe(containerRef.current);
 
     return () => {
       resizeObserver.disconnect();
+      el.removeEventListener("pointermove", onPointer);
+      el.removeEventListener("wheel", onPointer);
+      el.removeEventListener("touchmove", onPointer);
+      el.removeEventListener("dblclick", onDblClick);
       chart.unsubscribeCrosshairMove(onMove);
-      chart.unsubscribeClick(onClick);
       chart.remove();
       handlesRef.current = null;
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -348,9 +437,13 @@ export function Chart({
         horzLine: { visible: drawTool !== "none" },
       },
     });
-    // cancel pending when switching tool
-    pendingRef.current = null;
-    redrawOverlay();
+    stepsRef.current = [];
+    if (drawTool === "trendline") setHint("Move crosshair → double-click 1st point");
+    else if (drawTool === "rectangle") setHint("Move crosshair → double-click 1st corner");
+    else if (drawTool === "long" || drawTool === "short")
+      setHint("Move crosshair → double-click ENTRY → SL → TP");
+    else setHint("");
+    scheduleRedraw();
   }, [drawTool]);
 
   useEffect(() => {
@@ -373,15 +466,15 @@ export function Chart({
     if (visible.length) {
       handles.chart.timeScale().scrollToRealTime();
     }
-    redrawOverlay();
+    scheduleRedraw();
   }, [bars, cursor]);
 
   useEffect(() => {
-    redrawOverlay();
+    scheduleRedraw();
   }, [shapes]);
 
   return (
-    <div className="chart-wrap" ref={wrapRef}>
+    <div className="chart-wrap">
       <div ref={containerRef} className="chart" />
       <canvas ref={overlayRef} className="chart-overlay" />
       {ohlc && (
@@ -398,12 +491,11 @@ export function Chart({
           </div>
           <div>
             <span className="k">C</span>{" "}
-            <span className={ohlc.close >= ohlc.open ? "up" : "down"}>
-              {ohlc.close.toFixed(2)}
-            </span>
+            <span className={ohlc.close >= ohlc.open ? "up" : "down"}>{ohlc.close.toFixed(2)}</span>
           </div>
         </div>
       )}
+      {hint && <div className="draw-hint">{hint}</div>}
     </div>
   );
 }
