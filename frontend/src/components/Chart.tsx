@@ -3,6 +3,7 @@ import {
   createChart,
   CandlestickSeries,
   HistogramSeries,
+  CrosshairMode,
   type IChartApi,
   type ISeriesApi,
   type UTCTimestamp,
@@ -15,9 +16,21 @@ type ChartHandles = {
   volume: ISeriesApi<"Histogram">;
 };
 
-export function Chart({ bars, cursor }: { bars: Bar[]; cursor: number }) {
+export type DrawTool = "none" | "crosshair" | "trendline" | "rectangle";
+
+export function Chart({
+  bars,
+  cursor,
+  drawTool = "crosshair",
+}: {
+  bars: Bar[];
+  cursor: number;
+  drawTool?: DrawTool;
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const handlesRef = useRef<ChartHandles | null>(null);
+  const drawToolRef = useRef(drawTool);
+  drawToolRef.current = drawTool;
 
   // Create the chart once.
   useEffect(() => {
@@ -29,7 +42,25 @@ export function Chart({ bars, cursor }: { bars: Bar[]; cursor: number }) {
         vertLines: { color: "#17202a" },
         horzLines: { color: "#17202a" },
       },
-      timeScale: { timeVisible: true },
+      timeScale: { timeVisible: true, secondsVisible: true },
+      // Free-float crosshair (TradingView-like). Magnet snaps to candle OHLC.
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: {
+          color: "rgba(180, 200, 220, 0.55)",
+          width: 1,
+          style: 2,
+          labelBackgroundColor: "#1e293b",
+        },
+        horzLine: {
+          color: "rgba(180, 200, 220, 0.55)",
+          width: 1,
+          style: 2,
+          labelBackgroundColor: "#1e293b",
+        },
+      },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true },
+      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
     });
 
     const candles = chart.addSeries(CandlestickSeries, {
@@ -63,6 +94,19 @@ export function Chart({ bars, cursor }: { bars: Bar[]; cursor: number }) {
       handlesRef.current = null;
     };
   }, []);
+
+  // When tool changes, keep crosshair free (not magnet).
+  useEffect(() => {
+    const handles = handlesRef.current;
+    if (!handles) return;
+    handles.chart.applyOptions({
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: { visible: drawTool !== "none" },
+        horzLine: { visible: drawTool !== "none" },
+      },
+    });
+  }, [drawTool]);
 
   // Update visible data whenever bars or the replay cursor change.
   useEffect(() => {
