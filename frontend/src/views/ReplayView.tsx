@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Chart, type DrawTool } from "../components/Chart";
+import { Chart, type DrawTool, type Shape } from "../components/Chart";
 import { fetchBars } from "../lib/api";
 import { generateDemoBars, readCsvFile } from "../lib/demoData";
 import { aggregateVisible } from "../lib/replay";
@@ -12,7 +12,6 @@ function isoDaysAgo(days: number) {
   return d.toISOString().slice(0, 10);
 }
 
-/** datetime-local value in local time from unix seconds */
 function toLocalInputValue(unixSec: number): string {
   const d = new Date(unixSec * 1000);
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -32,6 +31,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [loading, setLoading] = useState(false);
   const [drawTool, setDrawTool] = useState<DrawTool>("crosshair");
   const [goToValue, setGoToValue] = useState("");
+  const [shapes, setShapes] = useState<Shape[]>([]);
 
   useEffect(() => {
     if (!playing) return;
@@ -47,7 +47,6 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     return () => window.clearInterval(id);
   }, [playing, speed, baseBars.length]);
 
-  // Keep Go To field in sync with current replay time when not typing.
   useEffect(() => {
     const b = baseBars[Math.max(0, cursor - 1)];
     if (b) setGoToValue(toLocalInputValue(b.time));
@@ -94,7 +93,6 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     setPlaying(false);
   }
 
-  /** Jump replay cursor to the closest bar at/after the chosen local datetime. */
   function handleGoTo() {
     if (!goToValue || !baseBars.length) return;
     setPlaying(false);
@@ -103,7 +101,6 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       setMessage("Invalid Go To datetime");
       return;
     }
-    // Binary search closest time
     let lo = 0;
     let hi = baseBars.length - 1;
     while (lo < hi) {
@@ -126,10 +123,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     setPlaying(false);
     const cur = baseBars[Math.max(0, cursor - 1)] ?? baseBars[0];
     const d = new Date(cur.time * 1000);
-    // Approximate session opens in UTC (good enough for practice; NY=13:30 UTC winter-ish)
     const hours: Record<string, number> = { tokyo: 0, london: 7, ny: 13 };
-    const h = hours[kind];
-    d.setUTCHours(h, kind === "ny" ? 30 : 0, 0, 0);
+    d.setUTCHours(hours[kind], kind === "ny" ? 30 : 0, 0, 0);
     const target = Math.floor(d.getTime() / 1000);
     let lo = 0;
     let hi = baseBars.length - 1;
@@ -148,6 +143,17 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   );
   const currentBase = baseBars[Math.max(0, cursor - 1)];
   const max = Math.max(1, baseBars.length);
+
+  const toolHint =
+    drawTool === "trendline"
+      ? "Trendline: click point A, then point B"
+      : drawTool === "rectangle"
+        ? "Rectangle: click first corner, then opposite corner"
+        : drawTool === "long"
+          ? "Long: click entry, then stop-loss"
+          : drawTool === "short"
+            ? "Short: click entry, then stop-loss"
+            : "Crosshair free · hover candle for OHLC";
 
   return (
     <section className="replay-view">
@@ -189,104 +195,72 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         <span className="status-message">{message}</span>
       </div>
 
-      {/* Toolbar: crosshair + drawing placeholders + Go To */}
       <div className="bar tools-bar">
         <span className="tools-label">Tools</span>
-        <button
-          type="button"
-          className={drawTool === "crosshair" ? "on" : ""}
-          title="Crosshair (free float)"
-          onClick={() => setDrawTool("crosshair")}
-        >
-          ✛ Crosshair
+        <button type="button" className={drawTool === "crosshair" ? "on" : ""} onClick={() => setDrawTool("crosshair")}>
+          Crosshair
         </button>
-        <button
-          type="button"
-          className={drawTool === "trendline" ? "on" : ""}
-          title="Trendline (next version draws on chart)"
-          onClick={() => setDrawTool("trendline")}
-        >
-          ／ Trend
+        <button type="button" className={drawTool === "trendline" ? "on" : ""} onClick={() => setDrawTool("trendline")}>
+          Trend
         </button>
-        <button
-          type="button"
-          className={drawTool === "rectangle" ? "on" : ""}
-          title="Rectangle (next version draws on chart)"
-          onClick={() => setDrawTool("rectangle")}
-        >
-          ▭ Rect
+        <button type="button" className={drawTool === "rectangle" ? "on" : ""} onClick={() => setDrawTool("rectangle")}>
+          Rect
+        </button>
+        <button type="button" className={drawTool === "long" ? "on green" : "green"} onClick={() => setDrawTool("long")}>
+          Long
+        </button>
+        <button type="button" className={drawTool === "short" ? "on red" : "red"} onClick={() => setDrawTool("short")}>
+          Short
+        </button>
+        <button type="button" onClick={() => setShapes([])} title="Clear all drawings">
+          Clear
         </button>
         <button type="button" className={drawTool === "none" ? "on" : ""} onClick={() => setDrawTool("none")}>
           Hide
         </button>
         <span className="tools-sep">|</span>
-        <button type="button" onClick={() => jumpSession("tokyo")} title="Jump to Tokyo open (approx UTC)">
-          Tokyo
-        </button>
-        <button type="button" onClick={() => jumpSession("london")} title="Jump to London open (approx UTC)">
-          London
-        </button>
-        <button type="button" onClick={() => jumpSession("ny")} title="Jump to NY open (approx UTC)">
-          NY
-        </button>
+        <button type="button" onClick={() => jumpSession("tokyo")}>Tokyo</button>
+        <button type="button" onClick={() => jumpSession("london")}>London</button>
+        <button type="button" onClick={() => jumpSession("ny")}>NY</button>
         <span className="tools-sep">|</span>
         <label className="goto-label">
           Go To
-          <input
-            type="datetime-local"
-            step="1"
-            value={goToValue}
-            onChange={(e) => setGoToValue(e.target.value)}
-          />
+          <input type="datetime-local" step="1" value={goToValue} onChange={(e) => setGoToValue(e.target.value)} />
         </label>
-        <button type="button" className="on" onClick={handleGoTo}>
-          Jump
-        </button>
+        <button type="button" className="on" onClick={handleGoTo}>Jump</button>
       </div>
+      <div className="tool-hint">{toolHint}</div>
 
       <div className="chartbox">
-        <Chart bars={visibleBars} cursor={visibleBars.length} drawTool={drawTool} />
+        <Chart
+          bars={visibleBars}
+          cursor={visibleBars.length}
+          drawTool={drawTool}
+          shapes={shapes}
+          onShapesChange={setShapes}
+        />
         <small>
-          Replay clock = 1 second · Chart = {TIMEFRAMES.find((x) => x.seconds === timeframeSeconds)?.label} ·
-          Crosshair = free (not locked to candle)
+          Replay = 1s · Chart = {TIMEFRAMES.find((x) => x.seconds === timeframeSeconds)?.label} · Drawings: {shapes.length}
         </small>
       </div>
 
       <div className="replay">
-        <button onClick={() => setPlaying(false)} title="Pause">
-          ⏸
-        </button>
-        <button onClick={() => setPlaying(true)} disabled={cursor >= baseBars.length} title="Play">
-          ▶
-        </button>
-        <button onClick={() => setCursor((c) => Math.max(1, c - 1))} title="Previous second">
-          |←
-        </button>
-        <button onClick={() => setCursor((c) => Math.min(baseBars.length, c + 1))} title="Next second">
-          →|
-        </button>
+        <button onClick={() => setPlaying(false)} title="Pause">Pause</button>
+        <button onClick={() => setPlaying(true)} disabled={cursor >= baseBars.length} title="Play">Play</button>
+        <button onClick={() => setCursor((c) => Math.max(1, c - 1))} title="Previous second">Prev</button>
+        <button onClick={() => setCursor((c) => Math.min(baseBars.length, c + 1))} title="Next second">Next</button>
         <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
           {[0.25, 0.5, 1, 2, 5, 10].map((s) => (
-            <option key={s} value={s}>
-              {s}×
-            </option>
+            <option key={s} value={s}>{s}x</option>
           ))}
         </select>
-        <input
-          type="range"
-          min={1}
-          max={max}
-          value={Math.min(cursor, max)}
-          onChange={(e) => setCursor(Number(e.target.value))}
-        />
-        <span className="cursor-count">
-          {cursor.toLocaleString()} / {baseBars.length.toLocaleString()}s
-        </span>
+        <input type="range" min={1} max={max} value={Math.min(cursor, max)} onChange={(e) => setCursor(Number(e.target.value))} />
+        <span className="cursor-count">{cursor.toLocaleString()} / {baseBars.length.toLocaleString()}s</span>
       </div>
 
       <aside className="replay-info">
         <p>Current second: {currentBase ? new Date(currentBase.time * 1000).toLocaleString() : "—"}</p>
-        <p>Base: {baseBars.length.toLocaleString()} × 1s</p>
+        <p>Base: {baseBars.length.toLocaleString()} x 1s</p>
         <p>Chart: {TIMEFRAMES.find((x) => x.seconds === timeframeSeconds)?.label}</p>
         <p>Visible candles: {visibleBars.length.toLocaleString()}</p>
       </aside>
