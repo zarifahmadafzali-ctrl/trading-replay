@@ -368,3 +368,67 @@ footer {
   border-color: #2a8f9a;
   color: #7ee0ea;
 }
+
+.chart-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+}
+.chart-wrap .chart {
+  position: absolute;
+  inset: 0;
+}
+.chart-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 3;
+}
+.ohlc-box {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+  background: rgba(12, 16, 22, 0.92);
+  border: 1px solid #2a3544;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #d9e1eb;
+  pointer-events: none;
+  min-width: 140px;
+}
+.ohlc-box .ohlc-time {
+  color: #8b9bb0;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+.ohlc-box .k {
+  display: inline-block;
+  width: 14px;
+  color: #8b9bb0;
+}
+.ohlc-box .up { color: #26a69a; }
+.ohlc-box .down { color: #ef5350; }
+
+.tool-hint {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: #8b9bb0;
+  background: #0a0e14;
+  border-bottom: 1px solid #1a222c;
+}
+.tools-bar button.green { color: #26a69a; }
+.tools-bar button.red { color: #ef5350; }
+.tools-bar button.green.on {
+  background: rgba(38, 166, 154, 0.18);
+  border-color: #26a69a;
+}
+.tools-bar button.red.on {
+  background: rgba(239, 83, 80, 0.18);
+  border-color: #ef5350;
+}
