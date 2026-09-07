@@ -327,3 +327,44 @@ footer {
 .replay-range button { cursor: pointer; }
 .replay-range button:disabled { opacity: .5; cursor: not-allowed; }
 .cursor-count { color: #718093; white-space: nowrap; font-size: 12px; }
+
+.tools-bar {
+  height: auto;
+  min-height: 40px;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #202a35;
+  background: #0c1016;
+}
+.tools-bar .tools-label {
+  color: #8b9bb0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 4px;
+}
+.tools-bar .tools-sep {
+  color: #2a3544;
+  margin: 0 4px;
+}
+.tools-bar .goto-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #b7c1cf;
+}
+.tools-bar .goto-label input {
+  background: #121820;
+  border: 1px solid #2a3544;
+  color: #e8eef7;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.tools-bar button.on {
+  background: #1a3a4a;
+  border-color: #2a8f9a;
+  color: #7ee0ea;
+}
