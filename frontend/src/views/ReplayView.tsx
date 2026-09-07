@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Chart, type DrawTool, type Shape } from "../components/Chart";
+import { Chart, type DrawTool, type OrderType, type Shape } from "../components/Chart";
 import { fetchBars } from "../lib/api";
+import { cacheGetRange, cachePutBars } from "../lib/barCache";
 import { generateDemoBars, readCsvFile } from "../lib/demoData";
 import { aggregateVisible } from "../lib/replay";
 import { SYMBOLS, TIMEFRAMES } from "../lib/types";
@@ -32,6 +33,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [drawTool, setDrawTool] = useState<DrawTool>("crosshair");
   const [goToValue, setGoToValue] = useState("");
   const [shapes, setShapes] = useState<Shape[]>([]);
+  const [orderType, setOrderType] = useState<OrderType>("market");
 
   useEffect(() => {
     if (!playing) return;
@@ -53,27 +55,65 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   }, [cursor, baseBars]);
 
   async function loadRange() {
-    if (!backendOnline) {
-      setMessage("Backend is offline · local demo/CSV mode");
-      return;
-    }
     setLoading(true);
     setPlaying(false);
     try {
-      const res = await fetchBars(symbol, 1, start, end);
-      if (!res.bars.length) {
-        setMessage(`No 1-second cache for ${symbol} in ${start} → ${end}. Sync it first.`);
+      // Day-sharded device cache: any overlapping days load without re-download
+      const local = await cacheGetRange(symbol, start, end);
+      if (local.missingDays.length === 0 && local.bars.length) {
+        setBaseBars(local.bars);
+        setCursor(Math.min(800, local.bars.length));
+        setMessage(
+          `From device · ${local.bars.length.toLocaleString()} bars · ${local.fromCacheDays.length} day(s) cached · ${start} → ${end}`
+        );
         return;
       }
-      setBaseBars(res.bars);
-      setCursor(Math.min(800, res.bars.length));
-      setMessage(`Loaded ${res.bars.length.toLocaleString()} real 1-second bars (${start} → ${end})`);
+
+      if (local.bars.length && local.missingDays.length) {
+        setMessage(
+          `Partial cache: ${local.fromCacheDays.length} day(s) on device, missing ${local.missingDays.length} day(s). Fetching rest…`
+        );
+      }
+
+      if (!backendOnline) {
+        if (local.bars.length) {
+          setBaseBars(local.bars);
+          setCursor(Math.min(800, local.bars.length));
+          setMessage(
+            `Offline · loaded ${local.fromCacheDays.length} cached day(s), missing ${local.missingDays.join(", ") || "none"}`
+          );
+        } else {
+          setMessage("No device cache · backend offline · Sync/Load while online or use CSV");
+        }
+        return;
+      }
+
+      // Ask backend for full range (server may have shards from Sync)
+      const res = await fetchBars(symbol, 1, start, end);
+      if (!res.bars.length && !local.bars.length) {
+        setMessage(`No data for ${symbol} ${start} → ${end}. Sync in Data Engine first.`);
+        return;
+      }
+
+      // Merge: prefer backend bars, also keep any local-only seconds
+      const byT = new Map<number, Bar>();
+      for (const b of local.bars) byT.set(b.time, b);
+      for (const b of res.bars) byT.set(b.time, b);
+      const merged = Array.from(byT.values()).sort((a, b) => a.time - b.time);
+
+      setBaseBars(merged);
+      setCursor(Math.min(800, merged.length));
+      const daysSaved = await cachePutBars(symbol, merged);
+      setMessage(
+        `Loaded ${merged.length.toLocaleString()} bars · saved ${daysSaved} day(s) on this device · ${start} → ${end}`
+      );
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Backend request failed");
+      setMessage(e instanceof Error ? e.message : "Load failed");
     } finally {
       setLoading(false);
     }
   }
+
 
   async function handleImport(file: File) {
     try {
@@ -146,13 +186,13 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
 
   const toolHint =
     drawTool === "trendline"
-      ? "Trendline: click point A, then point B"
+      ? "Trend: move crosshair, double-click point A then B"
       : drawTool === "rectangle"
-        ? "Rectangle: click first corner, then opposite corner"
+        ? "Rect: move crosshair, double-click two corners"
         : drawTool === "long"
-          ? "Long: click entry, then stop-loss"
+          ? "Long: double-click Entry → SL → TP at crosshair"
           : drawTool === "short"
-            ? "Short: click entry, then stop-loss"
+            ? "Short: double-click Entry → SL → TP at crosshair"
             : "Crosshair free · hover candle for OHLC";
 
   return (
@@ -212,6 +252,19 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         <button type="button" className={drawTool === "short" ? "on red" : "red"} onClick={() => setDrawTool("short")}>
           Short
         </button>
+        <select
+          value={orderType}
+          onChange={(e) => setOrderType(e.target.value as OrderType)}
+          title="Order type"
+        >
+          <option value="market">Market</option>
+          <option value="buy_limit">Buy Limit</option>
+          <option value="sell_limit">Sell Limit</option>
+          <option value="buy_stop">Buy Stop</option>
+          <option value="sell_stop">Sell Stop</option>
+          <option value="buy_stop_limit">Buy Stop Limit</option>
+          <option value="sell_stop_limit">Sell Stop Limit</option>
+        </select>
         <button type="button" onClick={() => setShapes([])} title="Clear all drawings">
           Clear
         </button>
@@ -236,6 +289,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           bars={visibleBars}
           cursor={visibleBars.length}
           drawTool={drawTool}
+          orderType={orderType}
           shapes={shapes}
           onShapesChange={setShapes}
         />
