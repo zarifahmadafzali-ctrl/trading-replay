@@ -1,0 +1,51 @@
+.tv-toolbar {
+  position: absolute;
+  z-index: 20;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  background: rgba(8, 11, 15, 0.92);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(8px);
+}
+
+.tv-tool {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #b7c1cf;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.tv-tool:hover {
+  background: rgba(148, 163, 184, 0.12);
+  color: #e5e7eb;
+}
+
+.tv-tool.active {
+  background: rgba(59, 130, 246, 0.22);
+  color: #60a5fa;
+}
+
+@media (max-width: 700px) {
+  .tv-toolbar {
+    top: 6px;
+    left: 6px;
+    padding: 4px;
+  }
+  .tv-tool {
+    width: 32px;
+    height: 32px;
+  }
+}

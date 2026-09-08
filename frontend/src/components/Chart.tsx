@@ -10,6 +10,7 @@ import {
   type MouseEventParams,
 } from "lightweight-charts";
 import type { Bar } from "../lib/types";
+import Toolbar from "./Toolbar";
 
 type ChartHandles = {
   chart: IChartApi;
@@ -23,6 +24,9 @@ export type DrawTool =
   | "trendline"
   | "rectangle"
   | "measure"
+  | "hline"
+  | "vline"
+  | "fib"
   | "long"
   | "short";
 
@@ -58,6 +62,25 @@ export type MeasureShape = {
   b: ChartPoint;
 };
 
+export type HLineShape = {
+  id: string;
+  kind: "hline";
+  price: number;
+};
+
+export type VLineShape = {
+  id: string;
+  kind: "vline";
+  time: number;
+};
+
+export type FibShape = {
+  id: string;
+  kind: "fib";
+  a: ChartPoint;
+  b: ChartPoint;
+};
+
 export type PositionShape = {
   id: string;
   kind: "position";
@@ -70,9 +93,19 @@ export type PositionShape = {
   takeProfit: ChartPoint;
 };
 
-export type Shape = TrendlineShape | RectangleShape | MeasureShape | PositionShape;
+export type Shape =
+  | TrendlineShape
+  | RectangleShape
+  | MeasureShape
+  | HLineShape
+  | VLineShape
+  | FibShape
+  | PositionShape;
 
-type DragTarget = { id: string; field: "stop" | "takeProfit" | "entry" | "a" | "b" };
+type DragTarget = {
+  id: string;
+  field: "stop" | "takeProfit" | "entry" | "a" | "b" | "price" | "time";
+};
 
 function formatDuration(seconds: number): string {
   const s = Math.abs(Math.round(seconds));
@@ -147,6 +180,7 @@ export function Chart({
   onShapesChange,
   selectedShapeId = null,
   onSelectedShapeId,
+  onDrawToolChange,
 }: {
   bars: Bar[];
   cursor: number;
@@ -160,6 +194,8 @@ export function Chart({
   onShapesChange: (next: Shape[]) => void;
   selectedShapeId?: string | null;
   onSelectedShapeId?: (id: string | null) => void;
+  /** Optional callback used by the built-in TradingView-style toolbar. */
+  onDrawToolChange?: (tool: DrawTool) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
@@ -433,6 +469,71 @@ export function Chart({
         if (sel) {
           drawDeleteButton(ctx, s.id, B.x + 14, B.y - 14);
         }
+      } else if (s.kind === "hline") {
+        const y = handles.candles.priceToCoordinate(s.price);
+        if (y == null) continue;
+        const sel = selectedShapeIdRef.current === s.id;
+        ctx.strokeStyle = sel ? "#fbbf24" : "#f59e0b";
+        ctx.lineWidth = sel ? 2.5 : 1.5;
+        ctx.setLineDash([7, 4]);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = sel ? "#fbbf24" : "#f59e0b";
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.fillText(`H ${s.price.toFixed(2)}`, 8, Math.max(14, y - 7));
+        if (sel) drawDeleteButton(ctx, s.id, w - 14, y - 14);
+      } else if (s.kind === "vline") {
+        const x = handles.chart.timeScale().timeToCoordinate(s.time as UTCTimestamp);
+        if (x == null) continue;
+        const sel = selectedShapeIdRef.current === s.id;
+        ctx.strokeStyle = sel ? "#fbbf24" : "#a78bfa";
+        ctx.lineWidth = sel ? 2.5 : 1.5;
+        ctx.setLineDash([7, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        if (sel) {
+          ctx.fillStyle = "#fbbf24";
+          ctx.beginPath();
+          ctx.arc(x, 14, 5, 0, Math.PI * 2);
+          ctx.fill();
+          drawDeleteButton(ctx, s.id, x + 14, 28);
+        }
+      } else if (s.kind === "fib") {
+        const A = toXY(s.a);
+        const B = toXY(s.b);
+        if (!A || !B) continue;
+        const sel = selectedShapeIdRef.current === s.id;
+        const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.618];
+        const priceDelta = s.b.price - s.a.price;
+        ctx.lineWidth = sel ? 1.5 : 1;
+        for (const level of levels) {
+          const price = s.a.price + priceDelta * level;
+          const y = handles.candles.priceToCoordinate(price);
+          if (y == null) continue;
+          ctx.strokeStyle = sel ? "#fbbf24" : "rgba(167,139,250,0.9)";
+          ctx.setLineDash(level === 0 || level === 1 ? [] : [5, 4]);
+          ctx.beginPath();
+          ctx.moveTo(Math.min(A.x, B.x), y);
+          ctx.lineTo(Math.max(A.x, B.x), y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = sel ? "#fbbf24" : "#c4b5fd";
+          ctx.font = "10px system-ui, sans-serif";
+          ctx.fillText(`${(level * 100).toFixed(1)}%  ${price.toFixed(2)}`, Math.min(A.x, B.x) + 6, Math.max(12, y - 4));
+        }
+        if (sel) {
+          const r = 6;
+          ctx.fillStyle = "#fbbf24";
+          ctx.beginPath(); ctx.arc(A.x, A.y, r, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(B.x, B.y, r, 0, Math.PI * 2); ctx.fill();
+          drawDeleteButton(ctx, s.id, B.x + 14, B.y - 14);
+        }
       } else if (s.kind === "position") {
         const E = toXY(s.entry);
         const S = toXY(s.stop);
@@ -572,7 +673,7 @@ export function Chart({
 
   function placePoint(point: ChartPoint) {
     const tool = drawToolRef.current;
-    if (tool !== "trendline" && tool !== "rectangle" && tool !== "measure") return;
+    if (tool !== "trendline" && tool !== "rectangle" && tool !== "measure" && tool !== "fib") return;
     const steps = stepsRef.current;
     if (steps.length === 0) {
       stepsRef.current = [point];
@@ -588,7 +689,9 @@ export function Chart({
         ? { id: uid(), kind: "trendline", a, b }
         : tool === "rectangle"
         ? { id: uid(), kind: "rectangle", a, b }
-        : { id: uid(), kind: "measure", a, b };
+        : tool === "measure"
+        ? { id: uid(), kind: "measure", a, b }
+        : { id: uid(), kind: "fib", a, b };
     setShapes([...shapesRef.current, shape]);
     onSelectedShapeIdRef.current?.(shape.id);
     setHint("Done · tap it to select, Delete or × to remove");
@@ -600,13 +703,23 @@ export function Chart({
     const series = handles.candles;
     const threshold = touch ? 20 : 12;
 
-    // Trend line / rectangle / measure endpoints — grab either point 'a' or 'b'.
+    // Two-point drawings: grab either endpoint.
     for (const s of shapesRef.current) {
-      if (s.kind !== "trendline" && s.kind !== "rectangle" && s.kind !== "measure") continue;
+      if (s.kind !== "trendline" && s.kind !== "rectangle" && s.kind !== "measure" && s.kind !== "fib") continue;
       const A = toXY(s.a);
       const B = toXY(s.b);
       if (A && Math.hypot(A.x - x, A.y - y) <= threshold) return { id: s.id, field: "a" };
       if (B && Math.hypot(B.x - x, B.y - y) <= threshold) return { id: s.id, field: "b" };
+    }
+
+    for (const s of shapesRef.current) {
+      if (s.kind === "hline") {
+        const lineY = series.priceToCoordinate(s.price);
+        if (lineY != null && Math.abs(lineY - y) <= threshold) return { id: s.id, field: "price" };
+      } else if (s.kind === "vline") {
+        const xCoord = handles.chart.timeScale().timeToCoordinate(s.time as UTCTimestamp);
+        if (xCoord != null && Math.abs(xCoord - x) <= threshold) return { id: s.id, field: "time" };
+      }
     }
 
     for (const s of shapesRef.current) {
@@ -647,6 +760,24 @@ export function Chart({
         const minY = Math.min(A.y, B.y) - threshold;
         const maxY = Math.max(A.y, B.y) + threshold;
         if (x >= minX && x <= maxX && y >= minY && y <= maxY) return s.id;
+      } else if (s.kind === "hline") {
+        const lineY = handlesRef.current?.candles.priceToCoordinate(s.price);
+        if (lineY != null && Math.abs(lineY - y) <= threshold) return s.id;
+      } else if (s.kind === "vline") {
+        const lineX = handlesRef.current?.chart.timeScale().timeToCoordinate(s.time as UTCTimestamp);
+        if (lineX != null && Math.abs(lineX - x) <= threshold) return s.id;
+      } else if (s.kind === "fib") {
+        const A = toXY(s.a);
+        const B = toXY(s.b);
+        if (!A || !B) continue;
+        const minX = Math.min(A.x, B.x) - threshold;
+        const maxX = Math.max(A.x, B.x) + threshold;
+        const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.618];
+        for (const level of levels) {
+          const price = s.a.price + (s.b.price - s.a.price) * level;
+          const levelY = handlesRef.current?.candles.priceToCoordinate(price);
+          if (levelY != null && x >= minX && x <= maxX && Math.abs(levelY - y) <= threshold) return s.id;
+        }
       }
     }
     return null;
@@ -725,11 +856,26 @@ export function Chart({
           if (newPoint) {
             setShapes(
               shapesRef.current.map((s) =>
-                s.id === d.id && (s.kind === "trendline" || s.kind === "rectangle" || s.kind === "measure")
+                s.id === d.id &&
+                (s.kind === "trendline" || s.kind === "rectangle" || s.kind === "measure" || s.kind === "fib")
                   ? ({ ...s, [d.field]: newPoint } as Shape)
                   : s
               )
             );
+          }
+        } else if (d.field === "price") {
+          const price = candles.coordinateToPrice(param.point.y);
+          if (price != null) {
+            setShapes(shapesRef.current.map((s) =>
+              s.id === d.id && s.kind === "hline" ? { ...s, price } : s
+            ));
+          }
+        } else if (d.field === "time") {
+          const time = chart.timeScale().coordinateToTime(param.point.x);
+          if (time != null) {
+            setShapes(shapesRef.current.map((s) =>
+              s.id === d.id && s.kind === "vline" ? { ...s, time: Number(time) } : s
+            ));
           }
         } else {
           const price = candles.coordinateToPrice(param.point.y);
@@ -826,6 +972,24 @@ export function Chart({
       const dist = Math.hypot(x - down.x, y - down.y);
       const isTap = dt < 500 && dist < 8;
 
+      const tool = drawToolRef.current;
+
+      // H/V lines are single-click tools.
+      if (isTap && (tool === "hline" || tool === "vline")) {
+        const pt = fromXY(x, y);
+        if (pt) {
+          const shape: Shape =
+            tool === "hline"
+              ? { id: uid(), kind: "hline", price: pt.price }
+              : { id: uid(), kind: "vline", time: pt.time };
+          setShapes([...shapesRef.current, shape]);
+          onSelectedShapeIdRef.current?.(shape.id);
+          setHint(tool === "hline" ? "Horizontal line placed" : "Vertical line placed");
+          scheduleRedraw();
+        }
+        return;
+      }
+
       if (isTap) {
         const threshold = ev.pointerType === "touch" ? 18 : 10;
         const hitId = hitTestSelect(x, y, threshold);
@@ -834,15 +998,14 @@ export function Chart({
       }
 
       // Manual double-tap detection: mobile browsers don't fire 'dblclick'
-      // reliably from touch, so trend line / rectangle / measure placement
-      // needs its own tap-tap gesture on touch devices.
+      // reliably from touch, so two-point tools need their own tap-tap gesture.
       if (ev.pointerType === "touch" && isTap) {
         const now = Date.now();
         const prevTap = doubleTapRef.current;
         if (prevTap && now - prevTap.time < 400 && Math.hypot(x - prevTap.x, y - prevTap.y) < 30) {
           doubleTapRef.current = null;
           const tool = drawToolRef.current;
-          if (tool === "trendline" || tool === "rectangle" || tool === "measure") {
+          if (tool === "trendline" || tool === "rectangle" || tool === "measure" || tool === "fib") {
             const pt = fromXY(x, y);
             if (pt) placePoint(pt);
           }
@@ -864,7 +1027,7 @@ export function Chart({
       ev.preventDefault();
       if (dragRef.current) return;
       const tool = drawToolRef.current;
-      if (tool !== "trendline" && tool !== "rectangle" && tool !== "measure") return;
+      if (tool !== "trendline" && tool !== "rectangle" && tool !== "measure" && tool !== "fib") return;
       const pt = crosshairRef.current;
       if (!pt) return;
       placePoint(pt);
@@ -927,6 +1090,9 @@ export function Chart({
     if (drawTool === "trendline") setHint("Double-click two points (or tap-tap on phone)");
     else if (drawTool === "rectangle") setHint("Double-click two corners (or tap-tap on phone)");
     else if (drawTool === "measure") setHint("Click a point, move, then click again to measure");
+    else if (drawTool === "fib") setHint("Double-click two points (or tap-tap on phone)");
+    else if (drawTool === "hline") setHint("Click to place horizontal line");
+    else if (drawTool === "vline") setHint("Click to place vertical line");
     else if (drawTool === "long" || drawTool === "short") {
       /* hint set in spawnDraft */
     } else setHint("");
@@ -962,6 +1128,13 @@ export function Chart({
 
   return (
     <div className="chart-wrap" style={{ position: "relative", width: "100%", height: "100%" }}>
+      <Toolbar
+        tool={drawTool}
+        onToolChange={(tool) => {
+          if (onDrawToolChange) onDrawToolChange(tool);
+          else window.dispatchEvent(new CustomEvent("tr-draw-tool-change", { detail: tool }));
+        }}
+      />
       <div ref={containerRef} className="chart" style={{ width: "100%", height: "100%" }} />
       {/* Purely visual — all pointer/touch handling is attached to the chart
           div above, so the overlay must never intercept events. */}
