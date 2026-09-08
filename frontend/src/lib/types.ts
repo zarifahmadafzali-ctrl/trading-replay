@@ -40,3 +40,18 @@ export const TIMEFRAMES: { label: string; seconds: number }[] = [
 ];
 
 export const SYMBOLS = ["US30", "EURUSD", "XAUUSD", "BTCUSD"];
+
+
+export function formatTf(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) {
+    const m = seconds / 60;
+    return Number.isInteger(m) ? `${m}m` : `${seconds}s`;
+  }
+  if (seconds < 86400) {
+    const h = seconds / 3600;
+    return Number.isInteger(h) ? `${h}H` : `${Math.round(seconds / 60)}m`;
+  }
+  const d = seconds / 86400;
+  return Number.isInteger(d) ? `${d}D` : `${Math.round(seconds / 3600)}H`;
+}
