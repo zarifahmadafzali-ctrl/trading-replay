@@ -22,6 +22,7 @@ export type DrawTool =
   | "crosshair"
   | "trendline"
   | "rectangle"
+  | "measure"
   | "long"
   | "short";
 
@@ -50,6 +51,13 @@ export type RectangleShape = {
   b: ChartPoint;
 };
 
+export type MeasureShape = {
+  id: string;
+  kind: "measure";
+  a: ChartPoint;
+  b: ChartPoint;
+};
+
 export type PositionShape = {
   id: string;
   kind: "position";
@@ -62,9 +70,35 @@ export type PositionShape = {
   takeProfit: ChartPoint;
 };
 
-export type Shape = TrendlineShape | RectangleShape | PositionShape;
+export type Shape = TrendlineShape | RectangleShape | MeasureShape | PositionShape;
 
-type DragTarget = { id: string; field: "stop" | "takeProfit" | "entry" };
+type DragTarget = { id: string; field: "stop" | "takeProfit" | "entry" | "a" | "b" };
+
+function formatDuration(seconds: number): string {
+  const s = Math.abs(Math.round(seconds));
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const parts: string[] = [];
+  if (d) parts.push(`${d}d`);
+  if (h) parts.push(`${h}h`);
+  if (m) parts.push(`${m}m`);
+  if (sec || parts.length === 0) parts.push(`${sec}s`);
+  return parts.slice(0, 2).join(" ");
+}
+
+function distToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq === 0) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * dx + (py - ay) * dy) / lengthSq;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx;
+  const cy = ay + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
 
 function uid() {
   return Math.random().toString(36).slice(2, 10);
@@ -142,6 +176,13 @@ export function Chart({
   const dragRef = useRef<DragTarget | null>(null);
   const onShapesChangeRef = useRef(onShapesChange);
   onShapesChangeRef.current = onShapesChange;
+  const onSelectedShapeIdRef = useRef(onSelectedShapeId);
+  onSelectedShapeIdRef.current = onSelectedShapeId;
+  // Screen-space hit area for the on-canvas "×" delete button drawn next to
+  // whichever trendline/rectangle/measure shape is currently selected.
+  const deleteButtonRef = useRef<{ id: string; x: number; y: number; r: number } | null>(null);
+  const downRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  const doubleTapRef = useRef<{ x: number; y: number; time: number } | null>(null);
 
   const [ohlc, setOhlc] = useState<{
     time: string;
@@ -272,12 +313,47 @@ export function Chart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drawTool, orderType]);
 
+  /** Chart-space point → screen (canvas) pixel coordinates. */
+  function toXY(p: ChartPoint): { x: number; y: number } | null {
+    const handles = handlesRef.current;
+    if (!handles) return null;
+    const x = handles.chart.timeScale().timeToCoordinate(p.time as UTCTimestamp);
+    const y = handles.candles.priceToCoordinate(p.price);
+    if (x == null || y == null) return null;
+    return { x, y };
+  }
+
+  /** Screen pixel coordinates → chart-space point (time + price). */
+  function fromXY(x: number, y: number): ChartPoint | null {
+    const handles = handlesRef.current;
+    if (!handles) return null;
+    const time = handles.chart.timeScale().coordinateToTime(x);
+    const price = handles.candles.coordinateToPrice(y);
+    if (time == null || price == null) return null;
+    return { time: Number(time), price };
+  }
+
+  function drawLabel(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, color: string) {
+    ctx.font = "11px system-ui, sans-serif";
+    const padX = 6;
+    const padY = 4;
+    const w = ctx.measureText(text).width;
+    ctx.fillStyle = "rgba(8, 11, 15, 0.85)";
+    ctx.fillRect(x - padX, y - 11 - padY, w + padX * 2, 15 + padY);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - padX, y - 11 - padY, w + padX * 2, 15 + padY);
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y);
+  }
+
   function redrawOverlay() {
     const canvas = overlayRef.current;
     const handles = handlesRef.current;
     if (!canvas || !handles) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    deleteButtonRef.current = null;
 
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
@@ -292,15 +368,6 @@ export function Chart({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const ts = handles.chart.timeScale();
-    const series = handles.candles;
-    const toXY = (p: ChartPoint) => {
-      const x = ts.timeToCoordinate(p.time as UTCTimestamp);
-      const y = series.priceToCoordinate(p.price);
-      if (x == null || y == null) return null;
-      return { x, y };
-    };
-
     for (const s of shapesRef.current) {
       if (s.kind === "trendline") {
         const A = toXY(s.a);
@@ -313,21 +380,59 @@ export function Chart({
         ctx.moveTo(A.x, A.y);
         ctx.lineTo(B.x, B.y);
         ctx.stroke();
+        // Endpoint handles are always visible (small) so it's obvious the
+        // line can be grabbed and dragged; they grow when selected.
+        const r = sel ? 6 : 4;
+        ctx.fillStyle = sel ? "#fbbf24" : "#60a5fa";
+        ctx.beginPath(); ctx.arc(A.x, A.y, r, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(B.x, B.y, r, 0, Math.PI * 2); ctx.fill();
         if (sel) {
-          ctx.fillStyle = "#fbbf24";
-          ctx.beginPath(); ctx.arc(A.x, A.y, 5, 0, Math.PI * 2); ctx.fill();
-          ctx.beginPath(); ctx.arc(B.x, B.y, 5, 0, Math.PI * 2); ctx.fill();
+          const bx = B.x + 14;
+          const by = B.y - 14;
+          drawDeleteButton(ctx, s.id, bx, by);
         }
       } else if (s.kind === "rectangle") {
         const A = toXY(s.a);
         const B = toXY(s.b);
         if (!A || !B) continue;
+        const sel = selectedShapeIdRef?.current === s.id;
         const x = Math.min(A.x, B.x);
         const y = Math.min(A.y, B.y);
-        ctx.fillStyle = "rgba(96, 165, 250, 0.12)";
-        ctx.strokeStyle = "#60a5fa";
-        ctx.fillRect(x, y, Math.abs(B.x - A.x), Math.abs(B.y - A.y));
-        ctx.strokeRect(x, y, Math.abs(B.x - A.x), Math.abs(B.y - A.y));
+        const rw = Math.abs(B.x - A.x);
+        const rh = Math.abs(B.y - A.y);
+        ctx.fillStyle = sel ? "rgba(251, 191, 36, 0.14)" : "rgba(96, 165, 250, 0.12)";
+        ctx.strokeStyle = sel ? "#fbbf24" : "#60a5fa";
+        ctx.lineWidth = sel ? 2 : 1.5;
+        ctx.fillRect(x, y, rw, rh);
+        ctx.strokeRect(x, y, rw, rh);
+        const r = sel ? 6 : 4;
+        ctx.fillStyle = sel ? "#fbbf24" : "#60a5fa";
+        ctx.beginPath(); ctx.arc(A.x, A.y, r, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(B.x, B.y, r, 0, Math.PI * 2); ctx.fill();
+        if (sel) {
+          drawDeleteButton(ctx, s.id, x + rw + 14, y - 14);
+        }
+      } else if (s.kind === "measure") {
+        const A = toXY(s.a);
+        const B = toXY(s.b);
+        if (!A || !B) continue;
+        const sel = selectedShapeIdRef?.current === s.id;
+        ctx.strokeStyle = sel ? "#fbbf24" : "#c084fc";
+        ctx.lineWidth = sel ? 2.5 : 1.5;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(A.x, A.y);
+        ctx.lineTo(B.x, B.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        const r = sel ? 6 : 4;
+        ctx.fillStyle = sel ? "#fbbf24" : "#c084fc";
+        ctx.beginPath(); ctx.arc(A.x, A.y, r, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(B.x, B.y, r, 0, Math.PI * 2); ctx.fill();
+        drawMeasureLabel(ctx, s.a, s.b, A, B, sel ? "#fbbf24" : "#c084fc");
+        if (sel) {
+          drawDeleteButton(ctx, s.id, B.x + 14, B.y - 14);
+        }
       } else if (s.kind === "position") {
         const E = toXY(s.entry);
         const S = toXY(s.stop);
@@ -404,35 +509,106 @@ export function Chart({
       ctx.arc(P.x, P.y, 4, 0, Math.PI * 2);
       ctx.fill();
     }
+
+    // Live preview while the measure tool's first point is placed but the
+    // second hasn't been clicked yet — shows the running delta as you move.
+    if (drawToolRef.current === "measure" && stepsRef.current.length === 1 && crosshairRef.current) {
+      const a = stepsRef.current[0];
+      const b = crosshairRef.current;
+      const A = toXY(a);
+      const B = toXY(b);
+      if (A && B) {
+        ctx.strokeStyle = "#c084fc";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(A.x, A.y);
+        ctx.lineTo(B.x, B.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        drawMeasureLabel(ctx, a, b, A, B, "#c084fc");
+      }
+    }
+  }
+
+  function drawDeleteButton(ctx: CanvasRenderingContext2D, id: string, x: number, y: number) {
+    const r = 10;
+    ctx.fillStyle = "rgba(239, 83, 80, 0.9)";
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x - 4, y - 4);
+    ctx.lineTo(x + 4, y + 4);
+    ctx.moveTo(x + 4, y - 4);
+    ctx.lineTo(x - 4, y + 4);
+    ctx.stroke();
+    deleteButtonRef.current = { id, x, y, r: r + 6 }; // generous tap padding
+  }
+
+  /** Δprice, Δ%, candle count, and elapsed time between two chart points. */
+  function drawMeasureLabel(
+    ctx: CanvasRenderingContext2D,
+    a: ChartPoint,
+    b: ChartPoint,
+    A: { x: number; y: number },
+    B: { x: number; y: number },
+    color: string
+  ) {
+    const priceDelta = b.price - a.price;
+    const pctDelta = a.price !== 0 ? (priceDelta / a.price) * 100 : 0;
+    const timeDelta = b.time - a.time;
+    const lo = Math.min(a.time, b.time);
+    const hi = Math.max(a.time, b.time);
+    const barCount = bars.filter((bar) => bar.time >= lo && bar.time <= hi).length;
+    const sign = priceDelta >= 0 ? "+" : "";
+    const text = `${sign}${priceDelta.toFixed(2)} (${sign}${pctDelta.toFixed(2)}%) · ${barCount} bars · ${formatDuration(timeDelta)}`;
+    const midX = (A.x + B.x) / 2;
+    const midY = Math.min(A.y, B.y) - 12;
+    drawLabel(ctx, midX - ctx.measureText(text).width / 2, Math.max(16, midY), text, color);
   }
 
   function placePoint(point: ChartPoint) {
     const tool = drawToolRef.current;
-    if (tool !== "trendline" && tool !== "rectangle") return;
+    if (tool !== "trendline" && tool !== "rectangle" && tool !== "measure") return;
     const steps = stepsRef.current;
     if (steps.length === 0) {
       stepsRef.current = [point];
-      setHint("Double-click 2nd point");
+      setHint(tool === "measure" ? "Move, then click 2nd point" : "Double-click 2nd point");
       scheduleRedraw();
       return;
     }
     const a = steps[0];
     const b = point;
     stepsRef.current = [];
-    setShapes([
-      ...shapesRef.current,
+    const shape: Shape =
       tool === "trendline"
         ? { id: uid(), kind: "trendline", a, b }
-        : { id: uid(), kind: "rectangle", a, b },
-    ]);
-    setHint("Done");
+        : tool === "rectangle"
+        ? { id: uid(), kind: "rectangle", a, b }
+        : { id: uid(), kind: "measure", a, b };
+    setShapes([...shapesRef.current, shape]);
+    onSelectedShapeIdRef.current?.(shape.id);
+    setHint("Done · tap it to select, Delete or × to remove");
   }
 
-  function hitTestDrag(y: number): DragTarget | null {
+  function hitTestDrag(x: number, y: number, touch: boolean): DragTarget | null {
     const handles = handlesRef.current;
     if (!handles) return null;
     const series = handles.candles;
-    const threshold = 12;
+    const threshold = touch ? 20 : 12;
+
+    // Trend line / rectangle / measure endpoints — grab either point 'a' or 'b'.
+    for (const s of shapesRef.current) {
+      if (s.kind !== "trendline" && s.kind !== "rectangle" && s.kind !== "measure") continue;
+      const A = toXY(s.a);
+      const B = toXY(s.b);
+      if (A && Math.hypot(A.x - x, A.y - y) <= threshold) return { id: s.id, field: "a" };
+      if (B && Math.hypot(B.x - x, B.y - y) <= threshold) return { id: s.id, field: "b" };
+    }
+
     for (const s of shapesRef.current) {
       if (s.kind !== "position") continue;
       // only draft fully editable; open still allows SL/TP tweak
@@ -448,6 +624,29 @@ export function Chart({
         Math.abs(ey - y) <= threshold
       ) {
         return { id: s.id, field: "entry" };
+      }
+    }
+    return null;
+  }
+
+  /** Selection hit-test — deliberately excludes positions (order/SL/TP levels
+   *  stay managed only via the Confirm/Cancel draft flow, never keyboard-deleted). */
+  function hitTestSelect(x: number, y: number, threshold: number): string | null {
+    for (const s of shapesRef.current) {
+      if (s.kind === "trendline" || s.kind === "measure") {
+        const A = toXY(s.a);
+        const B = toXY(s.b);
+        if (!A || !B) continue;
+        if (distToSegment(x, y, A.x, A.y, B.x, B.y) <= threshold) return s.id;
+      } else if (s.kind === "rectangle") {
+        const A = toXY(s.a);
+        const B = toXY(s.b);
+        if (!A || !B) continue;
+        const minX = Math.min(A.x, B.x) - threshold;
+        const maxX = Math.max(A.x, B.x) + threshold;
+        const minY = Math.min(A.y, B.y) - threshold;
+        const maxY = Math.max(A.y, B.y) + threshold;
+        if (x >= minX && x <= maxX && y >= minY && y <= maxY) return s.id;
       }
     }
     return null;
@@ -520,18 +719,31 @@ export function Chart({
       }
 
       if (dragRef.current && param.point) {
-        const price = candles.coordinateToPrice(param.point.y);
-        if (price != null) {
-          const d = dragRef.current;
-          const s = shapesRef.current.find((x) => x.kind === "position" && x.id === d.id) as
-            | PositionShape
-            | undefined;
-          if (s) {
-            if (d.field === "stop") updatePosition(d.id, { stop: { ...s.stop, price } });
-            else if (d.field === "takeProfit")
-              updatePosition(d.id, { takeProfit: { ...s.takeProfit, price } });
-            else if (d.field === "entry")
-              updatePosition(d.id, { entry: { ...s.entry, price } });
+        const d = dragRef.current;
+        if (d.field === "a" || d.field === "b") {
+          const newPoint = fromXY(param.point.x, param.point.y);
+          if (newPoint) {
+            setShapes(
+              shapesRef.current.map((s) =>
+                s.id === d.id && (s.kind === "trendline" || s.kind === "rectangle" || s.kind === "measure")
+                  ? ({ ...s, [d.field]: newPoint } as Shape)
+                  : s
+              )
+            );
+          }
+        } else {
+          const price = candles.coordinateToPrice(param.point.y);
+          if (price != null) {
+            const s = shapesRef.current.find((x) => x.kind === "position" && x.id === d.id) as
+              | PositionShape
+              | undefined;
+            if (s) {
+              if (d.field === "stop") updatePosition(d.id, { stop: { ...s.stop, price } });
+              else if (d.field === "takeProfit")
+                updatePosition(d.id, { takeProfit: { ...s.takeProfit, price } });
+              else if (d.field === "entry")
+                updatePosition(d.id, { entry: { ...s.entry, price } });
+            }
           }
         }
       }
@@ -563,24 +775,83 @@ export function Chart({
     chart.timeScale().subscribeVisibleTimeRangeChange(onRange);
 
     const el = containerRef.current;
+
+    function deleteShape(id: string) {
+      setShapes(shapesRef.current.filter((s) => s.id !== id));
+      if (selectedShapeIdRef.current === id) onSelectedShapeIdRef.current?.(null);
+      setHint("Deleted");
+      scheduleRedraw();
+    }
+
     const onPointerDown = (ev: PointerEvent) => {
       const rect = el.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
       const y = ev.clientY - rect.top;
-      const hit = hitTestDrag(y);
+      downRef.current = { x, y, time: Date.now() };
+
+      // Tapping the on-canvas "×" next to a selected shape deletes it immediately.
+      const btn = deleteButtonRef.current;
+      if (btn && Math.hypot(btn.x - x, btn.y - y) <= btn.r) {
+        deleteShape(btn.id);
+        ev.preventDefault();
+        return;
+      }
+
+      const hit = hitTestDrag(x, y, ev.pointerType === "touch");
       if (hit) {
         dragRef.current = hit;
         el.setPointerCapture(ev.pointerId);
-        setHint("Dragging level…");
+        setHint("Dragging…");
         ev.preventDefault();
       }
     };
-    const onPointerUp = () => {
+
+    const onPointerUp = (ev: PointerEvent) => {
       if (dragRef.current) {
         dragRef.current = null;
-        setHint("Level updated · Confirm when ready");
+        setHint("Updated · Confirm when ready");
+        scheduleRedraw();
+        downRef.current = null;
+        return;
+      }
+
+      const down = downRef.current;
+      downRef.current = null;
+      if (!down) return;
+
+      const rect = el.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
+      const dt = Date.now() - down.time;
+      const dist = Math.hypot(x - down.x, y - down.y);
+      const isTap = dt < 500 && dist < 8;
+
+      if (isTap) {
+        const threshold = ev.pointerType === "touch" ? 18 : 10;
+        const hitId = hitTestSelect(x, y, threshold);
+        onSelectedShapeIdRef.current?.(hitId);
         scheduleRedraw();
       }
+
+      // Manual double-tap detection: mobile browsers don't fire 'dblclick'
+      // reliably from touch, so trend line / rectangle / measure placement
+      // needs its own tap-tap gesture on touch devices.
+      if (ev.pointerType === "touch" && isTap) {
+        const now = Date.now();
+        const prevTap = doubleTapRef.current;
+        if (prevTap && now - prevTap.time < 400 && Math.hypot(x - prevTap.x, y - prevTap.y) < 30) {
+          doubleTapRef.current = null;
+          const tool = drawToolRef.current;
+          if (tool === "trendline" || tool === "rectangle" || tool === "measure") {
+            const pt = fromXY(x, y);
+            if (pt) placePoint(pt);
+          }
+        } else {
+          doubleTapRef.current = { x, y, time: now };
+        }
+      }
     };
+
     el.addEventListener("pointerdown", onPointerDown);
     el.addEventListener("pointerup", onPointerUp);
     el.addEventListener("pointercancel", onPointerUp);
@@ -593,12 +864,27 @@ export function Chart({
       ev.preventDefault();
       if (dragRef.current) return;
       const tool = drawToolRef.current;
-      if (tool !== "trendline" && tool !== "rectangle") return;
+      if (tool !== "trendline" && tool !== "rectangle" && tool !== "measure") return;
       const pt = crosshairRef.current;
       if (!pt) return;
       placePoint(pt);
     };
     el.addEventListener("dblclick", onDblClick);
+
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key !== "Delete" && ev.key !== "Backspace") return;
+      const target = ev.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      const id = selectedShapeIdRef.current;
+      if (!id) return;
+      // Positions are only ever removed via the Confirm/Cancel draft flow,
+      // never by an accidental keypress — safety-critical, so excluded here.
+      const shape = shapesRef.current.find((s) => s.id === id);
+      if (!shape || shape.kind === "position") return;
+      ev.preventDefault();
+      deleteShape(id);
+    };
+    window.addEventListener("keydown", onKeyDown);
 
     const resizeObserver = new ResizeObserver(() => {
       if (!containerRef.current) return;
@@ -619,6 +905,7 @@ export function Chart({
       el.removeEventListener("wheel", onPointer);
       el.removeEventListener("touchmove", onPointer);
       el.removeEventListener("dblclick", onDblClick);
+      window.removeEventListener("keydown", onKeyDown);
       chart.unsubscribeCrosshairMove(onMove);
       chart.remove();
       handlesRef.current = null;
@@ -637,8 +924,9 @@ export function Chart({
       },
     });
     stepsRef.current = [];
-    if (drawTool === "trendline") setHint("Double-click two points");
-    else if (drawTool === "rectangle") setHint("Double-click two corners");
+    if (drawTool === "trendline") setHint("Double-click two points (or tap-tap on phone)");
+    else if (drawTool === "rectangle") setHint("Double-click two corners (or tap-tap on phone)");
+    else if (drawTool === "measure") setHint("Click a point, move, then click again to measure");
     else if (drawTool === "long" || drawTool === "short") {
       /* hint set in spawnDraft */
     } else setHint("");
@@ -673,11 +961,20 @@ export function Chart({
   }, [shapes, marketPrice]);
 
   return (
-    <div className="chart-wrap">
-      <div ref={containerRef} className="chart" />
-      <canvas ref={overlayRef} className="chart-overlay" />
+    <div className="chart-wrap" style={{ position: "relative", width: "100%", height: "100%" }}>
+      <div ref={containerRef} className="chart" style={{ width: "100%", height: "100%" }} />
+      {/* Purely visual — all pointer/touch handling is attached to the chart
+          div above, so the overlay must never intercept events. */}
+      <canvas
+        ref={overlayRef}
+        className="chart-overlay"
+        style={{ position: "absolute", inset: 0, pointerEvents: "none", touchAction: "none" }}
+      />
       {ohlc && (
-        <div className="ohlc-box">
+        <div
+          className="ohlc-box"
+          style={{ fontSize: "clamp(10px, 2.6vw, 12px)", padding: "clamp(4px, 1.2vw, 8px) clamp(6px, 1.6vw, 10px)" }}
+        >
           <div className="ohlc-time">{ohlc.time}</div>
           <div>
             <span className="k">O</span> {ohlc.open.toFixed(2)}
@@ -694,7 +991,11 @@ export function Chart({
           </div>
         </div>
       )}
-      {hint && <div className="draw-hint">{hint}</div>}
+      {hint && (
+        <div className="draw-hint" style={{ fontSize: "clamp(10px, 2.8vw, 13px)", textAlign: "center" }}>
+          {hint}
+        </div>
+      )}
     </div>
   );
 }
