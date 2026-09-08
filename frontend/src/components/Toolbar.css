@@ -1,6 +1,7 @@
 .tv-toolbar {
   position: absolute;
-  z-index: 20;
+  z-index: 100;
+  pointer-events: auto;
   top: 10px;
   left: 10px;
   display: flex;
@@ -26,6 +27,8 @@
   color: #b7c1cf;
   cursor: pointer;
   touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
 
 .tv-tool:hover {

@@ -228,9 +228,14 @@ export function Chart({
     close: number;
   } | null>(null);
   const [hint, setHint] = useState("");
+  // The built-in toolbar can operate even when the parent does not pass a
+  // controlled onDrawToolChange callback. This is important for the chart
+  // toolbar itself, especially on mobile.
+  const [localDrawTool, setLocalDrawTool] = useState<DrawTool>(drawTool);
+  const activeDrawTool = localDrawTool;
 
   shapesRef.current = shapes;
-  drawToolRef.current = drawTool;
+  drawToolRef.current = activeDrawTool;
   orderTypeRef.current = orderType;
   marketRef.current = { price: marketPrice, time: marketTime };
   followRef.current = followPrice;
@@ -341,13 +346,15 @@ export function Chart({
     };
   }, []);
 
-  // When user picks Long/Short tool → drop draft on chart
+  // Long/Short are placed by tapping the chart. This works even when the
+  // parent does not provide marketPrice/marketTime, which is common during
+  // mobile replay startup.
   useEffect(() => {
-    if (drawTool === "long" || drawTool === "short") {
-      spawnDraft(drawTool);
+    if (activeDrawTool === "long" || activeDrawTool === "short") {
+      setHint(`Tap the chart to place ${activeDrawTool === "long" ? "Long" : "Short"} position`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drawTool, orderType]);
+  }, [activeDrawTool, orderType]);
 
   /** Chart-space point → screen (canvas) pixel coordinates. */
   function toXY(p: ChartPoint): { x: number; y: number } | null {
@@ -974,6 +981,32 @@ export function Chart({
 
       const tool = drawToolRef.current;
 
+      // Long/Short are single-tap placement tools. Do not depend on
+      // marketPrice/marketTime being supplied by the parent.
+      if (isTap && (tool === "long" || tool === "short")) {
+        const pt = fromXY(x, y);
+        if (pt) {
+          const side = tool as "long" | "short";
+          const levels = defaultsFor(side, orderTypeRef.current, pt.price, pt.time);
+          const draft: PositionShape = {
+            id: uid(),
+            kind: "position",
+            side,
+            orderType: orderTypeRef.current,
+            status: "draft",
+            ...levels,
+          };
+          const kept = shapesRef.current.filter(
+            (s) => !(s.kind === "position" && s.status === "draft")
+          );
+          setShapes([...kept, draft]);
+          onSelectedShapeIdRef.current?.(draft.id);
+          setHint(`DRAFT ${side.toUpperCase()} · drag SL/TP · then Confirm`);
+          scheduleRedraw();
+        }
+        return;
+      }
+
       // H/V lines are single-click tools.
       if (isTap && (tool === "hline" || tool === "vline")) {
         const pt = fromXY(x, y);
@@ -1077,27 +1110,33 @@ export function Chart({
   }, []);
 
   useEffect(() => {
+    // Keep the local tool in sync with a parent-controlled prop, while still
+    // allowing the built-in toolbar to change the tool immediately.
+    setLocalDrawTool(drawTool);
+  }, [drawTool]);
+
+  useEffect(() => {
     const handles = handlesRef.current;
     if (!handles) return;
     handles.chart.applyOptions({
       crosshair: {
         mode: CrosshairMode.Normal,
-        vertLine: { visible: drawTool !== "none" },
-        horzLine: { visible: drawTool !== "none" },
+        vertLine: { visible: activeDrawTool !== "none" },
+        horzLine: { visible: activeDrawTool !== "none" },
       },
     });
     stepsRef.current = [];
-    if (drawTool === "trendline") setHint("Double-click two points (or tap-tap on phone)");
-    else if (drawTool === "rectangle") setHint("Double-click two corners (or tap-tap on phone)");
-    else if (drawTool === "measure") setHint("Click a point, move, then click again to measure");
-    else if (drawTool === "fib") setHint("Double-click two points (or tap-tap on phone)");
-    else if (drawTool === "hline") setHint("Click to place horizontal line");
-    else if (drawTool === "vline") setHint("Click to place vertical line");
-    else if (drawTool === "long" || drawTool === "short") {
+    if (activeDrawTool === "trendline") setHint("Double-click two points (or tap-tap on phone)");
+    else if (activeDrawTool === "rectangle") setHint("Double-click two corners (or tap-tap on phone)");
+    else if (activeDrawTool === "measure") setHint("Click a point, move, then click again to measure");
+    else if (activeDrawTool === "fib") setHint("Double-click two points (or tap-tap on phone)");
+    else if (activeDrawTool === "hline") setHint("Click to place horizontal line");
+    else if (activeDrawTool === "vline") setHint("Click to place vertical line");
+    else if (activeDrawTool === "long" || activeDrawTool === "short") {
       /* hint set in spawnDraft */
     } else setHint("");
     scheduleRedraw();
-  }, [drawTool]);
+  }, [activeDrawTool]);
 
   useEffect(() => {
     const handles = handlesRef.current;
@@ -1131,8 +1170,10 @@ export function Chart({
       <Toolbar
         tool={drawTool}
         onToolChange={(tool) => {
-          if (onDrawToolChange) onDrawToolChange(tool);
-          else window.dispatchEvent(new CustomEvent("tr-draw-tool-change", { detail: tool }));
+          // Update locally first so the in-chart toolbar always works, even
+          // if the parent callback is delayed or absent.
+          setLocalDrawTool(tool);
+          onDrawToolChange?.(tool);
         }}
       />
       <div ref={containerRef} className="chart" style={{ width: "100%", height: "100%" }} />
