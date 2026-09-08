@@ -135,6 +135,7 @@ export function Chart({
   const orderTypeRef = useRef(orderType);
   const marketRef = useRef({ price: marketPrice, time: marketTime });
   const followRef = useRef(followPrice);
+  const selectedShapeIdRef = useRef(selectedShapeId);
   const crosshairRef = useRef<ChartPoint | null>(null);
   const stepsRef = useRef<ChartPoint[]>([]);
   const rafRef = useRef<number | null>(null);
@@ -156,6 +157,7 @@ export function Chart({
   orderTypeRef.current = orderType;
   marketRef.current = { price: marketPrice, time: marketTime };
   followRef.current = followPrice;
+  selectedShapeIdRef.current = selectedShapeId;
 
   function scheduleRedraw() {
     if (rafRef.current != null) return;
