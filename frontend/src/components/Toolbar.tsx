@@ -1,10 +1,6 @@
 import type { DrawTool } from "./Chart";
 
-type ToolDef = {
-  id: DrawTool;
-  label: string;
-  icon: JSX.Element;
-};
+type ToolDef = { id: DrawTool; label: string; icon: JSX.Element };
 
 const iconProps = {
   width: 18,
@@ -112,46 +108,21 @@ export function Toolbar({
   hasSelection?: boolean;
 }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 4,
-        padding: 6,
-        background: "#0b0f14",
-        border: "1px solid #202a35",
-        borderRadius: 8,
-        width: 44,
-      }}
-    >
+    <div className="tv-toolbar">
       {TOOLS.map((t) => (
         <ToolButton key={t.id} tool={t} active={activeTool === t.id} onClick={() => onToolChange(t.id)} />
       ))}
-
-      <div style={{ height: 1, background: "#202a35", margin: "4px 2px" }} />
-
+      <div className="tv-sep" />
       {POSITION_TOOLS.map((t) => (
         <ToolButton key={t.id} tool={t} active={activeTool === t.id} onClick={() => onToolChange(t.id)} />
       ))}
-
-      <div style={{ height: 1, background: "#202a35", margin: "4px 2px" }} />
-
+      <div className="tv-sep" />
       <button
+        type="button"
         title="Delete selected shape"
+        className="tv-tool tv-tool-danger"
         onClick={onDeleteSelected}
         disabled={!hasSelection}
-        style={{
-          width: 32,
-          height: 32,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "transparent",
-          border: "none",
-          borderRadius: 6,
-          color: hasSelection ? "#ef5350" : "#3a4552",
-          cursor: hasSelection ? "pointer" : "not-allowed",
-        }}
       >
         {ICONS.trash}
       </button>
@@ -159,31 +130,13 @@ export function Toolbar({
   );
 }
 
-function ToolButton({
-  tool,
-  active,
-  onClick,
-}: {
-  tool: ToolDef;
-  active: boolean;
-  onClick: () => void;
-}) {
+function ToolButton({ tool, active, onClick }: { tool: ToolDef; active: boolean; onClick: () => void }) {
   return (
     <button
+      type="button"
       title={tool.label}
+      className={`tv-tool${active ? " active" : ""}`}
       onClick={onClick}
-      style={{
-        width: 32,
-        height: 32,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: active ? "#263442" : "transparent",
-        border: "none",
-        borderRadius: 6,
-        color: active ? "#fbbf24" : "#cdd7e3",
-        cursor: "pointer",
-      }}
     >
       {tool.icon}
     </button>
