@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Chart, type DrawTool, type OrderType, type Shape } from "../components/Chart";
+import { Toolbar } from "../components/Toolbar";
 import { fetchBars } from "../lib/api";
 import { cacheGetRange, cachePutBars } from "../lib/barCache";
 import { generateDemoBars, readCsvFile } from "../lib/demoData";
 import { aggregateVisible } from "../lib/replay";
+import { useReplayHotkeys } from "../lib/useReplayHotkeys";
 import { SYMBOLS, TIMEFRAMES, formatTf } from "../lib/types";
 import type { Bar } from "../lib/types";
 
@@ -36,7 +38,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     return [];
   });
   const [tfOpen, setTfOpen] = useState(false);
-  const [toolsOpen, setToolsOpen] = useState(false);
+  const [ordersOpen, setOrdersOpen] = useState(false);
   const [customTfInput, setCustomTfInput] = useState("");
   const [start, setStart] = useState(isoDaysAgo(3));
   const [end, setEnd] = useState(isoDaysAgo(0));
@@ -49,7 +51,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [followPrice, setFollowPrice] = useState(false);
   const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
   const tfPanelRef = useRef<HTMLDivElement | null>(null);
-  const toolsPanelRef = useRef<HTMLDivElement | null>(null);
+  const ordersPanelRef = useRef<HTMLDivElement | null>(null);
 
   const allTfs = useMemo(() => {
     const set = new Set<number>([...DEFAULT_TFS, ...customTfs, timeframeSeconds]);
@@ -86,13 +88,25 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     function onDoc(e: MouseEvent) {
       const t = e.target as Node;
       if (tfOpen && tfPanelRef.current && !tfPanelRef.current.contains(t)) setTfOpen(false);
-      if (toolsOpen && toolsPanelRef.current && !toolsPanelRef.current.contains(t)) {
-        // keep tools open if clicking chart for drawing
-      }
+      if (ordersOpen && ordersPanelRef.current && !ordersPanelRef.current.contains(t)) setOrdersOpen(false);
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, [tfOpen, toolsOpen]);
+  }, [tfOpen, ordersOpen]);
+
+  // Space = play/pause, ArrowRight/ArrowLeft = step one second. Ignored
+  // while typing in an input (symbol search, custom TF box, etc).
+  useReplayHotkeys({
+    onTogglePlay: () => setPlaying((p) => (p ? false : cursor < baseBars.length ? true : p)),
+    onStepForward: () => {
+      setPlaying(false);
+      setCursor((c) => Math.min(baseBars.length, c + 1));
+    },
+    onStepBack: () => {
+      setPlaying(false);
+      setCursor((c) => Math.max(1, c - 1));
+    },
+  });
 
   async function loadRange() {
     setLoading(true);
@@ -214,9 +228,13 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
 
   function pickTool(t: DrawTool) {
     setDrawTool(t);
-    if (t === "long" || t === "short" || t === "trendline" || t === "rectangle") {
-      setToolsOpen(true);
-    }
+    if (t === "long" || t === "short") setOrdersOpen(true);
+  }
+
+  function deleteSelectedShape() {
+    if (!selectedShapeId) return;
+    setShapes((prev) => prev.filter((s) => s.id !== selectedShapeId));
+    setSelectedShapeId(null);
   }
 
   const visibleBars = useMemo(
@@ -225,10 +243,11 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   );
   const currentBase = baseBars[Math.max(0, cursor - 1)];
   const max = Math.max(1, baseBars.length);
+  const atEnd = cursor >= baseBars.length;
 
   return (
     <section className="replay-view">
-      {/* Compact top: symbol + TF dropdown + Tools + data */}
+      {/* Compact top: symbol + TF dropdown + Orders + data */}
       <div className="bar replay-topbar mobile-scroll">
         <select value={symbol} onChange={(e) => { setSymbol(e.target.value); setPlaying(false); }}>
           {SYMBOLS.map((s) => (
@@ -271,21 +290,12 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           )}
         </div>
 
-        <div className="tools-wrap" ref={toolsPanelRef}>
-          <button
-            type="button"
-            className={toolsOpen ? "on" : ""}
-            onClick={() => setToolsOpen((v) => !v)}
-          >
-            Tools ▾
+        <div className="tools-wrap" ref={ordersPanelRef}>
+          <button type="button" className={ordersOpen ? "on" : ""} onClick={() => setOrdersOpen((v) => !v)}>
+            Orders ▾
           </button>
-          {toolsOpen && (
+          {ordersOpen && (
             <div className="tools-panel">
-              <button type="button" className={drawTool === "crosshair" ? "on" : ""} onClick={() => pickTool("crosshair")}>Crosshair</button>
-              <button type="button" className={drawTool === "trendline" ? "on" : ""} onClick={() => pickTool("trendline")}>Trendline</button>
-              <button type="button" className={drawTool === "rectangle" ? "on" : ""} onClick={() => pickTool("rectangle")}>Rectangle</button>
-              <button type="button" className={drawTool === "long" ? "on green" : "green"} onClick={() => pickTool("long")}>Long</button>
-              <button type="button" className={drawTool === "short" ? "on red" : "red"} onClick={() => pickTool("short")}>Short</button>
               <select value={orderType} onChange={(e) => setOrderType(e.target.value as OrderType)}>
                 <option value="market">Market</option>
                 <option value="buy_limit">Buy Limit</option>
@@ -298,7 +308,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
               <button type="button" className="on" onClick={() => window.dispatchEvent(new Event("tr-confirm-position"))}>Confirm</button>
               <button type="button" onClick={() => window.dispatchEvent(new Event("tr-cancel-draft"))}>Cancel draft</button>
               <button type="button" onClick={() => { setShapes([]); setSelectedShapeId(null); }}>Clear drawings</button>
-              <p className="tools-note">Drawings stay selectable: drag handles to edit. Trend/Rect: double-click two points, then drag ends.</p>
+              <p className="tools-note">Pick Long/Short on the chart toolbar, set an order type here, then Confirm.</p>
             </div>
           )}
         </div>
@@ -324,6 +334,12 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       </div>
 
       <div className="chartbox">
+        <Toolbar
+          activeTool={drawTool}
+          onToolChange={pickTool}
+          hasSelection={!!selectedShapeId}
+          onDeleteSelected={deleteSelectedShape}
+        />
         <Chart
           bars={visibleBars}
           cursor={visibleBars.length}
@@ -340,13 +356,20 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       </div>
 
       <div className="replay mobile-scroll">
-        <button onClick={() => setPlaying(false)}>Pause</button>
-        <button onClick={() => setPlaying(true)} disabled={cursor >= baseBars.length}>Play</button>
+        <button
+          type="button"
+          className="on"
+          onClick={() => setPlaying((p) => !p)}
+          disabled={!playing && atEnd}
+          title="Space"
+        >
+          {playing ? "⏸ Pause" : "▶ Play"}
+        </button>
         <button type="button" className={followPrice ? "on" : ""} onClick={() => setFollowPrice((v) => !v)}>
           {followPrice ? "Follow ON" : "Follow OFF"}
         </button>
-        <button onClick={() => setCursor((c) => Math.max(1, c - 1))}>Prev</button>
-        <button onClick={() => setCursor((c) => Math.min(baseBars.length, c + 1))}>Next</button>
+        <button onClick={() => { setPlaying(false); setCursor((c) => Math.max(1, c - 1)); }} title="←">Prev</button>
+        <button onClick={() => { setPlaying(false); setCursor((c) => Math.min(baseBars.length, c + 1)); }} title="→">Next</button>
         <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
           {[0.25, 0.5, 1, 2, 5, 10].map((s) => (
             <option key={s} value={s}>{s}x</option>
@@ -358,7 +381,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
 
       <aside className="replay-info">
         <p>{currentBase ? new Date(currentBase.time * 1000).toLocaleString() : "—"}</p>
-        <p>TF {formatTf(timeframeSeconds)} · {visibleBars.length} candles</p>
+        <p>TF {formatTf(timeframeSeconds)} · {visibleBars.length} candles · Space play/pause · ←/→ step</p>
       </aside>
     </section>
   );
