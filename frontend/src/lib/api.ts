@@ -85,3 +85,49 @@ export async function deleteSession(name: string) {
     { method: "DELETE" }
   );
 }
+
+export type Trade = {
+  id: string;
+  symbol: string;
+  direction: "long" | "short";
+  entry_price: number;
+  exit_price: number;
+  size: number;
+  stop_price?: number | null;
+  take_profit_price?: number | null;
+  opened_at?: number | null;
+  closed_at?: number | null;
+  notes: string;
+};
+
+export type TradeStats = {
+  total: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  avg_r: number | null;
+  total_r: number | null;
+  best_r: number | null;
+  worst_r: number | null;
+};
+
+export async function fetchTrades() {
+  return request<{ trades: Trade[] }>("/api/journal");
+}
+
+export async function fetchTradeStats() {
+  return request<TradeStats>("/api/journal/stats");
+}
+
+export async function addTrade(t: Omit<Trade, "id">) {
+  return request<{ ok: boolean; trades: Trade[] }>("/api/journal", {
+    method: "POST",
+    body: JSON.stringify(t),
+  });
+}
+
+export async function deleteTrade(id: string) {
+  return request<{ ok: boolean; trades: Trade[] }>(`/api/journal/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
