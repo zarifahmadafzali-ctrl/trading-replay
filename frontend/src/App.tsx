@@ -4,6 +4,7 @@ import { ReplayView } from "./views/ReplayView";
 import { WatchlistView } from "./views/WatchlistView";
 import { SessionView } from "./views/SessionView";
 import { DataEngineView } from "./views/DataEngineView";
+import { JournalView } from "./views/JournalView";
 import { checkHealth } from "./lib/api";
 import type { ViewName } from "./lib/types";
 
@@ -34,9 +35,10 @@ export function App() {
         {view === "replay" && <ReplayView backendOnline={backendOnline} />}
         {view === "watchlist" && <WatchlistView backendOnline={backendOnline} />}
         {view === "session" && <SessionView backendOnline={backendOnline} />}
+        {view === "journal" && <JournalView backendOnline={backendOnline} />}
         {view === "dataEngine" && <DataEngineView backendOnline={backendOnline} />}
       </main>
-      <footer>Paper Trading Only · PWA · Data Engine v3.1</footer>
+      <footer>Paper Trading Only · PWA · Data Engine v3.2</footer>
     </div>
   );
 }
