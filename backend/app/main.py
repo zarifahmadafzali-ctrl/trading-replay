@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from .aggregation import aggregate
 from .data import cache_days, load, load_1s_range, save, save_day
+from .journal import TradeIn, compute_stats, new_trade_record
 from .providers.dukascopy import ticks, ticks_to_seconds
 
 app = FastAPI(title="Trading Replay Data Engine", version="3.2")
@@ -146,3 +147,24 @@ def save_session(payload: SessionPayload):
 @app.delete("/api/sessions/{name}")
 def delete_session(name: str):
     sessions = [s for s in load("sessions", []) if s["name"] != name]; save("sessions", sessions); return {"ok": True, "sessions": sessions}
+
+@app.get("/api/journal")
+def list_trades():
+    return {"trades": load("journal", [])}
+
+@app.post("/api/journal")
+def log_trade(trade: TradeIn):
+    trades = load("journal", [])
+    trades.append(new_trade_record(trade))
+    save("journal", trades)
+    return {"ok": True, "trades": trades}
+
+@app.delete("/api/journal/{trade_id}")
+def remove_trade(trade_id: str):
+    trades = [t for t in load("journal", []) if t["id"] != trade_id]
+    save("journal", trades)
+    return {"ok": True, "trades": trades}
+
+@app.get("/api/journal/stats")
+def journal_stats():
+    return compute_stats(load("journal", []))
