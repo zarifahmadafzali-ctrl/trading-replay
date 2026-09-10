@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Chart, type DrawTool, type OrderType, type Shape } from "../components/Chart";
+import { Chart, type ClosedPosition, type DrawTool, type IndicatorSpec, type OrderType, type Shape } from "../components/Chart";
 import { Toolbar } from "../components/Toolbar";
-import { fetchBars } from "../lib/api";
+import { fetchBars, addTrade } from "../lib/api";
 import { cacheGetRange, cachePutBars } from "../lib/barCache";
 import { generateDemoBars, readCsvFile } from "../lib/demoData";
 import { aggregateVisible } from "../lib/replay";
@@ -22,6 +22,23 @@ function toLocalInputValue(unixSec: number): string {
 }
 
 const DEFAULT_TFS = TIMEFRAMES.map((t) => t.seconds);
+
+const INDICATOR_DEFS: { id: string; label: string; kind: IndicatorSpec["kind"]; period?: number; color: string }[] = [
+  { id: "sma20", label: "SMA 20", kind: "sma", period: 20, color: "#60a5fa" },
+  { id: "sma50", label: "SMA 50", kind: "sma", period: 50, color: "#f97316" },
+  { id: "ema20", label: "EMA 20", kind: "ema", period: 20, color: "#34d399" },
+  { id: "ema50", label: "EMA 50", kind: "ema", period: 50, color: "#c084fc" },
+  { id: "vwap", label: "VWAP", kind: "vwap", color: "#fbbf24" },
+];
+
+function loadShapesFor(symbol: string): Shape[] {
+  try {
+    const raw = localStorage.getItem(`tr-shapes-${symbol}`);
+    return raw ? (JSON.parse(raw) as Shape[]) : [];
+  } catch {
+    return [];
+  }
+}
 
 export function ReplayView({ backendOnline }: { backendOnline: boolean | null }) {
   const [baseBars, setBaseBars] = useState<Bar[]>(() => generateDemoBars());
@@ -46,12 +63,21 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [loading, setLoading] = useState(false);
   const [drawTool, setDrawTool] = useState<DrawTool>("crosshair");
   const [goToValue, setGoToValue] = useState("");
-  const [shapes, setShapes] = useState<Shape[]>([]);
+  const [shapes, setShapes] = useState<Shape[]>(() => loadShapesFor(SYMBOLS[0]));
   const [orderType, setOrderType] = useState<OrderType>("market");
   const [followPrice, setFollowPrice] = useState(false);
   const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
+  const [activeIndicatorIds, setActiveIndicatorIds] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem("tr-indicators");
+      if (raw) return JSON.parse(raw) as string[];
+    } catch { /* */ }
+    return [];
+  });
+  const [indOpen, setIndOpen] = useState(false);
   const tfPanelRef = useRef<HTMLDivElement | null>(null);
   const ordersPanelRef = useRef<HTMLDivElement | null>(null);
+  const indPanelRef = useRef<HTMLDivElement | null>(null);
 
   const allTfs = useMemo(() => {
     const set = new Set<number>([...DEFAULT_TFS, ...customTfs, timeframeSeconds]);
@@ -63,6 +89,20 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       localStorage.setItem("tr-custom-tfs", JSON.stringify(customTfs));
     } catch { /* */ }
   }, [customTfs]);
+
+  // Drawings persist per symbol so switching symbols (or refreshing) never
+  // silently loses trend lines / levels / measurements you've placed.
+  useEffect(() => {
+    try {
+      localStorage.setItem(`tr-shapes-${symbol}`, JSON.stringify(shapes));
+    } catch { /* */ }
+  }, [shapes, symbol]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("tr-indicators", JSON.stringify(activeIndicatorIds));
+    } catch { /* */ }
+  }, [activeIndicatorIds]);
 
   useEffect(() => {
     if (!playing) return;
@@ -89,10 +129,11 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       const t = e.target as Node;
       if (tfOpen && tfPanelRef.current && !tfPanelRef.current.contains(t)) setTfOpen(false);
       if (ordersOpen && ordersPanelRef.current && !ordersPanelRef.current.contains(t)) setOrdersOpen(false);
+      if (indOpen && indPanelRef.current && !indPanelRef.current.contains(t)) setIndOpen(false);
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, [tfOpen, ordersOpen]);
+  }, [tfOpen, ordersOpen, indOpen]);
 
   // Space = play/pause, ArrowRight/ArrowLeft = step one second. Ignored
   // while typing in an input (symbol search, custom TF box, etc).
@@ -226,6 +267,41 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     setMessage(`Timeframe ${formatTf(sec)} added`);
   }
 
+  function handleSymbolChange(next: string) {
+    setSymbol(next);
+    setPlaying(false);
+    setShapes(loadShapesFor(next));
+    setSelectedShapeId(null);
+  }
+
+  function toggleIndicator(id: string) {
+    setActiveIndicatorIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  
+  async function handlePositionClosed(closed: ClosedPosition) {
+    const note = `auto-${closed.reason} · ${closed.pnlPoints >= 0 ? "+" : ""}${closed.pnlPoints.toFixed(2)} pts`;
+    setMessage(
+      `Closed ${closed.side.toUpperCase()} on ${closed.reason.toUpperCase()} @ ${closed.exitPrice.toFixed(2)} (${closed.pnlPoints >= 0 ? "+" : ""}${closed.pnlPoints.toFixed(2)})`
+    );
+    try {
+      await addTrade({
+        symbol,
+        direction: closed.side,
+        entry_price: closed.entry.price,
+        exit_price: closed.exitPrice,
+        size: 1,
+        stop_price: closed.stop.price,
+        take_profit_price: closed.takeProfit.price,
+        opened_at: closed.entry.time,
+        closed_at: closed.exitTime,
+        notes: note,
+      });
+    } catch {
+      // backend offline — still keep chart closed; user can log manually in Journal
+    }
+  }
+
   function pickTool(t: DrawTool) {
     setDrawTool(t);
     if (t === "long" || t === "short") setOrdersOpen(true);
@@ -241,6 +317,16 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     () => aggregateVisible(baseBars, cursor, timeframeSeconds),
     [baseBars, cursor, timeframeSeconds]
   );
+  const indicators: IndicatorSpec[] = useMemo(
+    () =>
+      INDICATOR_DEFS.filter((d) => activeIndicatorIds.includes(d.id)).map((d) => ({
+        id: d.id,
+        kind: d.kind,
+        period: d.period,
+        color: d.color,
+      })),
+    [activeIndicatorIds]
+  );
   const currentBase = baseBars[Math.max(0, cursor - 1)];
   const max = Math.max(1, baseBars.length);
   const atEnd = cursor >= baseBars.length;
@@ -249,7 +335,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     <section className="replay-view">
       {/* Compact top: symbol + TF dropdown + Orders + data */}
       <div className="bar replay-topbar mobile-scroll">
-        <select value={symbol} onChange={(e) => { setSymbol(e.target.value); setPlaying(false); }}>
+        <select value={symbol} onChange={(e) => handleSymbolChange(e.target.value)}>
           {SYMBOLS.map((s) => (
             <option key={s} value={s}>{s}</option>
           ))}
@@ -286,6 +372,28 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                 />
                 <button type="button" className="on" onClick={addCustomTf}>Add</button>
               </div>
+            </div>
+          )}
+        </div>
+
+        <div className="tools-wrap" ref={indPanelRef}>
+          <button type="button" className={indOpen ? "on" : ""} onClick={() => setIndOpen((v) => !v)}>
+            Ind ▾
+          </button>
+          {indOpen && (
+            <div className="tools-panel">
+              {INDICATOR_DEFS.map((d) => (
+                <label key={d.id} className="ind-row">
+                  <input
+                    type="checkbox"
+                    checked={activeIndicatorIds.includes(d.id)}
+                    onChange={() => toggleIndicator(d.id)}
+                  />
+                  <span className="ind-swatch" style={{ background: d.color }} />
+                  {d.label}
+                </label>
+              ))}
+              <p className="tools-note">Overlays recompute live as you replay.</p>
             </div>
           )}
         </div>
@@ -352,6 +460,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           onShapesChange={setShapes}
           selectedShapeId={selectedShapeId}
           onSelectedShapeId={setSelectedShapeId}
+          onPositionClosed={handlePositionClosed}
+          indicators={indicators}
         />
       </div>
 
