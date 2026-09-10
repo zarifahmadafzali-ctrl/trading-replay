@@ -3,6 +3,7 @@ import {
   createChart,
   CandlestickSeries,
   HistogramSeries,
+  LineSeries,
   CrosshairMode,
   type IChartApi,
   type ISeriesApi,
@@ -10,6 +11,10 @@ import {
   type MouseEventParams,
 } from "lightweight-charts";
 import type { Bar } from "../lib/types";
+import { ema, sma, vwap } from "../lib/indicators";
+
+export type IndicatorKind = "sma" | "ema" | "vwap" | "rsi";
+export type IndicatorSpec = { id: string; kind: IndicatorKind; period?: number; color: string };
 
 type ChartHandles = {
   chart: IChartApi;
@@ -90,6 +95,19 @@ export type PositionShape = {
   entry: ChartPoint;
   stop: ChartPoint;
   takeProfit: ChartPoint;
+};
+
+export type ClosedPosition = {
+  id: string;
+  side: "long" | "short";
+  orderType: OrderType;
+  entry: ChartPoint;
+  stop: ChartPoint;
+  takeProfit: ChartPoint;
+  exitPrice: number;
+  exitTime: number;
+  reason: "sl" | "tp";
+  pnlPoints: number;
 };
 
 export type Shape = TrendlineShape | RectangleShape | MeasureShape | HLineShape | VLineShape | FibShape | PositionShape;
@@ -180,6 +198,8 @@ export function Chart({
   onShapesChange,
   selectedShapeId = null,
   onSelectedShapeId,
+  onPositionClosed,
+  indicators = [],
 }: {
   bars: Bar[];
   cursor: number;
@@ -193,10 +213,13 @@ export function Chart({
   onShapesChange: (next: Shape[]) => void;
   selectedShapeId?: string | null;
   onSelectedShapeId?: (id: string | null) => void;
+  onPositionClosed?: (closed: ClosedPosition) => void;
+  indicators?: IndicatorSpec[];
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
   const handlesRef = useRef<ChartHandles | null>(null);
+  const indicatorSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
   const shapesRef = useRef(shapes);
   const drawToolRef = useRef(drawTool);
   const orderTypeRef = useRef(orderType);
@@ -211,6 +234,8 @@ export function Chart({
   onShapesChangeRef.current = onShapesChange;
   const onSelectedShapeIdRef = useRef(onSelectedShapeId);
   onSelectedShapeIdRef.current = onSelectedShapeId;
+  const onPositionClosedRef = useRef(onPositionClosed);
+  onPositionClosedRef.current = onPositionClosed;
   // Screen-space hit area for the on-canvas "×" delete button drawn next to
   // whichever trendline/rectangle/measure shape is currently selected.
   const deleteButtonRef = useRef<{ id: string; x: number; y: number; r: number } | null>(null);
@@ -579,9 +604,15 @@ export function Chart({
         const rr = riskReward(s.entry.price, s.stop.price, s.takeProfit.price);
         const rrText = rr != null ? ` · R:R 1:${rr.toFixed(2)}` : "";
         const st = draft ? "DRAFT" : "OPEN";
+        let liveText = "";
+        if (!draft && marketRef.current.price != null) {
+          const px = marketRef.current.price;
+          const live = long ? px - s.entry.price : s.entry.price - px;
+          liveText = ` · ${live >= 0 ? "+" : ""}${live.toFixed(2)}`;
+        }
         ctx.fillStyle = entryColor;
         ctx.fillText(
-          `${st} ${s.side.toUpperCase()} ${s.orderType} @ ${s.entry.price.toFixed(2)}${rrText}`,
+          `${st} ${s.side.toUpperCase()} ${s.orderType} @ ${s.entry.price.toFixed(2)}${rrText}${liveText}`,
           8,
           Math.max(14, E.y - 8)
         );
@@ -1054,6 +1085,7 @@ export function Chart({
       chart.unsubscribeCrosshairMove(onMove);
       chart.remove();
       handlesRef.current = null;
+      indicatorSeriesRef.current.clear();
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     };
   }, []);
@@ -1103,6 +1135,101 @@ export function Chart({
     }
     scheduleRedraw();
   }, [bars, cursor, followPrice]);
+
+  // Create/destroy one Line series per indicator spec as the list changes.
+  useEffect(() => {
+    const handles = handlesRef.current;
+    if (!handles) return;
+    const existing = indicatorSeriesRef.current;
+    const wantIds = new Set(indicators.map((s) => s.id));
+
+    for (const [id, series] of existing) {
+      if (!wantIds.has(id)) {
+        handles.chart.removeSeries(series);
+        existing.delete(id);
+      }
+    }
+    for (const spec of indicators) {
+      if (!existing.has(spec.id)) {
+        const series = handles.chart.addSeries(LineSeries, {
+          color: spec.color,
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        existing.set(spec.id, series);
+      }
+    }
+    return () => {
+      // Full cleanup happens in the chart-teardown effect below; this effect
+      // only reconciles the set of series while the chart itself is alive.
+    };
+  }, [indicators]);
+
+  // Recompute indicator values whenever the visible bars or indicator list change.
+  useEffect(() => {
+    const visible = bars.slice(0, cursor);
+    for (const spec of indicators) {
+      const series = indicatorSeriesRef.current.get(spec.id);
+      if (!series) continue;
+      const points =
+        spec.kind === "sma"
+          ? sma(visible, spec.period ?? 20)
+          : spec.kind === "ema"
+          ? ema(visible, spec.period ?? 20)
+          : vwap(visible);
+      series.setData(points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+    }
+  }, [bars, cursor, indicators]);
+
+  // Auto-close when replay high/low hits SL or TP
+  useEffect(() => {
+    const price = marketPrice;
+    const time = marketTime;
+    if (price == null || time == null) return;
+
+    const openOnes = shapesRef.current.filter(
+      (s): s is PositionShape => s.kind === "position" && s.status === "open"
+    );
+    if (!openOnes.length) return;
+
+    const lastBar = bars.length ? bars[Math.min(bars.length, Math.max(cursor, 1)) - 1] : null;
+    const hi = lastBar?.high ?? price;
+    const lo = lastBar?.low ?? price;
+
+    const remaining: Shape[] = [];
+    const closed: ClosedPosition[] = [];
+
+    for (const s of shapesRef.current) {
+      if (s.kind !== "position" || s.status !== "open") {
+        remaining.push(s);
+        continue;
+      }
+      const long = s.side === "long";
+      let reason: "sl" | "tp" | null = null;
+      let exitPrice = price;
+      if (long) {
+        if (lo <= s.stop.price) { reason = "sl"; exitPrice = s.stop.price; }
+        else if (hi >= s.takeProfit.price) { reason = "tp"; exitPrice = s.takeProfit.price; }
+      } else {
+        if (hi >= s.stop.price) { reason = "sl"; exitPrice = s.stop.price; }
+        else if (lo <= s.takeProfit.price) { reason = "tp"; exitPrice = s.takeProfit.price; }
+      }
+      if (!reason) {
+        remaining.push(s);
+        continue;
+      }
+      const pnlPoints = long ? exitPrice - s.entry.price : s.entry.price - exitPrice;
+      closed.push({
+        id: s.id, side: s.side, orderType: s.orderType, entry: s.entry, stop: s.stop,
+        takeProfit: s.takeProfit, exitPrice, exitTime: time, reason, pnlPoints,
+      });
+    }
+    if (!closed.length) return;
+    onShapesChangeRef.current(remaining);
+    for (const c of closed) onPositionClosedRef.current?.(c);
+    setHint(closed.map((c) => `${c.side.toUpperCase()} ${c.reason.toUpperCase()} @ ${c.exitPrice.toFixed(2)}`).join(" · "));
+  }, [marketPrice, marketTime, bars, cursor]);
 
   useEffect(() => {
     scheduleRedraw();
