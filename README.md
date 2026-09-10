@@ -71,3 +71,19 @@ The chart timeframe changes, but the replay clock stays at one second.
 ## Safety
 
 The application is a **paper-trading simulator**. It does not place live orders.
+
+## v3.14.1 replay execution fixes
+
+- Position tool renders correctly on aggregated display timeframes even when the true market entry timestamp is inside a 5s/1m/5m candle. Stored Market Entry remains the exact replay price/time.
+- SL/TP execution uses the exact 1-second replay source bar, not the displayed timeframe candle.
+- If both SL and TP are touched in the same 1-second OHLC bar, SL is selected deterministically because OHLC does not reveal intrasecond ordering.
+- Auto-closed replay positions are written immediately to the device Journal and then best-effort synced to the backend.
+- Journal now works as a single local-first Journal when the backend is offline; manual entries are also stored locally.
+- RSI remains intentionally deferred.
+
+## v3.15.0 custom timeframe replay
+
+- Added `3m` as a first-class preset timeframe alongside the existing 1m/2m/5m/15m/30m/1H/4H/1D.
+- Arbitrary custom timeframes (e.g. `90s`, `7m`, `10m`) were already supported via the "Custom" box in the TF dropdown (regex-parsed, persisted to localStorage) — unchanged, just confirmed working.
+- Added `frontend/src/lib/timeframe.ts`: a thin, documented re-export of `aggregateBars`/`aggregateVisible` from `replay.ts` under a dedicated, discoverable name for this feature. No aggregation logic was duplicated — `replay.ts` remains the single implementation, avoiding drift between two copies of the same math.
+- No changes to the Position Tool, Journal, drawing system, backend, or core replay engine — display timeframe (`bars`) and execution (`replayBar`, the true 1-second bar) were already architecturally separate in v3.14.1 and remain so.

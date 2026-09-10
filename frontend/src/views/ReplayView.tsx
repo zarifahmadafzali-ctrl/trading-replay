@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Chart, type ClosedPosition, type DrawTool, type IndicatorSpec, type OrderType, type Shape } from "../components/Chart";
 import { Toolbar } from "../components/Toolbar";
 import { fetchBars, addTrade } from "../lib/api";
+import { appendTrade, rMultiple } from "../lib/journal";
 import { cacheGetRange, cachePutBars } from "../lib/barCache";
 import { generateDemoBars, readCsvFile } from "../lib/demoData";
 import { aggregateVisible } from "../lib/replay";
@@ -281,8 +282,27 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   
   async function handlePositionClosed(closed: ClosedPosition) {
     const note = `auto-${closed.reason} · ${closed.pnlPoints >= 0 ? "+" : ""}${closed.pnlPoints.toFixed(2)} pts`;
+    const localTrade = {
+      id: `replay-${closed.id}-${closed.exitTime}`,
+      symbol,
+      side: closed.side,
+      orderType: closed.orderType,
+      entryPrice: closed.entry.price,
+      exitPrice: closed.exitPrice,
+      stopPrice: closed.stop.price,
+      takeProfitPrice: closed.takeProfit.price,
+      entryTime: closed.entry.time,
+      exitTime: closed.exitTime,
+      reason: closed.reason,
+      pnlPoints: closed.pnlPoints,
+      rMultiple: rMultiple(closed.side, closed.entry.price, closed.stop.price, closed.exitPrice),
+      note,
+    };
+    // Local storage is the immediate source of truth, so an auto-closed replay
+    // trade is never lost just because the backend is sleeping/offline.
+    appendTrade(localTrade);
     setMessage(
-      `Closed ${closed.side.toUpperCase()} on ${closed.reason.toUpperCase()} @ ${closed.exitPrice.toFixed(2)} (${closed.pnlPoints >= 0 ? "+" : ""}${closed.pnlPoints.toFixed(2)})`
+      `Closed ${closed.side.toUpperCase()} on ${closed.reason.toUpperCase()} @ ${closed.exitPrice.toFixed(2)} (${closed.pnlPoints >= 0 ? "+" : ""}${closed.pnlPoints.toFixed(2)}) · Journal saved`
     );
     try {
       await addTrade({
@@ -298,7 +318,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         notes: note,
       });
     } catch {
-      // backend offline — still keep chart closed; user can log manually in Journal
+      // Local journal already contains the trade. Backend sync can fail safely.
     }
   }
 
@@ -455,6 +475,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           orderType={orderType}
           marketPrice={currentBase?.close ?? null}
           marketTime={currentBase?.time ?? null}
+          replayBar={currentBase ?? null}
           followPrice={followPrice}
           shapes={shapes}
           onShapesChange={setShapes}

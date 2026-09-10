@@ -193,6 +193,7 @@ export function Chart({
   orderType = "market",
   marketPrice = null,
   marketTime = null,
+  replayBar = null,
   followPrice = false,
   shapes,
   onShapesChange,
@@ -207,6 +208,8 @@ export function Chart({
   orderType?: OrderType;
   marketPrice?: number | null;
   marketTime?: number | null;
+  /** Exact 1-second bar at the replay cursor. Execution uses this, never the displayed/aggregated timeframe bar. */
+  replayBar?: Bar | null;
   /** If true, keep latest bar near the right edge while playing */
   followPrice?: boolean;
   shapes: Shape[];
@@ -224,6 +227,7 @@ export function Chart({
   const drawToolRef = useRef(drawTool);
   const orderTypeRef = useRef(orderType);
   const marketRef = useRef({ price: marketPrice, time: marketTime });
+  const replayBarRef = useRef<Bar | null>(replayBar);
   const followRef = useRef(followPrice);
   const selectedShapeIdRef = useRef(selectedShapeId);
   const crosshairRef = useRef<ChartPoint | null>(null);
@@ -255,6 +259,7 @@ export function Chart({
   drawToolRef.current = drawTool;
   orderTypeRef.current = orderType;
   marketRef.current = { price: marketPrice, time: marketTime };
+  replayBarRef.current = replayBar;
   followRef.current = followPrice;
   selectedShapeIdRef.current = selectedShapeId;
 
@@ -554,10 +559,17 @@ export function Chart({
         ctx.beginPath(); ctx.arc(B.x, B.y, r, 0, Math.PI * 2); ctx.fill();
         if (sel) drawDeleteButton(ctx, s.id, maxX + 14, Math.min(A.y, B.y) - 14);
       } else if (s.kind === "position") {
-        const E = toXY(s.entry);
-        const S = toXY(s.stop);
-        const T = toXY(s.takeProfit);
-        if (!E) continue;
+        // Position entry time is a true 1-second replay timestamp. On a 5m/15m
+        // display there may be no candle with that exact timestamp, so resolving
+        // entry through timeToCoordinate() can make the whole position disappear.
+        // Positions are horizontal, therefore only the price coordinate is needed.
+        const entryY = handlesRef.current!.candles.priceToCoordinate(s.entry.price);
+        const stopY = handlesRef.current!.candles.priceToCoordinate(s.stop.price);
+        const tpY = handlesRef.current!.candles.priceToCoordinate(s.takeProfit.price);
+        if (entryY == null) continue;
+        const E = { x: 0, y: entryY };
+        const S = stopY == null ? null : { x: 0, y: stopY };
+        const T = tpY == null ? null : { x: 0, y: tpY };
         const long = s.side === "long";
         const entryColor = long ? "#26a69a" : "#ef5350";
         const draft = s.status === "draft";
@@ -1182,20 +1194,20 @@ export function Chart({
     }
   }, [bars, cursor, indicators]);
 
-  // Auto-close when replay high/low hits SL or TP
+  // Execution engine: evaluate the exact 1-second replay bar, never the
+  // aggregated display timeframe. If both SL and TP are touched inside the
+  // same second, intrasecond ordering is unknowable from 1s OHLC, so we use
+  // a deterministic conservative rule: SL wins the tie.
   useEffect(() => {
+    const bar = replayBarRef.current;
     const price = marketPrice;
     const time = marketTime;
-    if (price == null || time == null) return;
+    if (!bar || price == null || time == null) return;
 
     const openOnes = shapesRef.current.filter(
       (s): s is PositionShape => s.kind === "position" && s.status === "open"
     );
     if (!openOnes.length) return;
-
-    const lastBar = bars.length ? bars[Math.min(bars.length, Math.max(cursor, 1)) - 1] : null;
-    const hi = lastBar?.high ?? price;
-    const lo = lastBar?.low ?? price;
 
     const remaining: Shape[] = [];
     const closed: ClosedPosition[] = [];
@@ -1205,9 +1217,16 @@ export function Chart({
         remaining.push(s);
         continue;
       }
+
+      // A market position is opened at the current replay price/time. Do not
+      // inspect earlier movement inside that same 1s source bar.
+      const sameSecondAsEntry = bar.time <= s.entry.time;
+      const hi = sameSecondAsEntry ? price : bar.high;
+      const lo = sameSecondAsEntry ? price : bar.low;
       const long = s.side === "long";
       let reason: "sl" | "tp" | null = null;
       let exitPrice = price;
+
       if (long) {
         if (lo <= s.stop.price) { reason = "sl"; exitPrice = s.stop.price; }
         else if (hi >= s.takeProfit.price) { reason = "tp"; exitPrice = s.takeProfit.price; }
@@ -1215,6 +1234,7 @@ export function Chart({
         if (hi >= s.stop.price) { reason = "sl"; exitPrice = s.stop.price; }
         else if (lo <= s.takeProfit.price) { reason = "tp"; exitPrice = s.takeProfit.price; }
       }
+
       if (!reason) {
         remaining.push(s);
         continue;
@@ -1229,7 +1249,7 @@ export function Chart({
     onShapesChangeRef.current(remaining);
     for (const c of closed) onPositionClosedRef.current?.(c);
     setHint(closed.map((c) => `${c.side.toUpperCase()} ${c.reason.toUpperCase()} @ ${c.exitPrice.toFixed(2)}`).join(" · "));
-  }, [marketPrice, marketTime, bars, cursor]);
+  }, [marketPrice, marketTime, replayBar]);
 
   useEffect(() => {
     scheduleRedraw();
