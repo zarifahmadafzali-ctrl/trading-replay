@@ -720,3 +720,20 @@ footer {
   .tv-toolbar { top: 6px; left: 6px; padding: 4px; }
   .tv-tool { width: 32px; height: 32px; }
 }
+
+/* --- Indicators dropdown --- */
+.ind-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ind-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
