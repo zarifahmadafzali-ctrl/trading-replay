@@ -245,16 +245,20 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   }, [cursor, baseBars]);
 
   // close panels on outside tap
+  // v3.15.2.2: pointerdown (not mousedown) unifies mouse/touch/pen into one
+  // consistent event so a tap on a just-rendered preset button inside an
+  // open panel is never mistaken for an outside click ahead of the
+  // button's own onClick handler.
   useEffect(() => {
-    function onDoc(e: MouseEvent) {
+    function onDoc(e: PointerEvent) {
       const t = e.target as Node;
       if (tfOpen && tfPanelRef.current && !tfPanelRef.current.contains(t)) setTfOpen(false);
       if (ordersOpen && ordersPanelRef.current && !ordersPanelRef.current.contains(t)) setOrdersOpen(false);
       if (indOpen && indPanelRef.current && !indPanelRef.current.contains(t)) setIndOpen(false);
       if (stepOpen && stepPanelRef.current && !stepPanelRef.current.contains(t)) setStepOpen(false);
     }
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    document.addEventListener("pointerdown", onDoc);
+    return () => document.removeEventListener("pointerdown", onDoc);
   }, [tfOpen, ordersOpen, indOpen, stepOpen]);
 
   // Space = play/pause, ArrowRight/ArrowLeft = step one second. Ignored
@@ -390,11 +394,16 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       setMessage("Custom TF invalid · examples: 3m, 90s, 2h");
       return;
     }
+    const alreadyExisted = DEFAULT_TFS.includes(sec) || customTfs.includes(sec);
     setCustomTfs((prev) => (prev.includes(sec) ? prev : [...prev, sec].sort((a, b) => a - b)));
     setTimeframeSeconds(sec);
     setCustomTfInput("");
     setTfOpen(false);
-    setMessage(`Timeframe ${formatTf(sec)} added`);
+    setMessage(
+      alreadyExisted
+        ? `Timeframe ${formatTf(sec)} selected`
+        : `Timeframe ${formatTf(sec)} added`
+    );
   }
 
   function handleSymbolChange(next: string) {
@@ -553,7 +562,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
             TF {formatTf(timeframeSeconds)} ▾
           </button>
           {tfOpen && (
-            <div className="tf-panel">
+            <div className="tf-panel panel-top">
               <div className="tf-list">
                 {allTfs.map((sec) => (
                   <button
@@ -588,7 +597,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
             Ind ▾
           </button>
           {indOpen && (
-            <div className="tools-panel">
+            <div className="tools-panel panel-top">
               {INDICATOR_DEFS.map((d) => (
                 <label key={d.id} className="ind-row">
                   <input
@@ -610,7 +619,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
             Orders ▾
           </button>
           {ordersOpen && (
-            <div className="tools-panel">
+            <div className="tools-panel panel-top">
               <select value={orderType} onChange={(e) => setOrderType(e.target.value as OrderType)}>
                 <option value="market">Market</option>
                 <option value="buy_limit">Buy Limit</option>
@@ -710,7 +719,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
             Step {formatTf(replayStepSeconds)} ▾
           </button>
           {stepOpen && (
-            <div className="tools-panel">
+            <div className="tools-panel panel-bottom">
               {STEP_PRESETS.map((sec) => (
                 <button
                   key={sec}

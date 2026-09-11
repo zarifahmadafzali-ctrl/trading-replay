@@ -101,3 +101,15 @@ The application is a **paper-trading simulator**. It does not place live orders.
 - Confirm closes the Orders panel; adding an indicator closes the Indicators panel.
 - Separate **Replay Step** control (1s…1h + custom). Next/Prev/Play advance by step.
 - SL/TP still evaluates every intermediate **1-second** bar inside a step jump (`execBars`).
+
+## v3.15.2.2 dropdown visibility/interaction fix
+
+Diagnosis-only pass (v3.15.2.1) found two CSS root causes and one JS interaction issue for the desktop Orders/Indicators/Timeframe dropdowns and the Replay Step menu. Fixed:
+
+- **`.mobile-scroll` was unconditional.** It set `overflow-x: auto; overflow-y: visible` on all screen sizes, not just mobile. Per the CSS spec, one non-`visible` overflow axis forces the other to compute as `auto`, so `overflow-y` was silently clipping — on desktop too — the absolutely-positioned dropdown panels hosted inside `.bar`/`.replay`. Moved this pair into the existing `@media (max-width: 700px)` block, where it belongs.
+- **No explicit stacking layer.** `.bar` and `.replay` had no `z-index`, so whether their dropdowns painted above or below the chart depended on incidental DOM order and the chart library's internal stacking. Gave `.bar`/`.replay` `position: relative; z-index: 30`, and gave `.chartbox` `z-index: 1` so its entire subtree (including `.tv-toolbar`'s `z-index: 100`) is isolated into its own bounded stacking context and can never outrank the bars.
+- **One shared `.tools-panel` rule for both a top-opening and bottom-opening menu.** Split into `.panel-top` (TF/Orders/Indicators, opens downward under the top bar) and `.panel-bottom` (Step, opens upward above the bottom bar), each with its own mobile `position: fixed` placement so they no longer occupy the same screen region on small screens.
+- **Outside-click used `mousedown`.** Switched to `pointerdown`, which unifies mouse/touch/pen into one consistent event and avoids inconsistent synthetic-event ordering some mobile browsers exhibit with newly-rendered elements.
+- **Misleading feedback on Custom Add.** Typing a timeframe that's already a default preset (e.g. "15m") silently switched to it but always said "added." Now says "selected" when it already existed and "added" only when it's genuinely new.
+
+No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic, position dragging, the Journal, persistence keys, or the Data Engine. Only `frontend/src/style.css` and `frontend/src/views/ReplayView.tsx` were touched.

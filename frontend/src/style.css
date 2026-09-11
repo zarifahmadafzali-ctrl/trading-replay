@@ -97,10 +97,14 @@ main {
   gap: 5px;
   padding: 0 8px;
   border-bottom: 1px solid #202a35;
-  /* overflow-x only: vertical must stay visible so absolute dropdowns
-     (.tools-panel / .tf-panel at top:100%) are not clipped on desktop */
-  overflow-x: auto;
-  overflow-y: visible;
+  /* v3.15.2.2: no forced overflow here. overflow-x:auto + overflow-y:visible
+     computes overflow-y as `auto` per spec (one non-visible axis forces the
+     other), which clipped the absolutely-positioned TF/Orders/Indicators
+     dropdowns on desktop. Horizontal scrolling is opt-in via .mobile-scroll,
+     scoped to small screens below. */
+  overflow: visible;
+  position: relative;
+  z-index: 30;
   flex-shrink: 0;
 }
 .bar span {
@@ -135,6 +139,11 @@ input[type="date"] {
 }
 .chartbox {
   position: relative;
+  /* v3.15.2.2: isolates the chart's internal stacking (toolbar, overlay,
+     canvas) into its own context so none of it can outrank the bars'
+     z-index:30 above, regardless of what z-index the chart library or
+     .tv-toolbar use internally. */
+  z-index: 1;
   flex: 1;
   min-height: 0;
 }
@@ -468,9 +477,12 @@ footer {
 
 
 /* —— Mobile scroll bars & compact panels —— */
+/* v3.15.2.2: overflow-x/overflow-y moved into the mobile media query below.
+   This class was applying overflow-x:auto unconditionally (all screen
+   sizes), which per spec forces overflow-y to compute as `auto` too,
+   clipping dropdown panels on desktop despite the class name implying
+   mobile-only scope. */
 .mobile-scroll {
-  overflow-x: auto;
-  overflow-y: visible;
   -webkit-overflow-scrolling: touch;
   flex-wrap: nowrap;
   max-width: 100%;
@@ -478,12 +490,14 @@ footer {
 }
 /* Replay bottom bar hosts the Step dropdown — must not clip vertically */
 .replay.mobile-scroll {
-  overflow-y: visible;
   position: relative;
-  z-index: 20;
+  z-index: 30;
 }
-.replay .tools-panel {
-  /* open upward so it stays on screen above the bottom bar */
+/* Step panel opens upward from the bottom bar; TF/Orders/Indicators open
+   downward from the top bars. Separate rules instead of one shared
+   .tools-panel default + override, per v3.15.2.2. */
+.panel-bottom {
+  left: 0;
   top: auto;
   bottom: 100%;
   margin-top: 0;
@@ -500,12 +514,12 @@ footer {
   min-width: 72px;
   font-weight: 600;
 }
+/* Shared visual styling only. Positioning is explicit via .panel-top /
+   .panel-bottom below (v3.15.2.2) instead of one rule doubling as both the
+   default and, via a separate override elsewhere, the exception. */
 .tf-panel, .tools-panel {
   position: absolute;
-  top: 100%;
-  left: 0;
   z-index: 50;
-  margin-top: 4px;
   background: #0e141c;
   border: 1px solid #2a3544;
   border-radius: 10px;
@@ -515,6 +529,11 @@ footer {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   min-width: 160px;
+}
+.panel-top {
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
 }
 .tools-panel {
   min-width: 200px;
@@ -588,6 +607,12 @@ footer {
     min-height: 40px;
     padding: 6px 8px;
   }
+  /* v3.15.2.2: horizontal scroll is mobile-only now (was unconditional,
+     which broke desktop dropdowns — see .mobile-scroll above). */
+  .mobile-scroll {
+    overflow-x: auto;
+    overflow-y: visible;
+  }
   .replay-info {
     display: none;
   }
@@ -598,10 +623,20 @@ footer {
     position: fixed;
     left: 8px;
     right: 8px;
-    top: auto;
-    bottom: 80px;
     max-height: 50vh;
     min-width: 0;
+  }
+  /* Top-bar panels (TF/Orders/Indicators) drop near the top, where their
+     toggle buttons actually are, instead of teleporting to the bottom —
+     and, critically, this keeps them from occupying the exact same screen
+     region as the Step panel below, which anchors near the bottom bar. */
+  .panel-top {
+    top: 56px;
+    bottom: auto;
+  }
+  .panel-bottom {
+    top: auto;
+    bottom: 80px;
   }
   .goto-label input {
     max-width: 120px;
