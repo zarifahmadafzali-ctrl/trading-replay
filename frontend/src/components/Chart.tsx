@@ -599,17 +599,17 @@ export function Chart({
         if (S) {
           hLine(S.y, "#f59e0b", [4, 4]);
           ctx.fillStyle = "#f59e0b";
-          ctx.fillRect(w - 20, S.y - 7, 14, 14);
+          ctx.fillRect(w - 28, S.y - 10, 20, 20);
         }
         if (T) {
           hLine(T.y, "#38bdf8", [4, 4]);
           ctx.fillStyle = "#38bdf8";
-          ctx.fillRect(w - 20, T.y - 7, 14, 14);
+          ctx.fillRect(w - 28, T.y - 10, 20, 20);
         }
         // entry handle only for pending drafts (entry editable)
         if (draft && s.orderType !== "market") {
           ctx.fillStyle = entryColor;
-          ctx.fillRect(w - 20, E.y - 7, 14, 14);
+          ctx.fillRect(w - 28, E.y - 10, 20, 20);
         }
 
         ctx.font = "11px system-ui, sans-serif";
@@ -738,45 +738,117 @@ export function Chart({
     const handles = handlesRef.current;
     if (!handles) return null;
     const series = handles.candles;
-    const threshold = touch ? 20 : 12;
+    // Horizontal SL/TP/hline need a taller Y band; touch needs even more.
+    const pointThreshold = touch ? 22 : 14;
+    const lineThreshold = touch ? 24 : 16;
+    const w = elWidth();
 
     // Trend line / rectangle / measure / fib endpoints — grab either point 'a' or 'b'.
     for (const s of shapesRef.current) {
       if (s.kind !== "trendline" && s.kind !== "rectangle" && s.kind !== "measure" && s.kind !== "fib") continue;
       const A = toXY(s.a);
       const B = toXY(s.b);
-      if (A && Math.hypot(A.x - x, A.y - y) <= threshold) return { id: s.id, field: "a" };
-      if (B && Math.hypot(B.x - x, B.y - y) <= threshold) return { id: s.id, field: "b" };
+      if (A && Math.hypot(A.x - x, A.y - y) <= pointThreshold) return { id: s.id, field: "a" };
+      if (B && Math.hypot(B.x - x, B.y - y) <= pointThreshold) return { id: s.id, field: "b" };
     }
 
     for (const s of shapesRef.current) {
       if (s.kind === "hline") {
         const yy = series.priceToCoordinate(s.price);
-        if (yy != null && Math.abs(yy - y) <= threshold) return { id: s.id, field: "price" };
+        if (yy != null && Math.abs(yy - y) <= lineThreshold) return { id: s.id, field: "price" };
       } else if (s.kind === "vline") {
         const xx = handles.chart.timeScale().timeToCoordinate(s.time as UTCTimestamp);
-        if (xx != null && Math.abs(xx - x) <= threshold) return { id: s.id, field: "time" };
+        if (xx != null && Math.abs(xx - x) <= lineThreshold) return { id: s.id, field: "time" };
       }
     }
 
+    // Positions: prefer the right-side handle box, else the full horizontal band.
     for (const s of shapesRef.current) {
       if (s.kind !== "position") continue;
-      // only draft fully editable; open still allows SL/TP tweak
       const sy = series.priceToCoordinate(s.stop.price);
       const ty = series.priceToCoordinate(s.takeProfit.price);
       const ey = series.priceToCoordinate(s.entry.price);
-      if (sy != null && Math.abs(sy - y) <= threshold) return { id: s.id, field: "stop" };
-      if (ty != null && Math.abs(ty - y) <= threshold) return { id: s.id, field: "takeProfit" };
+      const nearHandle = (yy: number | null) =>
+        yy != null && x >= w - 36 && Math.abs(yy - y) <= lineThreshold + 4;
+      const nearLine = (yy: number | null) => yy != null && Math.abs(yy - y) <= lineThreshold;
+
+      if (nearHandle(sy) || nearLine(sy)) return { id: s.id, field: "stop" };
+      if (nearHandle(ty) || nearLine(ty)) return { id: s.id, field: "takeProfit" };
       if (
         s.status === "draft" &&
         s.orderType !== "market" &&
-        ey != null &&
-        Math.abs(ey - y) <= threshold
+        (nearHandle(ey) || nearLine(ey))
       ) {
         return { id: s.id, field: "entry" };
       }
     }
     return null;
+  }
+
+  function elWidth(): number {
+    return containerRef.current?.clientWidth ?? 0;
+  }
+
+  /** Apply an in-progress drag from client-relative chart coordinates. */
+  function applyDragAt(x: number, y: number) {
+    const d = dragRef.current;
+    const handles = handlesRef.current;
+    if (!d || !handles) return;
+    const { candles } = handles;
+
+    if (d.field === "a" || d.field === "b") {
+      const newPoint = fromXY(x, y);
+      if (!newPoint) return;
+      setShapes(
+        shapesRef.current.map((s) =>
+          s.id === d.id &&
+          (s.kind === "trendline" || s.kind === "rectangle" || s.kind === "measure" || s.kind === "fib")
+            ? ({ ...s, [d.field]: newPoint } as Shape)
+            : s
+        )
+      );
+      return;
+    }
+    if (d.field === "price") {
+      const price = candles.coordinateToPrice(y);
+      if (price == null) return;
+      setShapes(
+        shapesRef.current.map((s) => (s.id === d.id && s.kind === "hline" ? { ...s, price } : s))
+      );
+      return;
+    }
+    if (d.field === "time") {
+      const newPoint = fromXY(x, y);
+      if (!newPoint) return;
+      setShapes(
+        shapesRef.current.map((s) =>
+          s.id === d.id && s.kind === "vline" ? { ...s, time: newPoint.time } : s
+        )
+      );
+      return;
+    }
+    const price = candles.coordinateToPrice(y);
+    if (price == null) return;
+    const s = shapesRef.current.find((x) => x.kind === "position" && x.id === d.id) as
+      | PositionShape
+      | undefined;
+    if (!s) return;
+    if (d.field === "stop") updatePosition(d.id, { stop: { ...s.stop, price } });
+    else if (d.field === "takeProfit") updatePosition(d.id, { takeProfit: { ...s.takeProfit, price } });
+    else if (d.field === "entry") updatePosition(d.id, { entry: { ...s.entry, price } });
+  }
+
+  function setChartInteraction(enabled: boolean) {
+    const chart = handlesRef.current?.chart;
+    if (!chart) return;
+    chart.applyOptions({
+      handleScroll: enabled
+        ? { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true }
+        : { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false, vertTouchDrag: false },
+      handleScale: enabled
+        ? { axisPressedMouseMove: true, mouseWheel: true, pinch: true }
+        : { axisPressedMouseMove: false, mouseWheel: false, pinch: false },
+    });
   }
 
   /** Selection hit-test — deliberately excludes positions (order/SL/TP levels
@@ -876,50 +948,8 @@ export function Chart({
         }
       }
 
-      if (dragRef.current && param.point) {
-        const d = dragRef.current;
-        if (d.field === "a" || d.field === "b") {
-          const newPoint = fromXY(param.point.x, param.point.y);
-          if (newPoint) {
-            setShapes(
-              shapesRef.current.map((s) =>
-                s.id === d.id &&
-                (s.kind === "trendline" || s.kind === "rectangle" || s.kind === "measure" || s.kind === "fib")
-                  ? ({ ...s, [d.field]: newPoint } as Shape)
-                  : s
-              )
-            );
-          }
-        } else if (d.field === "price") {
-          const price = candles.coordinateToPrice(param.point.y);
-          if (price != null) {
-            setShapes(
-              shapesRef.current.map((s) => (s.id === d.id && s.kind === "hline" ? { ...s, price } : s))
-            );
-          }
-        } else if (d.field === "time") {
-          const newPoint = fromXY(param.point.x, param.point.y);
-          if (newPoint) {
-            setShapes(
-              shapesRef.current.map((s) => (s.id === d.id && s.kind === "vline" ? { ...s, time: newPoint.time } : s))
-            );
-          }
-        } else {
-          const price = candles.coordinateToPrice(param.point.y);
-          if (price != null) {
-            const s = shapesRef.current.find((x) => x.kind === "position" && x.id === d.id) as
-              | PositionShape
-              | undefined;
-            if (s) {
-              if (d.field === "stop") updatePosition(d.id, { stop: { ...s.stop, price } });
-              else if (d.field === "takeProfit")
-                updatePosition(d.id, { takeProfit: { ...s.takeProfit, price } });
-              else if (d.field === "entry")
-                updatePosition(d.id, { entry: { ...s.entry, price } });
-            }
-          }
-        }
-      }
+      // Drag updates are handled in pointermove (setPointerCapture). Crosshair
+      // alone is not reliable while the pointer is captured on desktop.
 
       if (!param.time || !param.seriesData) {
         setOhlc(null);
@@ -957,6 +987,8 @@ export function Chart({
     }
 
     const onPointerDown = (ev: PointerEvent) => {
+      // Only primary button / touch / pen
+      if (ev.pointerType === "mouse" && ev.button !== 0) return;
       const rect = el.getBoundingClientRect();
       const x = ev.clientX - rect.left;
       const y = ev.clientY - rect.top;
@@ -964,27 +996,58 @@ export function Chart({
 
       // Tapping the on-canvas "×" next to a selected shape deletes it immediately.
       const btn = deleteButtonRef.current;
-      if (btn && Math.hypot(btn.x - x, btn.y - y) <= btn.r) {
+      if (btn && Math.hypot(btn.x - x, btn.y - y) <= btn.r + 4) {
         deleteShape(btn.id);
         ev.preventDefault();
+        ev.stopPropagation();
         return;
       }
 
       const hit = hitTestDrag(x, y, ev.pointerType === "touch");
       if (hit) {
         dragRef.current = hit;
-        el.setPointerCapture(ev.pointerId);
+        setChartInteraction(false);
+        try {
+          el.setPointerCapture(ev.pointerId);
+        } catch {
+          /* ignore */
+        }
         setHint("Dragging…");
         ev.preventDefault();
+        ev.stopPropagation();
       }
+    };
+
+    const onPointerMove = (ev: PointerEvent) => {
+      const rect = el.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
+      if (dragRef.current) {
+        applyDragAt(x, y);
+        scheduleRedraw();
+        ev.preventDefault();
+        return;
+      }
+      scheduleRedraw();
+    };
+
+    const endDrag = () => {
+      if (!dragRef.current) return;
+      dragRef.current = null;
+      setChartInteraction(true);
+      setHint("Updated · Confirm when ready");
+      scheduleRedraw();
     };
 
     const onPointerUp = (ev: PointerEvent) => {
       if (dragRef.current) {
-        dragRef.current = null;
-        setHint("Updated · Confirm when ready");
-        scheduleRedraw();
+        endDrag();
         downRef.current = null;
+        try {
+          if (el.hasPointerCapture(ev.pointerId)) el.releasePointerCapture(ev.pointerId);
+        } catch {
+          /* ignore */
+        }
         return;
       }
 
@@ -997,13 +1060,16 @@ export function Chart({
       const y = ev.clientY - rect.top;
       const dt = Date.now() - down.time;
       const dist = Math.hypot(x - down.x, y - down.y);
-      const isTap = dt < 500 && dist < 8;
+      const isTap = dt < 500 && dist < 10;
 
       if (isTap) {
         const tool = drawToolRef.current;
         if (tool === "hline" || tool === "vline") {
-          // These need only one point, so a single tap places them immediately.
-          const pt = ev.pointerType === "touch" ? fromXY(x, y) : crosshairRef.current;
+          // One-point tools: touch uses the tap point; mouse prefers live crosshair.
+          const pt =
+            ev.pointerType === "touch"
+              ? fromXY(x, y)
+              : crosshairRef.current ?? fromXY(x, y);
           if (pt) {
             const shape: Shape =
               tool === "hline"
@@ -1014,16 +1080,14 @@ export function Chart({
             setHint("Done · drag to move, tap × or Delete to remove");
           }
         } else {
-          const threshold = ev.pointerType === "touch" ? 18 : 10;
+          const threshold = ev.pointerType === "touch" ? 18 : 12;
           const hitId = hitTestSelect(x, y, threshold);
           onSelectedShapeIdRef.current?.(hitId);
         }
         scheduleRedraw();
       }
 
-      // Manual double-tap detection: mobile browsers don't fire 'dblclick'
-      // reliably from touch, so trend line / rectangle / measure / fib
-      // placement needs its own tap-tap gesture on touch devices.
+      // Manual double-tap: mobile often skips native dblclick.
       if (ev.pointerType === "touch" && isTap) {
         const now = Date.now();
         const prevTap = doubleTapRef.current;
@@ -1041,12 +1105,11 @@ export function Chart({
     };
 
     el.addEventListener("pointerdown", onPointerDown);
+    el.addEventListener("pointermove", onPointerMove);
     el.addEventListener("pointerup", onPointerUp);
     el.addEventListener("pointercancel", onPointerUp);
-    const onPointer = () => scheduleRedraw();
-    el.addEventListener("pointermove", onPointer);
-    el.addEventListener("wheel", onPointer, { passive: true });
-    el.addEventListener("touchmove", onPointer, { passive: true });
+    el.addEventListener("lostpointercapture", endDrag);
+    el.addEventListener("wheel", () => scheduleRedraw(), { passive: true });
 
     const onDblClick = (ev: MouseEvent) => {
       ev.preventDefault();
@@ -1087,11 +1150,10 @@ export function Chart({
     return () => {
       resizeObserver.disconnect();
       el.removeEventListener("pointerdown", onPointerDown);
+      el.removeEventListener("pointermove", onPointerMove);
       el.removeEventListener("pointerup", onPointerUp);
       el.removeEventListener("pointercancel", onPointerUp);
-      el.removeEventListener("pointermove", onPointer);
-      el.removeEventListener("wheel", onPointer);
-      el.removeEventListener("touchmove", onPointer);
+      el.removeEventListener("lostpointercapture", endDrag);
       el.removeEventListener("dblclick", onDblClick);
       window.removeEventListener("keydown", onKeyDown);
       chart.unsubscribeCrosshairMove(onMove);
