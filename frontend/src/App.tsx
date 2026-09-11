@@ -32,7 +32,10 @@ export function App() {
     <div className="app">
       <NavBar active={view} onChange={setView} backendOnline={backendOnline} />
       <main>
-        {view === "replay" && <ReplayView backendOnline={backendOnline} />}
+        {/* Keep Replay mounted so in-memory bars, cursor, and tools survive tab switches. */}
+        <div className={view === "replay" ? "view-panel" : "view-panel view-panel-hidden"} aria-hidden={view !== "replay"}>
+          <ReplayView backendOnline={backendOnline} />
+        </div>
         {view === "watchlist" && <WatchlistView backendOnline={backendOnline} />}
         {view === "session" && <SessionView backendOnline={backendOnline} />}
         {view === "journal" && <JournalView backendOnline={backendOnline} />}

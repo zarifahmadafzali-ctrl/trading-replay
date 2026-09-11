@@ -194,6 +194,9 @@ export function Chart({
   marketPrice = null,
   marketTime = null,
   replayBar = null,
+  /** Ordered 1s bars from previous cursor → current (inclusive of new bar).
+   *  When Replay Step > 1s, this may contain many bars; each is evaluated for SL/TP. */
+  execBars = null,
   followPrice = false,
   shapes,
   onShapesChange,
@@ -210,6 +213,8 @@ export function Chart({
   marketTime?: number | null;
   /** Exact 1-second bar at the replay cursor. Execution uses this, never the displayed/aggregated timeframe bar. */
   replayBar?: Bar | null;
+  /** 1s bars to evaluate for SL/TP this tick (step jumps). Falls back to [replayBar]. */
+  execBars?: Bar[] | null;
   /** If true, keep latest bar near the right edge while playing */
   followPrice?: boolean;
   shapes: Shape[];
@@ -1256,62 +1261,68 @@ export function Chart({
     }
   }, [bars, cursor, indicators]);
 
-  // Execution engine: evaluate the exact 1-second replay bar, never the
-  // aggregated display timeframe. If both SL and TP are touched inside the
-  // same second, intrasecond ordering is unknowable from 1s OHLC, so we use
-  // a deterministic conservative rule: SL wins the tie.
+  // Execution engine: evaluate exact 1-second bars only — never aggregated TF.
+  // When Replay Step > 1s, execBars holds every intermediate 1s bar so SL/TP
+  // still fires on the first touch inside the jumped window.
+  // Same-second SL+TP → SL wins (OHLC has no intrasecond order).
   useEffect(() => {
-    const bar = replayBarRef.current;
-    const price = marketPrice;
-    const time = marketTime;
-    if (!bar || price == null || time == null) return;
+    const sequence: Bar[] =
+      execBars && execBars.length
+        ? execBars
+        : replayBar
+          ? [replayBar]
+          : [];
+    if (!sequence.length) return;
 
     const openOnes = shapesRef.current.filter(
       (s): s is PositionShape => s.kind === "position" && s.status === "open"
     );
     if (!openOnes.length) return;
 
-    const remaining: Shape[] = [];
+    let working: Shape[] = shapesRef.current.slice();
     const closed: ClosedPosition[] = [];
 
-    for (const s of shapesRef.current) {
-      if (s.kind !== "position" || s.status !== "open") {
-        remaining.push(s);
-        continue;
-      }
+    for (const bar of sequence) {
+      const nextWorking: Shape[] = [];
+      for (const s of working) {
+        if (s.kind !== "position" || s.status !== "open") {
+          nextWorking.push(s);
+          continue;
+        }
+        const sameSecondAsEntry = bar.time <= s.entry.time;
+        const hi = sameSecondAsEntry ? bar.close : bar.high;
+        const lo = sameSecondAsEntry ? bar.close : bar.low;
+        const long = s.side === "long";
+        let reason: "sl" | "tp" | null = null;
+        let exitPrice = bar.close;
 
-      // A market position is opened at the current replay price/time. Do not
-      // inspect earlier movement inside that same 1s source bar.
-      const sameSecondAsEntry = bar.time <= s.entry.time;
-      const hi = sameSecondAsEntry ? price : bar.high;
-      const lo = sameSecondAsEntry ? price : bar.low;
-      const long = s.side === "long";
-      let reason: "sl" | "tp" | null = null;
-      let exitPrice = price;
+        if (long) {
+          if (lo <= s.stop.price) { reason = "sl"; exitPrice = s.stop.price; }
+          else if (hi >= s.takeProfit.price) { reason = "tp"; exitPrice = s.takeProfit.price; }
+        } else {
+          if (hi >= s.stop.price) { reason = "sl"; exitPrice = s.stop.price; }
+          else if (lo <= s.takeProfit.price) { reason = "tp"; exitPrice = s.takeProfit.price; }
+        }
 
-      if (long) {
-        if (lo <= s.stop.price) { reason = "sl"; exitPrice = s.stop.price; }
-        else if (hi >= s.takeProfit.price) { reason = "tp"; exitPrice = s.takeProfit.price; }
-      } else {
-        if (hi >= s.stop.price) { reason = "sl"; exitPrice = s.stop.price; }
-        else if (lo <= s.takeProfit.price) { reason = "tp"; exitPrice = s.takeProfit.price; }
+        if (!reason) {
+          nextWorking.push(s);
+          continue;
+        }
+        const pnlPoints = long ? exitPrice - s.entry.price : s.entry.price - exitPrice;
+        closed.push({
+          id: s.id, side: s.side, orderType: s.orderType, entry: s.entry, stop: s.stop,
+          takeProfit: s.takeProfit, exitPrice, exitTime: bar.time, reason, pnlPoints,
+        });
       }
-
-      if (!reason) {
-        remaining.push(s);
-        continue;
-      }
-      const pnlPoints = long ? exitPrice - s.entry.price : s.entry.price - exitPrice;
-      closed.push({
-        id: s.id, side: s.side, orderType: s.orderType, entry: s.entry, stop: s.stop,
-        takeProfit: s.takeProfit, exitPrice, exitTime: time, reason, pnlPoints,
-      });
+      working = nextWorking;
+      if (!working.some((s) => s.kind === "position" && s.status === "open")) break;
     }
+
     if (!closed.length) return;
-    onShapesChangeRef.current(remaining);
+    onShapesChangeRef.current(working);
     for (const c of closed) onPositionClosedRef.current?.(c);
     setHint(closed.map((c) => `${c.side.toUpperCase()} ${c.reason.toUpperCase()} @ ${c.exitPrice.toFixed(2)}`).join(" · "));
-  }, [marketPrice, marketTime, replayBar]);
+  }, [marketPrice, marketTime, replayBar, execBars]);
 
   useEffect(() => {
     scheduleRedraw();

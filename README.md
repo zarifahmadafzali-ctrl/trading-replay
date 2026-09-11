@@ -87,3 +87,17 @@ The application is a **paper-trading simulator**. It does not place live orders.
 - Arbitrary custom timeframes (e.g. `90s`, `7m`, `10m`) were already supported via the "Custom" box in the TF dropdown (regex-parsed, persisted to localStorage) — unchanged, just confirmed working.
 - Added `frontend/src/lib/timeframe.ts`: a thin, documented re-export of `aggregateBars`/`aggregateVisible` from `replay.ts` under a dedicated, discoverable name for this feature. No aggregation logic was duplicated — `replay.ts` remains the single implementation, avoiding drift between two copies of the same math.
 - No changes to the Position Tool, Journal, drawing system, backend, or core replay engine — display timeframe (`bars`) and execution (`replayBar`, the true 1-second bar) were already architecturally separate in v3.14.1 and remain so.
+
+## v3.15.2 replay session persistence
+
+- ReplayView stays mounted across in-app navigation (Journal / Data Engine / etc.).
+- Session meta (symbol, range, TF, cursor, tools, dataSource) is stored in `localStorage` via `lib/replaySession.ts`.
+- Full 1-second bars are **not** stored in localStorage; they reload from the existing day-sharded device cache / backend.
+- Refresh restores the previous session in **PAUSED** mode and never silently replaces loaded data with Demo Data.
+
+## v3.15.2.1 panels + replay step
+
+- Desktop Order/TF/Ind dropdowns no longer clipped by top-bar overflow.
+- Confirm closes the Orders panel; adding an indicator closes the Indicators panel.
+- Separate **Replay Step** control (1s…1h + custom). Next/Prev/Play advance by step.
+- SL/TP still evaluates every intermediate **1-second** bar inside a step jump (`execBars`).
