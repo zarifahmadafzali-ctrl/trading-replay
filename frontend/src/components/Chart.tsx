@@ -202,6 +202,7 @@ export function Chart({
   onShapesChange,
   selectedShapeId = null,
   onSelectedShapeId,
+  onDrawToolChange,
   onPositionClosed,
   indicators = [],
 }: {
@@ -221,6 +222,8 @@ export function Chart({
   onShapesChange: (next: Shape[]) => void;
   selectedShapeId?: string | null;
   onSelectedShapeId?: (id: string | null) => void;
+  /** Parent can reset the active tool (e.g. back to crosshair after placing a line). */
+  onDrawToolChange?: (tool: DrawTool) => void;
   onPositionClosed?: (closed: ClosedPosition) => void;
   indicators?: IndicatorSpec[];
 }) {
@@ -243,6 +246,8 @@ export function Chart({
   onShapesChangeRef.current = onShapesChange;
   const onSelectedShapeIdRef = useRef(onSelectedShapeId);
   onSelectedShapeIdRef.current = onSelectedShapeId;
+  const onDrawToolChangeRef = useRef(onDrawToolChange);
+  onDrawToolChangeRef.current = onDrawToolChange;
   const onPositionClosedRef = useRef(onPositionClosed);
   onPositionClosedRef.current = onPositionClosed;
   // Screen-space hit area for the on-canvas "×" delete button drawn next to
@@ -675,7 +680,8 @@ export function Chart({
   }
 
   function drawDeleteButton(ctx: CanvasRenderingContext2D, id: string, x: number, y: number) {
-    const r = 10;
+    // Larger visual + hit target so mobile can tap × without missing.
+    const r = 12;
     ctx.fillStyle = "rgba(239, 83, 80, 0.9)";
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
@@ -688,7 +694,7 @@ export function Chart({
     ctx.moveTo(x + 4, y - 4);
     ctx.lineTo(x - 4, y + 4);
     ctx.stroke();
-    deleteButtonRef.current = { id, x, y, r: r + 6 }; // generous tap padding
+    deleteButtonRef.current = { id, x, y, r: r + 10 };
   }
 
   /** Δprice, Δ%, candle count, and elapsed time between two chart points. */
@@ -1010,6 +1016,28 @@ export function Chart({
 
       const hit = hitTestDrag(x, y, ev.pointerType === "touch");
       if (hit) {
+        const shape = shapesRef.current.find((s) => s.id === hit.id);
+        // v3.15.2.3: drawings (not positions) use select-first.
+        // Unselected line + pointerdown → select only; selected + pointerdown → drag.
+        // Positions keep immediate SL/TP drag without requiring prior selection.
+        const isDrawing =
+          shape &&
+          shape.kind !== "position" &&
+          (shape.kind === "hline" ||
+            shape.kind === "vline" ||
+            shape.kind === "trendline" ||
+            shape.kind === "rectangle" ||
+            shape.kind === "measure" ||
+            shape.kind === "fib");
+        const alreadySelected = selectedShapeIdRef.current === hit.id;
+        if (isDrawing && !alreadySelected) {
+          onSelectedShapeIdRef.current?.(hit.id);
+          setHint("Selected · drag to move, tap × or Delete to remove");
+          scheduleRedraw();
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
         dragRef.current = hit;
         setChartInteraction(false);
         try {
@@ -1069,23 +1097,32 @@ export function Chart({
 
       if (isTap) {
         const tool = drawToolRef.current;
+        const threshold = ev.pointerType === "touch" ? 18 : 12;
         if (tool === "hline" || tool === "vline") {
-          // One-point tools: touch uses the tap point; mouse prefers live crosshair.
-          const pt =
-            ev.pointerType === "touch"
-              ? fromXY(x, y)
-              : crosshairRef.current ?? fromXY(x, y);
-          if (pt) {
-            const shape: Shape =
-              tool === "hline"
-                ? { id: uid(), kind: "hline", price: pt.price }
-                : { id: uid(), kind: "vline", time: pt.time };
-            setShapes([...shapesRef.current, shape]);
-            onSelectedShapeIdRef.current?.(shape.id);
-            setHint("Done · drag to move, tap × or Delete to remove");
+          // Prefer selecting an existing line over stacking a new one on the same spot.
+          const existingId = hitTestSelect(x, y, threshold);
+          if (existingId) {
+            onSelectedShapeIdRef.current?.(existingId);
+            setHint("Selected · drag to move, tap × or Delete to remove");
+          } else {
+            // One-point tools: touch uses the tap point; mouse prefers live crosshair.
+            const pt =
+              ev.pointerType === "touch"
+                ? fromXY(x, y)
+                : crosshairRef.current ?? fromXY(x, y);
+            if (pt) {
+              const shape: Shape =
+                tool === "hline"
+                  ? { id: uid(), kind: "hline", price: pt.price }
+                  : { id: uid(), kind: "vline", time: pt.time };
+              setShapes([...shapesRef.current, shape]);
+              onSelectedShapeIdRef.current?.(shape.id);
+              // Auto-return to cursor so the next tap selects/drags instead of placing again.
+              onDrawToolChangeRef.current?.("crosshair");
+              setHint("Done · drag to move, tap × or Delete to remove");
+            }
           }
         } else {
-          const threshold = ev.pointerType === "touch" ? 18 : 12;
           const hitId = hitTestSelect(x, y, threshold);
           onSelectedShapeIdRef.current?.(hitId);
         }

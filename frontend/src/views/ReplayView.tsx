@@ -507,7 +507,14 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
 
   function deleteSelectedShape() {
     if (!selectedShapeId) return;
-    setShapes((prev) => prev.filter((s) => s.id !== selectedShapeId));
+    // Positions are never removed via toolbar trash — only drawings.
+    setShapes((prev) =>
+      prev.filter((s) => {
+        if (s.id !== selectedShapeId) return true;
+        if (s.kind === "position") return true;
+        return false;
+      })
+    );
     setSelectedShapeId(null);
   }
 
@@ -678,6 +685,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           onShapesChange={setShapes}
           selectedShapeId={selectedShapeId}
           onSelectedShapeId={setSelectedShapeId}
+          onDrawToolChange={pickTool}
           onPositionClosed={handlePositionClosed}
           indicators={indicators}
         />

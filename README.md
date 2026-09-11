@@ -113,3 +113,10 @@ Diagnosis-only pass (v3.15.2.1) found two CSS root causes and one JS interaction
 - **Misleading feedback on Custom Add.** Typing a timeframe that's already a default preset (e.g. "15m") silently switched to it but always said "added." Now says "selected" when it already existed and "added" only when it's genuinely new.
 
 No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic, position dragging, the Journal, persistence keys, or the Data Engine. Only `frontend/src/style.css` and `frontend/src/views/ReplayView.tsx` were touched.
+
+## v3.15.2.3 drawing select / delete
+
+- H-Line / V-Line: unselected tap selects (no immediate drag); selected line can drag.
+- After placing H/V line, tool auto-resets to crosshair.
+- With H/V tool still active, tapping an existing line selects it instead of stacking a new one.
+- Delete via ×, toolbar trash, or Delete/Backspace once selected; positions unchanged.
