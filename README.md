@@ -129,3 +129,8 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Stop-Limit uses explicit `stopPrice` + `limitPrice` and a two-stage trigger (stop arms, then limit fills).
 - SL/TP and Journal only run for `status === "open"`.
 - Legacy non-market shapes stored as `open` are treated as `pending` on load.
+
+## v3.15.2.5 stop-limit trigger drag
+
+- Buy/Sell Stop Limit: Stop/Trigger (`stopPrice`) is independently draggable from Limit/Entry.
+- Dragging stop changes only `stopPrice`; dragging limit changes only `limitPrice`/entry.

@@ -123,7 +123,10 @@ export type ClosedPosition = {
 
 export type Shape = TrendlineShape | RectangleShape | MeasureShape | HLineShape | VLineShape | FibShape | PositionShape;
 
-type DragTarget = { id: string; field: "stop" | "takeProfit" | "entry" | "a" | "b" | "price" | "time" };
+type DragTarget = {
+  id: string;
+  field: "stop" | "takeProfit" | "entry" | "stopTrigger" | "a" | "b" | "price" | "time";
+};
 
 const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
 const FIB_COLORS: Record<number, string> = {
@@ -656,11 +659,20 @@ export function Chart({
             ctx.font = "11px system-ui, sans-serif";
             const trig = s.stopTriggered ? "STOP HIT → wait limit" : "STOP";
             ctx.fillText(`${trig} ${s.stopPrice.toFixed(2)}`, 8, Math.max(14, sy - 8));
+            // Drag handle for independent stopPrice (v3.15.2.5)
+            if (draft || pending) {
+              ctx.fillStyle = "#f97316";
+              ctx.fillRect(w - 28, sy - 10, 20, 20);
+            }
           }
           if (ly != null) {
             hLine(ly, entryColor, [6, 4], 1.5);
             ctx.fillStyle = entryColor;
             ctx.fillText(`LIMIT ${s.limitPrice.toFixed(2)}`, 8, Math.max(14, ly - 8));
+            if (draft || pending) {
+              ctx.fillStyle = entryColor;
+              ctx.fillRect(w - 28, ly - 10, 20, 20);
+            }
           }
         } else {
           // Entry: solid only when filled open; dashed for draft/pending
@@ -846,8 +858,23 @@ export function Chart({
         yy != null && x >= w - 36 && Math.abs(yy - y) <= lineThreshold + 4;
       const nearLine = (yy: number | null) => yy != null && Math.abs(yy - y) <= lineThreshold;
 
-      if (nearHandle(sy) || nearLine(sy)) return { id: s.id, field: "stop" };
-      if (nearHandle(ty) || nearLine(ty)) return { id: s.id, field: "takeProfit" };
+      // Stop-Limit trigger line (stopPrice) — independent of protective SL and of limit/entry.
+      const isStopLimit =
+        s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit";
+      if (
+        isStopLimit &&
+        (s.status === "draft" || s.status === "pending") &&
+        s.stopPrice != null
+      ) {
+        const sty = series.priceToCoordinate(s.stopPrice);
+        if (nearHandle(sty) || nearLine(sty)) return { id: s.id, field: "stopTrigger" };
+      }
+
+      // Protective SL/TP only when draft (editing) or open (live)
+      if (s.status === "draft" || s.status === "open") {
+        if (nearHandle(sy) || nearLine(sy)) return { id: s.id, field: "stop" };
+        if (nearHandle(ty) || nearLine(ty)) return { id: s.id, field: "takeProfit" };
+      }
       if (
         (s.status === "draft" || s.status === "pending") &&
         s.orderType !== "market" &&
@@ -909,8 +936,11 @@ export function Chart({
     if (!s) return;
     if (d.field === "stop") updatePosition(d.id, { stop: { ...s.stop, price } });
     else if (d.field === "takeProfit") updatePosition(d.id, { takeProfit: { ...s.takeProfit, price } });
-    else if (d.field === "entry") {
-      // For stop-limit drafts/pending, entry line tracks the limit price.
+    else if (d.field === "stopTrigger") {
+      // Independent Stop-Limit trigger — does not move limit/entry or protective SL.
+      updatePosition(d.id, { stopPrice: price });
+    } else if (d.field === "entry") {
+      // For stop-limit drafts/pending, entry line tracks the limit price only.
       const patch: Partial<PositionShape> = { entry: { ...s.entry, price } };
       if (s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit") {
         patch.limitPrice = price;
