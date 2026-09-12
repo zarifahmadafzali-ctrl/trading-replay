@@ -36,7 +36,26 @@ const INDICATOR_DEFS: { id: string; label: string; kind: IndicatorSpec["kind"]; 
 function loadShapesFor(symbol: string): Shape[] {
   try {
     const raw = localStorage.getItem(`tr-shapes-${symbol}`);
-    return raw ? (JSON.parse(raw) as Shape[]) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Shape[];
+    // One-time v3.15.2.4 migration: pre-fix non-market shapes were saved as
+    // "open" on Confirm without a real fill. Convert those to "pending" once.
+    // After this flag is set, genuine fills (status open) are left alone.
+    const flagKey = "tr-pending-migrate-v324";
+    if (localStorage.getItem(flagKey)) return parsed;
+    const migrated = parsed.map((s) => {
+      if (s.kind === "position" && s.orderType !== "market" && s.status === "open") {
+        return { ...s, status: "pending" as const };
+      }
+      return s;
+    });
+    localStorage.setItem(flagKey, "1");
+    try {
+      localStorage.setItem(`tr-shapes-${symbol}`, JSON.stringify(migrated));
+    } catch {
+      /* ignore quota */
+    }
+    return migrated;
   } catch {
     return [];
   }

@@ -90,11 +90,22 @@ export type PositionShape = {
   kind: "position";
   side: "long" | "short";
   orderType: OrderType;
-  /** draft = lines on chart, user still editing; open = confirmed */
-  status: "draft" | "open";
+  /**
+   * draft   = user still editing lines
+   * pending = confirmed, waiting for entry (or stop-limit stages)
+   * open    = filled / live position — only then SL/TP runs
+   */
+  status: "draft" | "pending" | "open";
+  /** Fill price once open; for simple pending = stop/limit trigger price */
   entry: ChartPoint;
   stop: ChartPoint;
   takeProfit: ChartPoint;
+  /** Stop-Limit only: stop trigger level (not the protective SL). */
+  stopPrice?: number;
+  /** Stop-Limit only: limit price after stop is armed. */
+  limitPrice?: number;
+  /** Stop-Limit only: true after stop trigger, waiting for limit fill. */
+  stopTriggered?: boolean;
 };
 
 export type ClosedPosition = {
@@ -165,7 +176,7 @@ function riskReward(entry: number, stop: number, tp: number): number | null {
 /** Default SL/TP offsets from entry (~0.4% risk, ~0.8% reward → ~1:2) */
 function defaultsFor(
   side: "long" | "short",
-  orderType: OrderType,
+  _orderType: OrderType,
   price: number,
   time: number
 ): Pick<PositionShape, "entry" | "stop" | "takeProfit"> {
@@ -184,6 +195,22 @@ function defaultsFor(
     stop: { time, price: price * (1 + riskPct) },
     takeProfit: { time, price: price * (1 - rewardPct) },
   };
+}
+
+/** True when a 1s bar touches a pending entry (simple stop/limit, not stop-limit). */
+function pendingEntryTouched(orderType: OrderType, entryPrice: number, hi: number, lo: number): boolean {
+  switch (orderType) {
+    case "buy_limit":
+      return lo <= entryPrice;
+    case "sell_limit":
+      return hi >= entryPrice;
+    case "buy_stop":
+      return hi >= entryPrice;
+    case "sell_stop":
+      return lo <= entryPrice;
+    default:
+      return false;
+  }
 }
 
 export function Chart({
@@ -302,36 +329,45 @@ export function Chart({
       return;
     }
     const ot = orderTypeRef.current;
-    // remove previous unfinished draft of same side
+    // remove previous unfinished draft
     const kept = shapesRef.current.filter(
       (s) => !(s.kind === "position" && s.status === "draft")
     );
     const levels = defaultsFor(side, ot, price, time);
-    // pending: entry slightly off market so user sees a separate entry line
+    let stopPrice: number | undefined;
+    let limitPrice: number | undefined;
+
+    // Pending: place entry away from market so the user can see a separate line.
     if (ot !== "market") {
-      const off = side === "long" ? 0.998 : 1.002;
-      if (ot.includes("limit")) {
-        levels.entry = { time, price: price * (side === "long" ? 0.997 : 1.003) };
-      } else if (ot.includes("stop")) {
-        levels.entry = { time, price: price * (side === "long" ? 1.003 : 0.997) };
-      } else {
-        levels.entry = { time, price: price * off };
+      if (ot === "buy_stop_limit") {
+        // Stop above market; limit slightly below stop (classic buy stop-limit).
+        stopPrice = price * 1.003;
+        limitPrice = price * 1.001;
+        levels.entry = { time, price: limitPrice };
+      } else if (ot === "sell_stop_limit") {
+        stopPrice = price * 0.997;
+        limitPrice = price * 0.999;
+        levels.entry = { time, price: limitPrice };
+      } else if (ot === "buy_limit") {
+        levels.entry = { time, price: price * 0.997 };
+      } else if (ot === "sell_limit") {
+        levels.entry = { time, price: price * 1.003 };
+      } else if (ot === "buy_stop") {
+        levels.entry = { time, price: price * 1.003 };
+      } else if (ot === "sell_stop") {
+        levels.entry = { time, price: price * 0.997 };
       }
+      const ep = levels.entry.price;
       levels.stop = {
         time,
-        price:
-          side === "long"
-            ? levels.entry.price * 0.996
-            : levels.entry.price * 1.004,
+        price: side === "long" ? ep * 0.996 : ep * 1.004,
       };
       levels.takeProfit = {
         time,
-        price:
-          side === "long"
-            ? levels.entry.price * 1.008
-            : levels.entry.price * 0.992,
+        price: side === "long" ? ep * 1.008 : ep * 0.992,
       };
     }
+
     const draft: PositionShape = {
       id: uid(),
       kind: "position",
@@ -339,6 +375,7 @@ export function Chart({
       orderType: ot,
       status: "draft",
       ...levels,
+      ...(stopPrice != null ? { stopPrice, limitPrice, stopTriggered: false } : {}),
     };
     setShapes([...kept, draft]);
     if (ot === "market") {
@@ -353,12 +390,15 @@ export function Chart({
     const next = shapesRef.current.map((s) => {
       if (s.kind === "position" && s.status === "draft") {
         n++;
-        return { ...s, status: "open" as const };
+        // Market fills immediately; all pending types wait for entry on 1s bars.
+        const nextStatus: PositionShape["status"] =
+          s.orderType === "market" ? "open" : "pending";
+        return { ...s, status: nextStatus };
       }
       return s;
     });
     setShapes(next);
-    setHint(n ? `Position confirmed (${n})` : "No draft to confirm");
+    setHint(n ? `Order confirmed (${n})` : "No draft to confirm");
   }
 
   function cancelDrafts() {
@@ -583,17 +623,21 @@ export function Chart({
         const long = s.side === "long";
         const entryColor = long ? "#26a69a" : "#ef5350";
         const draft = s.status === "draft";
+        const pending = s.status === "pending";
+        const isStopLimit =
+          s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit";
 
-        if (S && T) {
+        // Protective SL/TP zone only once filled (open)
+        if (S && T && s.status === "open") {
           ctx.fillStyle = long ? "rgba(38,166,154,0.10)" : "rgba(239,83,80,0.10)";
           ctx.fillRect(0, Math.min(E.y, T.y), w, Math.abs(T.y - E.y));
           ctx.fillStyle = "rgba(245,158,11,0.12)";
           ctx.fillRect(0, Math.min(E.y, S.y), w, Math.abs(S.y - E.y));
         }
 
-        const hLine = (y: number, color: string, dash: number[]) => {
+        const hLine = (y: number, color: string, dash: number[], width = 1.5) => {
           ctx.strokeStyle = color;
-          ctx.lineWidth = draft ? 2 : 1.5;
+          ctx.lineWidth = draft ? 2 : width;
           ctx.setLineDash(dash);
           ctx.beginPath();
           ctx.moveTo(0, y);
@@ -602,32 +646,51 @@ export function Chart({
           ctx.setLineDash([]);
         };
 
-        // Entry: solid for market open, dashed for pending/draft entry
-        const entryDash =
-          s.orderType === "market" && s.status === "open" ? [] : [6, 4];
-        hLine(E.y, entryColor, entryDash);
-        if (S) {
+        // Stop-Limit: draw distinct stop + limit lines while unfilled
+        if (isStopLimit && s.status !== "open" && s.stopPrice != null && s.limitPrice != null) {
+          const sy = handlesRef.current!.candles.priceToCoordinate(s.stopPrice);
+          const ly = handlesRef.current!.candles.priceToCoordinate(s.limitPrice);
+          if (sy != null) {
+            hLine(sy, "#f97316", [2, 3], 1.5);
+            ctx.fillStyle = "#f97316";
+            ctx.font = "11px system-ui, sans-serif";
+            const trig = s.stopTriggered ? "STOP HIT → wait limit" : "STOP";
+            ctx.fillText(`${trig} ${s.stopPrice.toFixed(2)}`, 8, Math.max(14, sy - 8));
+          }
+          if (ly != null) {
+            hLine(ly, entryColor, [6, 4], 1.5);
+            ctx.fillStyle = entryColor;
+            ctx.fillText(`LIMIT ${s.limitPrice.toFixed(2)}`, 8, Math.max(14, ly - 8));
+          }
+        } else {
+          // Entry: solid only when filled open; dashed for draft/pending
+          const entryDash = s.status === "open" ? [] : [6, 4];
+          hLine(E.y, entryColor, entryDash);
+        }
+
+        if (S && (s.status === "open" || draft)) {
           hLine(S.y, "#f59e0b", [4, 4]);
           ctx.fillStyle = "#f59e0b";
           ctx.fillRect(w - 28, S.y - 10, 20, 20);
         }
-        if (T) {
+        if (T && (s.status === "open" || draft)) {
           hLine(T.y, "#38bdf8", [4, 4]);
           ctx.fillStyle = "#38bdf8";
           ctx.fillRect(w - 28, T.y - 10, 20, 20);
         }
-        // entry handle only for pending drafts (entry editable)
-        if (draft && s.orderType !== "market") {
+        // Entry handle editable while draft or pending (non-market)
+        if ((draft || pending) && s.orderType !== "market") {
           ctx.fillStyle = entryColor;
           ctx.fillRect(w - 28, E.y - 10, 20, 20);
         }
 
         ctx.font = "11px system-ui, sans-serif";
         const rr = riskReward(s.entry.price, s.stop.price, s.takeProfit.price);
-        const rrText = rr != null ? ` · R:R 1:${rr.toFixed(2)}` : "";
-        const st = draft ? "DRAFT" : "OPEN";
+        const rrText = rr != null && s.status === "open" ? ` · R:R 1:${rr.toFixed(2)}` : "";
+        const st =
+          s.status === "draft" ? "DRAFT" : s.status === "pending" ? "PENDING" : "OPEN";
         let liveText = "";
-        if (!draft && marketRef.current.price != null) {
+        if (s.status === "open" && marketRef.current.price != null) {
           const px = marketRef.current.price;
           const live = long ? px - s.entry.price : s.entry.price - px;
           liveText = ` · ${live >= 0 ? "+" : ""}${live.toFixed(2)}`;
@@ -638,11 +701,11 @@ export function Chart({
           8,
           Math.max(14, E.y - 8)
         );
-        if (S) {
+        if (S && (s.status === "open" || draft)) {
           ctx.fillStyle = "#f59e0b";
           ctx.fillText(`SL ${s.stop.price.toFixed(2)}`, 8, Math.max(14, S.y - 8));
         }
-        if (T) {
+        if (T && (s.status === "open" || draft)) {
           ctx.fillStyle = "#38bdf8";
           ctx.fillText(`TP ${s.takeProfit.price.toFixed(2)}`, 8, Math.max(14, T.y - 8));
         }
@@ -786,7 +849,7 @@ export function Chart({
       if (nearHandle(sy) || nearLine(sy)) return { id: s.id, field: "stop" };
       if (nearHandle(ty) || nearLine(ty)) return { id: s.id, field: "takeProfit" };
       if (
-        s.status === "draft" &&
+        (s.status === "draft" || s.status === "pending") &&
         s.orderType !== "market" &&
         (nearHandle(ey) || nearLine(ey))
       ) {
@@ -846,7 +909,14 @@ export function Chart({
     if (!s) return;
     if (d.field === "stop") updatePosition(d.id, { stop: { ...s.stop, price } });
     else if (d.field === "takeProfit") updatePosition(d.id, { takeProfit: { ...s.takeProfit, price } });
-    else if (d.field === "entry") updatePosition(d.id, { entry: { ...s.entry, price } });
+    else if (d.field === "entry") {
+      // For stop-limit drafts/pending, entry line tracks the limit price.
+      const patch: Partial<PositionShape> = { entry: { ...s.entry, price } };
+      if (s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit") {
+        patch.limitPrice = price;
+      }
+      updatePosition(d.id, patch);
+    }
   }
 
   function setChartInteraction(enabled: boolean) {
@@ -1298,9 +1368,9 @@ export function Chart({
     }
   }, [bars, cursor, indicators]);
 
-  // Execution engine: evaluate exact 1-second bars only — never aggregated TF.
-  // When Replay Step > 1s, execBars holds every intermediate 1s bar so SL/TP
-  // still fires on the first touch inside the jumped window.
+  // Execution engine: exact 1-second bars only — never aggregated TF.
+  // Order: (1) pending entry / stop-limit stages → (2) SL/TP on open only.
+  // When Replay Step > 1s, execBars holds every intermediate 1s bar.
   // Same-second SL+TP → SL wins (OHLC has no intrasecond order).
   useEffect(() => {
     const sequence: Bar[] =
@@ -1311,21 +1381,90 @@ export function Chart({
           : [];
     if (!sequence.length) return;
 
-    const openOnes = shapesRef.current.filter(
-      (s): s is PositionShape => s.kind === "position" && s.status === "open"
+    const hasWork = shapesRef.current.some(
+      (s) =>
+        s.kind === "position" && (s.status === "open" || s.status === "pending")
     );
-    if (!openOnes.length) return;
+    if (!hasWork) return;
 
     let working: Shape[] = shapesRef.current.slice();
     const closed: ClosedPosition[] = [];
+    let mutated = false;
 
     for (const bar of sequence) {
       const nextWorking: Shape[] = [];
       for (const s of working) {
-        if (s.kind !== "position" || s.status !== "open") {
+        if (s.kind !== "position") {
           nextWorking.push(s);
           continue;
         }
+
+        // ----- PENDING: entry / stop-limit (never SL/TP) -----
+        if (s.status === "pending") {
+          const hi = bar.high;
+          const lo = bar.low;
+          const isStopLimit =
+            s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit";
+
+          if (isStopLimit) {
+            const stopPx = s.stopPrice;
+            const limitPx = s.limitPrice;
+            if (stopPx == null || limitPx == null) {
+              nextWorking.push(s);
+              continue;
+            }
+            let triggered = !!s.stopTriggered;
+            // Stage 1: stop trigger (does not fill)
+            if (!triggered) {
+              if (s.orderType === "buy_stop_limit" && hi >= stopPx) triggered = true;
+              if (s.orderType === "sell_stop_limit" && lo <= stopPx) triggered = true;
+            }
+            // Stage 2: limit fill only after stop is armed
+            if (triggered) {
+              const limitHit =
+                s.orderType === "buy_stop_limit"
+                  ? lo <= limitPx
+                  : hi >= limitPx;
+              if (limitHit) {
+                mutated = true;
+                nextWorking.push({
+                  ...s,
+                  status: "open",
+                  stopTriggered: true,
+                  entry: { time: bar.time, price: limitPx },
+                });
+                continue;
+              }
+            }
+            if (triggered !== !!s.stopTriggered) {
+              mutated = true;
+              nextWorking.push({ ...s, stopTriggered: triggered });
+            } else {
+              nextWorking.push(s);
+            }
+            continue;
+          }
+
+          // Simple stop / limit: fill when 1s OHLC touches entry
+          if (pendingEntryTouched(s.orderType, s.entry.price, hi, lo)) {
+            mutated = true;
+            nextWorking.push({
+              ...s,
+              status: "open",
+              entry: { time: bar.time, price: s.entry.price },
+            });
+          } else {
+            nextWorking.push(s);
+          }
+          continue;
+        }
+
+        // ----- OPEN: SL/TP only -----
+        if (s.status !== "open") {
+          nextWorking.push(s);
+          continue;
+        }
+
         const sameSecondAsEntry = bar.time <= s.entry.time;
         const hi = sameSecondAsEntry ? bar.close : bar.high;
         const lo = sameSecondAsEntry ? bar.close : bar.low;
@@ -1334,31 +1473,55 @@ export function Chart({
         let exitPrice = bar.close;
 
         if (long) {
-          if (lo <= s.stop.price) { reason = "sl"; exitPrice = s.stop.price; }
-          else if (hi >= s.takeProfit.price) { reason = "tp"; exitPrice = s.takeProfit.price; }
+          if (lo <= s.stop.price) {
+            reason = "sl";
+            exitPrice = s.stop.price;
+          } else if (hi >= s.takeProfit.price) {
+            reason = "tp";
+            exitPrice = s.takeProfit.price;
+          }
         } else {
-          if (hi >= s.stop.price) { reason = "sl"; exitPrice = s.stop.price; }
-          else if (lo <= s.takeProfit.price) { reason = "tp"; exitPrice = s.takeProfit.price; }
+          if (hi >= s.stop.price) {
+            reason = "sl";
+            exitPrice = s.stop.price;
+          } else if (lo <= s.takeProfit.price) {
+            reason = "tp";
+            exitPrice = s.takeProfit.price;
+          }
         }
 
         if (!reason) {
           nextWorking.push(s);
           continue;
         }
+        mutated = true;
         const pnlPoints = long ? exitPrice - s.entry.price : s.entry.price - exitPrice;
         closed.push({
-          id: s.id, side: s.side, orderType: s.orderType, entry: s.entry, stop: s.stop,
-          takeProfit: s.takeProfit, exitPrice, exitTime: bar.time, reason, pnlPoints,
+          id: s.id,
+          side: s.side,
+          orderType: s.orderType,
+          entry: s.entry,
+          stop: s.stop,
+          takeProfit: s.takeProfit,
+          exitPrice,
+          exitTime: bar.time,
+          reason,
+          pnlPoints,
         });
       }
       working = nextWorking;
-      if (!working.some((s) => s.kind === "position" && s.status === "open")) break;
     }
 
-    if (!closed.length) return;
+    if (!mutated && !closed.length) return;
     onShapesChangeRef.current(working);
     for (const c of closed) onPositionClosedRef.current?.(c);
-    setHint(closed.map((c) => `${c.side.toUpperCase()} ${c.reason.toUpperCase()} @ ${c.exitPrice.toFixed(2)}`).join(" · "));
+    if (closed.length) {
+      setHint(
+        closed
+          .map((c) => `${c.side.toUpperCase()} ${c.reason.toUpperCase()} @ ${c.exitPrice.toFixed(2)}`)
+          .join(" · ")
+      );
+    }
   }, [marketPrice, marketTime, replayBar, execBars]);
 
   useEffect(() => {

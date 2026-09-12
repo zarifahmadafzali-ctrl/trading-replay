@@ -607,6 +607,16 @@ footer {
     min-height: 40px;
     padding: 6px 8px;
   }
+  /* v3.15.2.4: Orders/TF/Ind panels live inside .replay-topbar. Fixed
+     children are still trapped in that bar's stacking context (z-index:30),
+     so a later sibling bar (.replay-range with date inputs) painted over the
+     open panel. Raise the topbar above the date-range bar on mobile only. */
+  .bar.replay-topbar {
+    z-index: 40;
+  }
+  .bar.replay-range {
+    z-index: 20;
+  }
   /* v3.15.2.2: horizontal scroll is mobile-only now (was unconditional,
      which broke desktop dropdowns — see .mobile-scroll above). */
   .mobile-scroll {
@@ -625,6 +635,7 @@ footer {
     right: 8px;
     max-height: 50vh;
     min-width: 0;
+    z-index: 60;
   }
   /* Top-bar panels (TF/Orders/Indicators) drop near the top, where their
      toggle buttons actually are, instead of teleporting to the bottom —

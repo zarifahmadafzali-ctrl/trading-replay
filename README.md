@@ -120,3 +120,12 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - After placing H/V line, tool auto-resets to crosshair.
 - With H/V tool still active, tapping an existing line selects it instead of stacking a new one.
 - Delete via ×, toolbar trash, or Delete/Backspace once selected; positions unchanged.
+
+## v3.15.2.4 pending-order lifecycle
+
+- Status model: `draft` → `pending` (Confirm for non-market) → `open` (entry filled on 1s OHLC) → SL/TP → Journal.
+- Market Confirm still goes straight to `open`.
+- Six pending types: Buy/Sell Limit, Buy/Sell Stop, Buy/Sell Stop Limit.
+- Stop-Limit uses explicit `stopPrice` + `limitPrice` and a two-stage trigger (stop arms, then limit fills).
+- SL/TP and Journal only run for `status === "open"`.
+- Legacy non-market shapes stored as `open` are treated as `pending` on load.
