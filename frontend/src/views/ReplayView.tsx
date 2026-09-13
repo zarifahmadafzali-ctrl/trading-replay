@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chart, type ClosedPosition, type DrawTool, type IndicatorSpec, type OrderType, type Shape } from "../components/Chart";
 import { Toolbar } from "../components/Toolbar";
 import { fetchBars, addTrade } from "../lib/api";
@@ -20,7 +20,15 @@ import {
   setActiveSessionId,
   upsertSession,
   defaultRuntime,
+  ensureSessionAccounts,
+  getActiveAccount,
+  type SessionMeta,
 } from "../lib/sessionStore";
+import {
+  calculateRisk,
+  defaultInstrument,
+  type RiskCalcResult,
+} from "../lib/riskModel";
 import { SYMBOLS, TIMEFRAMES, formatTf } from "../lib/types";
 import type { Bar } from "../lib/types";
 
@@ -116,6 +124,9 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [goToValue, setGoToValue] = useState("");
   const [shapes, setShapes] = useState<Shape[]>(() => loadShapesFor(saved?.symbol ?? SYMBOLS[0]));
   const [orderType, setOrderType] = useState<OrderType>(() => (saved?.orderType as OrderType) || "market");
+  const [riskPercent, setRiskPercent] = useState(1);
+  const [sessionMeta, setSessionMeta] = useState<SessionMeta | null>(null);
+  const lastRiskSnapshotRef = useRef<RiskCalcResult | null>(null);
   const [followPrice, setFollowPrice] = useState(() => saved?.followPrice ?? false);
   const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
   const [activeIndicatorIds, setActiveIndicatorIds] = useState<string[]>(() => {
@@ -178,11 +189,16 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       const sh = (await getSessionShapes(id)) as Shape[];
       if (cancelled) return;
       if (meta) {
-        setSymbol(meta.symbol);
-        setStart(meta.start);
-        setEnd(meta.end);
-        setDataSource(meta.dataSource);
-        setSessionLabel(meta.name);
+        const full = ensureSessionAccounts(meta);
+        if (JSON.stringify(full) !== JSON.stringify(meta)) {
+          void upsertSession(full);
+        }
+        setSessionMeta(full);
+        setSymbol(full.symbol);
+        setStart(full.start);
+        setEnd(full.end);
+        setDataSource(full.dataSource);
+        setSessionLabel(full.name);
       }
       setTimeframeSeconds(rt.timeframeSeconds);
       setCustomTfs(rt.customTfs || []);
@@ -524,6 +540,13 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   
   async function handlePositionClosed(closed: ClosedPosition) {
     const note = `auto-${closed.reason} · ${closed.pnlPoints >= 0 ? "+" : ""}${closed.pnlPoints.toFixed(2)} pts`;
+    const snap = (closed.riskSnapshot || lastRiskSnapshotRef.current) as Record<string, unknown> | null;
+    const meta = sessionMeta ? ensureSessionAccounts(sessionMeta) : null;
+    const acc = meta ? getActiveAccount(meta) : null;
+    const num = (k: string) => {
+      const v = snap?.[k];
+      return typeof v === "number" ? v : undefined;
+    };
     const localTrade = {
       id: `replay-${closed.id}-${closed.exitTime}`,
       symbol,
@@ -539,6 +562,23 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       pnlPoints: closed.pnlPoints,
       rMultiple: rMultiple(closed.side, closed.entry.price, closed.stop.price, closed.exitPrice),
       note,
+      accountId: (snap?.accountId as string) || acc?.accountId,
+      balanceBefore: num("balance") ?? num("balanceBefore"),
+      equityBefore: num("equity") ?? num("equityBefore"),
+      freeMarginBefore: num("freeMargin") ?? num("freeMarginBefore"),
+      leverage: num("leverage") ?? acc?.leverage,
+      riskPercent: num("riskPercent") ?? riskPercent,
+      riskAmount: num("riskAmount"),
+      riskBasedLot: num("riskBasedLot") ?? null,
+      marginMaxLot: num("marginMaxLot") ?? null,
+      finalLot: num("finalLot") ?? null,
+      actualRiskAmount: num("actualRiskAmount") ?? null,
+      actualRiskPercent: num("actualRiskPercent") ?? null,
+      slDistance: num("slDistance") ?? Math.abs(closed.entry.price - closed.stop.price),
+      tpDistance: num("tpDistance") ?? Math.abs(closed.takeProfit.price - closed.entry.price),
+      durationSeconds: Math.max(0, closed.exitTime - closed.entry.time),
+      snapshot: snap as any,
+      closeScreenshot: closed.screenshot,
     };
     // Local storage is the immediate source of truth, so an auto-closed replay
     // trade is never lost just because the backend is sleeping/offline.
@@ -624,6 +664,75 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
 
   const STEP_PRESETS = [1, 5, 10, 30, 60, 120, 300, 600, 900, 1800, 3600];
 
+
+  // v3.16.1 live risk calculator from draft/selected position + order risk %
+  const captureRiskSnapshot = useCallback(
+    (pos: import("../components/Chart").PositionShape) => {
+      if (!sessionMeta) return null;
+      const full = ensureSessionAccounts(sessionMeta);
+      const account = getActiveAccount(full);
+      const instrument = full.instrument || defaultInstrument(symbol);
+      const result = calculateRisk({
+        account,
+        instrument,
+        riskPercent,
+        entryPrice: pos.entry.price,
+        stopPrice: pos.stop.price,
+        takeProfitPrice: pos.takeProfit.price,
+        side: pos.side,
+      });
+      return {
+        accountId: account.accountId,
+        balance: result.balance,
+        equity: result.equity,
+        freeMargin: result.freeMargin,
+        leverage: result.leverage,
+        riskPercent: result.riskPercent,
+        riskAmount: result.riskAmount,
+        entryPrice: pos.entry.price,
+        stopLoss: pos.stop.price,
+        takeProfit: pos.takeProfit.price,
+        slDistance: result.slDistance,
+        tpDistance: result.tpDistance,
+        pointValue: result.pointValue,
+        riskBasedLot: result.riskBasedLot,
+        marginMaxLot: result.marginMaxLot,
+        finalLot: result.finalLot,
+        marginRequired: result.marginRequired,
+        actualRiskAmount: result.actualRiskAmount,
+        actualRiskPercent: result.actualRiskPercent,
+        entryTime: pos.entry.time,
+      };
+    },
+    [sessionMeta, riskPercent, symbol]
+  );
+
+  const liveRisk = useMemo((): RiskCalcResult | null => {
+    if (!sessionMeta) return null;
+    const full = ensureSessionAccounts(sessionMeta);
+    const account = getActiveAccount(full);
+    const instrument = full.instrument || defaultInstrument(symbol);
+    const pos = shapes.find((s) => s.kind === "position" && (s.status === "draft" || s.id === selectedShapeId)) as
+      | import("../components/Chart").PositionShape
+      | undefined;
+    const draft = shapes.find((s) => s.kind === "position" && s.status === "draft") as
+      | import("../components/Chart").PositionShape
+      | undefined;
+    const p = draft || pos;
+    if (!p || p.kind !== "position") return null;
+    const result = calculateRisk({
+      account,
+      instrument,
+      riskPercent,
+      entryPrice: p.entry.price,
+      stopPrice: p.stop.price,
+      takeProfitPrice: p.takeProfit.price,
+      side: p.side,
+    });
+    lastRiskSnapshotRef.current = result;
+    return result;
+  }, [sessionMeta, shapes, selectedShapeId, riskPercent, symbol]);
+
   return (
     <section className="replay-view">
       {/* Compact top: symbol + TF dropdown + Orders + data */}
@@ -697,7 +806,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
             Orders ▾
           </button>
           {ordersOpen && (
-            <div className="tools-panel panel-top">
+            <div className="tools-panel panel-top risk-panel">
               <select value={orderType} onChange={(e) => setOrderType(e.target.value as OrderType)}>
                 <option value="market">Market</option>
                 <option value="buy_limit">Buy Limit</option>
@@ -707,10 +816,60 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                 <option value="buy_stop_limit">Buy Stop Limit</option>
                 <option value="sell_stop_limit">Sell Stop Limit</option>
               </select>
+              {sessionMeta && ensureSessionAccounts(sessionMeta).accounts && (
+                <select
+                  value={sessionMeta.activeAccountId || ""}
+                  onChange={(e) => {
+                    const full = ensureSessionAccounts(sessionMeta);
+                    const next = { ...full, activeAccountId: e.target.value, updatedAt: Date.now() };
+                    setSessionMeta(next);
+                    void upsertSession(next);
+                  }}
+                  title="Active account"
+                >
+                  {ensureSessionAccounts(sessionMeta).accounts!.map((a) => (
+                    <option key={a.accountId} value={a.accountId}>
+                      {a.name} · {a.currency} {a.balance.toLocaleString()} · 1:{a.leverage}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <label className="risk-label">
+                Risk %
+                <input
+                  type="number"
+                  min={0.01}
+                  max={100}
+                  step={0.01}
+                  value={riskPercent}
+                  onChange={(e) => setRiskPercent(Math.max(0.01, Number(e.target.value) || 1))}
+                />
+              </label>
               <button type="button" className="on" onClick={confirmOrder}>Confirm</button>
               <button type="button" onClick={() => window.dispatchEvent(new Event("tr-cancel-draft"))}>Cancel draft</button>
               <button type="button" onClick={() => { setShapes([]); setSelectedShapeId(null); }}>Clear drawings</button>
-              <p className="tools-note">Pick Long/Short on the chart toolbar, set an order type here, then Confirm.</p>
+              {liveRisk && (
+                <div className="risk-calc">
+                  {liveRisk.missingSpec ? (
+                    <p className="tools-note warn-text">Instrument specification required: {liveRisk.missingSpec}</p>
+                  ) : (
+                    <>
+                      <p className="tools-note">
+                        Eq {liveRisk.equity.toFixed(0)} · Lev 1:{liveRisk.leverage} · SL {liveRisk.slDistance.toFixed(2)} pts
+                      </p>
+                      <p className="tools-note">
+                        Risk ${liveRisk.riskAmount.toFixed(2)} ({liveRisk.riskPercent.toFixed(2)}%) · RiskLot {liveRisk.riskBasedLot ?? "—"} · MaxMarg {liveRisk.marginMaxLot ?? "—"} · <b>Lot {liveRisk.finalLot ?? "—"}</b>
+                      </p>
+                      <p className="tools-note">
+                        Actual risk {liveRisk.actualRiskPercent != null ? liveRisk.actualRiskPercent.toFixed(2) + "%" : "—"}
+                        {liveRisk.rr != null ? ` · R:R 1:${liveRisk.rr.toFixed(2)}` : ""}
+                        {liveRisk.potentialProfit != null ? ` · TP $${liveRisk.potentialProfit.toFixed(2)}` : ""}
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+              <p className="tools-note">Pick Long/Short on the chart toolbar, set Risk % and order type, then Confirm.</p>
             </div>
           )}
         </div>
@@ -758,6 +917,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           onSelectedShapeId={setSelectedShapeId}
           onDrawToolChange={pickTool}
           onPositionClosed={handlePositionClosed}
+          captureRiskSnapshot={captureRiskSnapshot}
           indicators={indicators}
         />
       </div>

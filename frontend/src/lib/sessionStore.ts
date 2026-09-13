@@ -5,6 +5,9 @@
  * Market bars remain in the shared day-sharded barCache (symbol|YYYY-MM-DD).
  */
 
+import type { AccountProfile, InstrumentSpec, PropFirmConfig } from "./riskModel";
+import { defaultAccount, defaultInstrument, defaultPropFirm } from "./riskModel";
+
 export type SessionDataSource = "demo" | "loaded" | "csv";
 
 export type SessionMeta = {
@@ -16,6 +19,12 @@ export type SessionMeta = {
   dataSource: SessionDataSource;
   createdAt: number;
   updatedAt: number;
+  /** Up to 3 account profiles (v3.16.1). */
+  accounts?: AccountProfile[];
+  activeAccountId?: string;
+  instrument?: InstrumentSpec;
+  propFirm?: PropFirmConfig;
+  sessionType?: "backtest" | "prop";
 };
 
 export type SessionRuntime = {
@@ -211,6 +220,7 @@ export async function createSession(input: {
 }): Promise<SessionMeta> {
   const id = uid();
   const now = Date.now();
+  const acc = defaultAccount({ name: "Account 1", initialBalance: 5000, balance: 5000, leverage: 20 });
   const meta: SessionMeta = {
     id,
     name: input.name.trim(),
@@ -220,6 +230,11 @@ export async function createSession(input: {
     dataSource: input.dataSource ?? "demo",
     createdAt: now,
     updatedAt: now,
+    accounts: [acc],
+    activeAccountId: acc.accountId,
+    instrument: defaultInstrument(input.symbol),
+    propFirm: defaultPropFirm(),
+    sessionType: "backtest",
   };
   await upsertSession(meta);
   await putRuntime(
@@ -337,3 +352,37 @@ export const SESSION_CHANGED_EVENT = "tr-session-changed";
 export function emitSessionChanged(sessionId: string | null): void {
   window.dispatchEvent(new CustomEvent(SESSION_CHANGED_EVENT, { detail: { sessionId } }));
 }
+
+export function ensureSessionAccounts(meta: SessionMeta): SessionMeta {
+  let accounts = meta.accounts?.filter((a) => a && a.enabled !== false) ?? [];
+  if (!accounts.length) {
+    const acc = defaultAccount({ name: "Account 1" });
+    accounts = [acc];
+    return {
+      ...meta,
+      accounts,
+      activeAccountId: acc.accountId,
+      instrument: meta.instrument || defaultInstrument(meta.symbol),
+      propFirm: meta.propFirm || defaultPropFirm(),
+      sessionType: meta.sessionType || "backtest",
+    };
+  }
+  // Cap at 3
+  accounts = accounts.slice(0, 3);
+  const active =
+    accounts.find((a) => a.accountId === meta.activeAccountId)?.accountId || accounts[0].accountId;
+  return {
+    ...meta,
+    accounts,
+    activeAccountId: active,
+    instrument: meta.instrument || defaultInstrument(meta.symbol),
+    propFirm: meta.propFirm || defaultPropFirm(),
+    sessionType: meta.sessionType || "backtest",
+  };
+}
+
+export function getActiveAccount(meta: SessionMeta): AccountProfile {
+  const m = ensureSessionAccounts(meta);
+  return m.accounts!.find((a) => a.accountId === m.activeAccountId) || m.accounts![0];
+}
+

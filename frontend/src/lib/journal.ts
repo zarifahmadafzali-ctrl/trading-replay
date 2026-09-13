@@ -1,4 +1,5 @@
 import { getActiveSessionId, getSessionTrades, putSessionTrades } from "./sessionStore";
+import type { TradeRiskSnapshot } from "./riskModel";
 
 export type CloseReason = "sl" | "tp" | "manual";
 
@@ -18,6 +19,25 @@ export type JournalTrade = {
   rMultiple: number | null;
   note?: string;
   sessionId?: string;
+  /** v3.16.1 trade snapshot at fill */
+  accountId?: string;
+  balanceBefore?: number;
+  equityBefore?: number;
+  freeMarginBefore?: number;
+  leverage?: number;
+  riskPercent?: number;
+  riskAmount?: number;
+  riskBasedLot?: number | null;
+  marginMaxLot?: number | null;
+  finalLot?: number | null;
+  actualRiskAmount?: number | null;
+  actualRiskPercent?: number | null;
+  slDistance?: number;
+  tpDistance?: number | null;
+  durationSeconds?: number;
+  snapshot?: TradeRiskSnapshot;
+  /** Chart PNG at close only (SL/TP/manual). */
+  closeScreenshot?: string;
 };
 
 const LEGACY_KEY = "tr-trade-journal-v1";

@@ -832,3 +832,27 @@ footer {
   gap: 6px;
 }
 .muted { color: #8b9bb0; font-size: 12px; }
+
+.risk-panel {
+  min-width: 280px;
+  max-width: min(360px, 92vw);
+}
+.risk-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #c5d0dc;
+}
+.risk-label input {
+  width: 64px;
+}
+.risk-calc {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #293542;
+}
+.risk-calc .tools-note {
+  margin: 2px 0;
+  line-height: 1.35;
+}

@@ -4,12 +4,15 @@ import {
   createSession,
   deleteSessionAll,
   emitSessionChanged,
+  ensureSessionAccounts,
   getActiveSessionId,
   listSessions,
   migrateLegacyToSessionIfNeeded,
   setActiveSessionId,
+  upsertSession,
   type SessionMeta,
 } from "../lib/sessionStore";
+import { defaultAccount } from "../lib/riskModel";
 
 function isoDaysAgo(days: number) {
   const d = new Date();
@@ -131,6 +134,13 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
               <div>
                 <b>{s.name}</b>
                 <span className="muted"> · {s.symbol} · {s.start} → {s.end}{s.id === activeId ? " · ACTIVE" : ""}</span>
+                {(() => {
+                  const full = ensureSessionAccounts(s);
+                  const acc = full.accounts?.find((a) => a.accountId === full.activeAccountId) || full.accounts?.[0];
+                  return acc ? (
+                    <div className="muted">Acct {acc.name}: {acc.currency} {acc.balance.toLocaleString()} · 1:{acc.leverage}</div>
+                  ) : null;
+                })()}
               </div>
               <div className="session-actions">
                 {s.id !== activeId && (

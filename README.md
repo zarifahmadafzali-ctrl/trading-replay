@@ -142,3 +142,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - SessionView creates/opens/deletes sessions; ReplayView restores full workspace on switch/refresh.
 - Journal is session-scoped. Order lifecycle from v3.15.2.5 preserved.
 - One-time migration from localStorage into a default session.
+
+## v3.16.1 Risk / Lot model
+
+- Per-order Risk % in Orders panel (not fixed at Session level)
+- Up to 3 Account Profiles per Session (balance, leverage, currency)
+- Instrument specification (contract/tick/point) — calculated lots, no hard-coded 0.37
+- finalLot = min(riskLot, marginMaxLot, volumeMax), round DOWN to lot step
+- Trade snapshot fields in Journal; Prop Firm config foundation

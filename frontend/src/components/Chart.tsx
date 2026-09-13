@@ -106,6 +106,8 @@ export type PositionShape = {
   limitPrice?: number;
   /** Stop-Limit only: true after stop trigger, waiting for limit fill. */
   stopTriggered?: boolean;
+  /** Frozen at actual fill (v3.16.1). */
+  riskSnapshot?: Record<string, unknown>;
 };
 
 export type ClosedPosition = {
@@ -119,6 +121,9 @@ export type ClosedPosition = {
   exitTime: number;
   reason: "sl" | "tp";
   pnlPoints: number;
+  riskSnapshot?: Record<string, unknown>;
+  /** PNG data URL captured only on SL/TP/manual close (v3.16.1). */
+  screenshot?: string;
 };
 
 export type Shape = TrendlineShape | RectangleShape | MeasureShape | HLineShape | VLineShape | FibShape | PositionShape;
@@ -234,6 +239,7 @@ export function Chart({
   onSelectedShapeId,
   onDrawToolChange,
   onPositionClosed,
+  captureRiskSnapshot,
   indicators = [],
 }: {
   bars: Bar[];
@@ -255,6 +261,8 @@ export function Chart({
   /** Parent can reset the active tool (e.g. back to crosshair after placing a line). */
   onDrawToolChange?: (tool: DrawTool) => void;
   onPositionClosed?: (closed: ClosedPosition) => void;
+  /** Build immutable risk snapshot at fill time (v3.16.1). */
+  captureRiskSnapshot?: (pos: PositionShape) => Record<string, unknown> | null;
   indicators?: IndicatorSpec[];
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -280,6 +288,8 @@ export function Chart({
   onDrawToolChangeRef.current = onDrawToolChange;
   const onPositionClosedRef = useRef(onPositionClosed);
   onPositionClosedRef.current = onPositionClosed;
+  const captureRiskSnapshotRef = useRef(captureRiskSnapshot);
+  captureRiskSnapshotRef.current = captureRiskSnapshot;
   // Screen-space hit area for the on-canvas "×" delete button drawn next to
   // whichever trendline/rectangle/measure shape is currently selected.
   const deleteButtonRef = useRef<{ id: string; x: number; y: number; r: number } | null>(null);
@@ -396,7 +406,13 @@ export function Chart({
         // Market fills immediately; all pending types wait for entry on 1s bars.
         const nextStatus: PositionShape["status"] =
           s.orderType === "market" ? "open" : "pending";
-        return { ...s, status: nextStatus };
+        const snap =
+          nextStatus === "open" ? captureRiskSnapshotRef.current?.(s) : null;
+        return {
+          ...s,
+          status: nextStatus,
+          ...(snap ? { riskSnapshot: snap } : {}),
+        };
       }
       return s;
     });
@@ -684,11 +700,17 @@ export function Chart({
           hLine(S.y, "#f59e0b", [4, 4]);
           ctx.fillStyle = "#f59e0b";
           ctx.fillRect(w - 28, S.y - 10, 20, 20);
+          const slDist = Math.abs(s.entry.price - s.stop.price);
+          ctx.font = "10px system-ui, sans-serif";
+          ctx.fillText(`SL ${slDist.toFixed(1)} pts`, 8, Math.min(h - 4, S.y + 14));
         }
         if (T && (s.status === "open" || draft)) {
           hLine(T.y, "#38bdf8", [4, 4]);
           ctx.fillStyle = "#38bdf8";
           ctx.fillRect(w - 28, T.y - 10, 20, 20);
+          const tpDist = Math.abs(s.takeProfit.price - s.entry.price);
+          ctx.font = "10px system-ui, sans-serif";
+          ctx.fillText(`TP ${tpDist.toFixed(1)} pts`, 8, Math.max(14, T.y - 8));
         }
         // Entry handle editable while draft or pending (non-market)
         if ((draft || pending) && s.orderType !== "market") {
@@ -1457,12 +1479,14 @@ export function Chart({
                   : hi >= limitPx;
               if (limitHit) {
                 mutated = true;
-                nextWorking.push({
+                const filled: PositionShape = {
                   ...s,
                   status: "open",
                   stopTriggered: true,
                   entry: { time: bar.time, price: limitPx },
-                });
+                };
+                const snap = captureRiskSnapshotRef.current?.(filled);
+                nextWorking.push(snap ? { ...filled, riskSnapshot: snap } : filled);
                 continue;
               }
             }
@@ -1478,11 +1502,13 @@ export function Chart({
           // Simple stop / limit: fill when 1s OHLC touches entry
           if (pendingEntryTouched(s.orderType, s.entry.price, hi, lo)) {
             mutated = true;
-            nextWorking.push({
+            const filled: PositionShape = {
               ...s,
               status: "open",
               entry: { time: bar.time, price: s.entry.price },
-            });
+            };
+            const snap = captureRiskSnapshotRef.current?.(filled);
+            nextWorking.push(snap ? { ...filled, riskSnapshot: snap } : filled);
           } else {
             nextWorking.push(s);
           }
@@ -1526,6 +1552,15 @@ export function Chart({
         }
         mutated = true;
         const pnlPoints = long ? exitPrice - s.entry.price : s.entry.price - exitPrice;
+        let screenshot: string | undefined;
+        try {
+          const shot = handlesRef.current?.chart?.takeScreenshot?.();
+          if (shot && typeof (shot as HTMLCanvasElement).toDataURL === "function") {
+            screenshot = (shot as HTMLCanvasElement).toDataURL("image/png");
+          }
+        } catch {
+          /* screenshot optional */
+        }
         closed.push({
           id: s.id,
           side: s.side,
@@ -1537,6 +1572,8 @@ export function Chart({
           exitTime: bar.time,
           reason,
           pnlPoints,
+          riskSnapshot: s.riskSnapshot,
+          screenshot,
         });
       }
       working = nextWorking;
