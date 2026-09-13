@@ -134,3 +134,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 
 - Buy/Sell Stop Limit: Stop/Trigger (`stopPrice`) is independently draggable from Limit/Entry.
 - Dragging stop changes only `stopPrice`; dragging limit changes only `limitPrice`/entry.
+
+## v3.16.0 Backtest Sessions + IndexedDB
+
+- Real isolated Backtest Sessions (meta + runtime + shapes + journal in IndexedDB).
+- Market 1s bars remain shared in day-sharded barCache (`SYMBOL|YYYY-MM-DD`).
+- SessionView creates/opens/deletes sessions; ReplayView restores full workspace on switch/refresh.
+- Journal is session-scoped. Order lifecycle from v3.15.2.5 preserved.
+- One-time migration from localStorage into a default session.

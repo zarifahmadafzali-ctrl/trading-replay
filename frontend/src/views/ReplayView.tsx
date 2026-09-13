@@ -2,12 +2,25 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Chart, type ClosedPosition, type DrawTool, type IndicatorSpec, type OrderType, type Shape } from "../components/Chart";
 import { Toolbar } from "../components/Toolbar";
 import { fetchBars, addTrade } from "../lib/api";
-import { appendTrade, rMultiple } from "../lib/journal";
+import { appendTradeAsync, rMultiple } from "../lib/journal";
 import { cacheGetRange, cachePutBars } from "../lib/barCache";
 import { generateDemoBars, readCsvFile } from "../lib/demoData";
 import { aggregateVisible } from "../lib/replay";
 import { useReplayHotkeys } from "../lib/useReplayHotkeys";
 import { loadReplaySession, saveReplaySession, type ReplayDataSource } from "../lib/replaySession";
+import {
+  getActiveSessionId,
+  getRuntime,
+  getSession,
+  getSessionShapes,
+  migrateLegacyToSessionIfNeeded,
+  putRuntime,
+  putSessionShapes,
+  SESSION_CHANGED_EVENT,
+  setActiveSessionId,
+  upsertSession,
+  defaultRuntime,
+} from "../lib/sessionStore";
 import { SYMBOLS, TIMEFRAMES, formatTf } from "../lib/types";
 import type { Bar } from "../lib/types";
 
@@ -113,11 +126,14 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     return [];
   });
   const [indOpen, setIndOpen] = useState(false);
-  const [sessionReady, setSessionReady] = useState(() => !(saved && saved.dataSource !== "demo"));
+  const [sessionReady, setSessionReady] = useState(false); // v3.16: true only after session bootstrap
   const restoredCursorRef = useRef<number>(saved?.cursor ?? 800);
   const tfPanelRef = useRef<HTMLDivElement | null>(null);
   const ordersPanelRef = useRef<HTMLDivElement | null>(null);
   const indPanelRef = useRef<HTMLDivElement | null>(null);
+  const sessionIdRef = useRef<string | null>(getActiveSessionId());
+  const loadedSessionRef = useRef<string | null>(null);
+  const [sessionLabel, setSessionLabel] = useState<string>("");
 
   const allTfs = useMemo(() => {
     const set = new Set<number>([...DEFAULT_TFS, ...customTfs, timeframeSeconds]);
@@ -130,13 +146,16 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     } catch { /* */ }
   }, [customTfs]);
 
-  // Drawings persist per symbol so switching symbols (or refreshing) never
-  // silently loses trend lines / levels / measurements you've placed.
+  // Drawings + indicators: session-scoped in IndexedDB (v3.16)
   useEffect(() => {
+    const sid = sessionIdRef.current;
+    // Only persist once bootstrap has fully applied this session's shapes
+    if (!sid || !sessionReady || loadedSessionRef.current !== sid) return;
+    void putSessionShapes(sid, shapes);
     try {
       localStorage.setItem(`tr-shapes-${symbol}`, JSON.stringify(shapes));
     } catch { /* */ }
-  }, [shapes, symbol]);
+  }, [shapes, symbol, sessionReady]);
 
   useEffect(() => {
     try {
@@ -144,71 +163,73 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     } catch { /* */ }
   }, [activeIndicatorIds]);
 
-  // Restore market bars for a previous non-demo session (refresh / cold start).
-  // Bars live in the device day-cache (or backend), not in localStorage.
-  const restoreAttemptedRef = useRef(false);
+  // Bootstrap / switch Backtest Session from IndexedDB
   useEffect(() => {
-    if (restoreAttemptedRef.current) return;
-    if (!saved || saved.dataSource === "demo") {
-      setSessionReady(true);
-      restoreAttemptedRef.current = true;
-      return;
-    }
-    // Wait until health check settles so we can optionally fill cache gaps.
-    if (backendOnline === null) return;
-
     let cancelled = false;
-    restoreAttemptedRef.current = true;
-
-    async function restore() {
-      setLoading(true);
+    async function loadSession(id: string | null) {
+      if (!id) {
+        id = await migrateLegacyToSessionIfNeeded();
+      }
+      if (!id || cancelled) return;
+      sessionIdRef.current = id;
+      setActiveSessionId(id);
+      const meta = await getSession(id);
+      const rt = (await getRuntime(id)) || defaultRuntime(id);
+      const sh = (await getSessionShapes(id)) as Shape[];
+      if (cancelled) return;
+      if (meta) {
+        setSymbol(meta.symbol);
+        setStart(meta.start);
+        setEnd(meta.end);
+        setDataSource(meta.dataSource);
+        setSessionLabel(meta.name);
+      }
+      setTimeframeSeconds(rt.timeframeSeconds);
+      setCustomTfs(rt.customTfs || []);
+      setReplayStepSeconds(Math.max(1, rt.replayStepSeconds || 1));
+      setCursor(Math.max(1, rt.cursor || 1));
+      restoredCursorRef.current = Math.max(1, rt.cursor || 1);
+      setSpeed(rt.speed || 1);
+      setFollowPrice(!!rt.followPrice);
+      setOrderType((rt.orderType as OrderType) || "market");
+      setDrawTool((rt.drawTool as DrawTool) || "crosshair");
+      setActiveIndicatorIds(rt.activeIndicatorIds || []);
+      setShapes(Array.isArray(sh) ? sh : []);
       setPlaying(false);
-      try {
-        const local = await cacheGetRange(saved!.symbol, saved!.start, saved!.end);
-        let bars = local.bars;
-        if (local.missingDays.length && backendOnline) {
-          try {
-            const res = await fetchBars(saved!.symbol, 1, saved!.start, saved!.end);
-            const byT = new Map<number, Bar>();
-            for (const b of local.bars) byT.set(b.time, b);
-            for (const b of res.bars) byT.set(b.time, b);
-            bars = Array.from(byT.values()).sort((a, b) => a.time - b.time);
-            if (bars.length) await cachePutBars(saved!.symbol, bars);
-          } catch {
-            /* keep whatever was on device */
+      setMessage(rt.message || (meta ? meta.name : "Session loaded"));
+      loadedSessionRef.current = id;
+      setSessionReady(true);
+      if (meta && meta.dataSource !== "demo") {
+        setLoading(true);
+        try {
+          const local = await cacheGetRange(meta.symbol, meta.start, meta.end);
+          if (!cancelled && local.bars.length) {
+            setBaseBars(local.bars);
+            const c = Math.min(Math.max(1, rt.cursor || 1), local.bars.length);
+            setCursor(c);
           }
-        }
-        if (cancelled) return;
-        if (bars.length) {
-          setBaseBars(bars);
-          const c = Math.min(Math.max(1, restoredCursorRef.current), bars.length);
-          setCursor(c);
-          setDataSource(saved!.dataSource === "csv" ? "csv" : "loaded");
-          setMessage(
-            `Restored · ${bars.length.toLocaleString()} bars · TF ${formatTf(saved!.timeframeSeconds)} · cursor ${c.toLocaleString()} · PAUSED`
-          );
-        } else {
-          // Do NOT fall back to demo — keep empty and ask user to Load again.
-          setBaseBars([]);
-          setCursor(1);
-          setMessage(
-            `Previous session found (${saved!.symbol} ${saved!.start}→${saved!.end}) but bars are not on this device. Press Load 1s.`
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-          setSessionReady(true);
+        } finally {
+          if (!cancelled) setLoading(false);
         }
       }
     }
-    restore();
+    void loadSession(getActiveSessionId());
+    const onChange = (ev: Event) => {
+      const sid = (ev as CustomEvent).detail?.sessionId as string | null;
+      void loadSession(sid);
+    };
+    window.addEventListener(SESSION_CHANGED_EVENT, onChange);
     return () => {
       cancelled = true;
+      window.removeEventListener(SESSION_CHANGED_EVENT, onChange);
     };
-  }, [backendOnline, saved]);
+  }, []);
 
-  // Persist lightweight session meta (never the full 1s series).
+  // v3.16: bar restore is owned by the Session bootstrap effect above.
+  // Legacy localStorage-only restore is skipped to avoid racing session load.
+  const restoreAttemptedRef = useRef(true);
+
+  // Persist lightweight meta (localStorage) + session runtime (IndexedDB).
   useEffect(() => {
     if (!sessionReady) return;
     saveReplaySession({
@@ -226,6 +247,35 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       drawTool,
       message,
     });
+    const sid = sessionIdRef.current;
+    if (sid) {
+      void putRuntime({
+        sessionId: sid,
+        timeframeSeconds,
+        customTfs,
+        replayStepSeconds,
+        cursor,
+        speed,
+        followPrice,
+        orderType,
+        drawTool,
+        activeIndicatorIds,
+        message,
+        playing: false,
+        updatedAt: Date.now(),
+      });
+      void getSession(sid).then((meta) => {
+        if (!meta) return;
+        void upsertSession({
+          ...meta,
+          symbol,
+          start,
+          end,
+          dataSource,
+          updatedAt: Date.now(),
+        });
+      });
+    }
   }, [
     sessionReady,
     symbol,
@@ -241,6 +291,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     orderType,
     drawTool,
     message,
+    activeIndicatorIds,
   ]);
 
   useEffect(() => {
@@ -491,7 +542,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     };
     // Local storage is the immediate source of truth, so an auto-closed replay
     // trade is never lost just because the backend is sleeping/offline.
-    appendTrade(localTrade);
+    void appendTradeAsync({ ...localTrade, sessionId: sessionIdRef.current || undefined });
     setMessage(
       `Closed ${closed.side.toUpperCase()} on ${closed.reason.toUpperCase()} @ ${closed.exitPrice.toFixed(2)} (${closed.pnlPoints >= 0 ? "+" : ""}${closed.pnlPoints.toFixed(2)}) · Journal saved`
     );
@@ -577,6 +628,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     <section className="replay-view">
       {/* Compact top: symbol + TF dropdown + Orders + data */}
       <div className="bar replay-topbar mobile-scroll">
+        {sessionLabel ? <span className="session-chip" title="Active backtest session">{sessionLabel}</span> : null}
         <select value={symbol} onChange={(e) => handleSymbolChange(e.target.value)}>
           {SYMBOLS.map((s) => (
             <option key={s} value={s}>{s}</option>

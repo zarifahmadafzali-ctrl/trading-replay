@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { addTrade, deleteTrade, fetchTrades } from "../lib/api";
 import type { Trade, TradeStats } from "../lib/api";
-import { appendTrade, loadJournal, rMultiple, saveJournal, type JournalTrade } from "../lib/journal";
+import { appendTrade, loadJournalForSession, saveJournalForSession, rMultiple, type JournalTrade } from "../lib/journal";
+import { getActiveSessionId, SESSION_CHANGED_EVENT } from "../lib/sessionStore";
 
 const emptyForm = {
   symbol: "",
@@ -56,7 +57,7 @@ function EquityCurve({ trades }: { trades: Trade[] }) {
 
 export function JournalView({ backendOnline }: { backendOnline: boolean | null }) {
   const [backendTrades, setBackendTrades] = useState<Trade[]>([]);
-  const [localTrades, setLocalTrades] = useState<JournalTrade[]>(() => loadJournal());
+  const [localTrades, setLocalTrades] = useState<JournalTrade[]>([]);
   const [stats, setStats] = useState<TradeStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -89,8 +90,15 @@ export function JournalView({ backendOnline }: { backendOnline: boolean | null }
   }, [backendTrades, localTrades]);
 
   function refreshLocal() {
-    setLocalTrades(loadJournal());
+    void loadJournalForSession(getActiveSessionId()).then(setLocalTrades);
   }
+
+  useEffect(() => {
+    refreshLocal();
+    const onSess = () => refreshLocal();
+    window.addEventListener(SESSION_CHANGED_EVENT, onSess);
+    return () => window.removeEventListener(SESSION_CHANGED_EVENT, onSess);
+  }, []);
 
   function load() {
     refreshLocal();
@@ -168,7 +176,7 @@ export function JournalView({ backendOnline }: { backendOnline: boolean | null }
   async function handleDelete(id: string) {
     const local = localTrades.filter((t) => t.id !== id);
     if (local.length !== localTrades.length) {
-      saveJournal(local);
+      void saveJournalForSession(getActiveSessionId(), local);
       setLocalTrades(local);
     }
     if (backendOnline && !id.startsWith("replay-") && !id.startsWith("manual-")) {

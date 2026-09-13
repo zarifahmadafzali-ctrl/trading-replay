@@ -810,3 +810,25 @@ footer {
   border-radius: 2px;
   display: inline-block;
 }
+
+.session-chip {
+  font-size: 11px;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid #5b4a1e;
+  border-radius: 6px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-items li.session-active {
+  border-color: #fbbf24;
+  background: rgba(251, 191, 36, 0.06);
+}
+.session-actions {
+  display: flex;
+  gap: 6px;
+}
+.muted { color: #8b9bb0; font-size: 12px; }

@@ -41,7 +41,7 @@ export function App() {
         {view === "journal" && <JournalView backendOnline={backendOnline} />}
         {view === "dataEngine" && <DataEngineView backendOnline={backendOnline} />}
       </main>
-      <footer>Paper Trading Only · PWA · Data Engine v3.2</footer>
+      <footer>Paper Trading Only · PWA · Sessions + IDB v3.16</footer>
     </div>
   );
 }
