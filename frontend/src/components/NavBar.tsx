@@ -5,6 +5,7 @@ const TABS: { id: ViewName; label: string }[] = [
   { id: "watchlist", label: "Watchlist" },
   { id: "session", label: "Session" },
   { id: "journal", label: "Journal" },
+  { id: "analytics", label: "Analytics" },
   { id: "dataEngine", label: "Data Engine" },
 ];
 

@@ -5,6 +5,7 @@ import { WatchlistView } from "./views/WatchlistView";
 import { SessionView } from "./views/SessionView";
 import { DataEngineView } from "./views/DataEngineView";
 import { JournalView } from "./views/JournalView";
+import { AnalyticsView } from "./views/AnalyticsView";
 import { checkHealth } from "./lib/api";
 import type { ViewName } from "./lib/types";
 
@@ -39,9 +40,10 @@ export function App() {
         {view === "watchlist" && <WatchlistView backendOnline={backendOnline} />}
         {view === "session" && <SessionView backendOnline={backendOnline} />}
         {view === "journal" && <JournalView backendOnline={backendOnline} />}
+        {view === "analytics" && <AnalyticsView backendOnline={backendOnline} />}
         {view === "dataEngine" && <DataEngineView backendOnline={backendOnline} />}
       </main>
-      <footer>Paper Trading Only · PWA · Sessions + IDB v3.16</footer>
+      <footer>Paper Trading Only · PWA · Sessions + Analytics v3.17</footer>
     </div>
   );
 }

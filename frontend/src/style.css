@@ -937,3 +937,64 @@ footer {
   background: #111820;
 }
 .prop-block { border-top: 1px solid #27323e; padding-top: 10px; margin-top: 10px; }
+
+
+/* —— Analytics v3.17 —— */
+.analytics-view h2 { margin: 0 0 4px; }
+.analytics-view h3 { margin: 18px 0 8px; font-size: 1rem; color: #9ec1ff; }
+.analytics-view h4 { margin: 12px 0 6px; font-size: 0.9rem; color: #a0a8b8; }
+.analytics-filters {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+  margin: 12px 0 16px;
+}
+.analytics-filters label {
+  display: flex; flex-direction: column; gap: 4px; font-size: 0.75rem; color: #8b93a7;
+}
+.analytics-filters select, .analytics-filters input {
+  background: #12161f; border: 1px solid #2a3142; color: #e8eaed;
+  border-radius: 6px; padding: 6px 8px; min-width: 120px;
+}
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+}
+.stat-card {
+  background: #141922;
+  border: 1px solid #252b3a;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.stat-label { font-size: 0.7rem; color: #8b93a7; text-transform: uppercase; letter-spacing: 0.03em; }
+.stat-value { font-size: 1.05rem; font-weight: 600; color: #e8eaed; }
+.stat-card.pos .stat-value { color: #3ecf8e; }
+.stat-card.neg .stat-value { color: #e05c5c; }
+.chart-card { padding: 12px; overflow: hidden; }
+.analytics-svg { width: 100%; height: auto; max-height: 180px; display: block; }
+.chart-empty { color: #8b93a7; font-size: 0.85rem; padding: 24px; text-align: center; }
+.table-wrap { overflow-x: auto; margin-bottom: 12px; }
+.analytics-table {
+  width: 100%; border-collapse: collapse; font-size: 0.82rem;
+}
+.analytics-table th, .analytics-table td {
+  border-bottom: 1px solid #252b3a; padding: 6px 8px; text-align: left; white-space: nowrap;
+}
+.analytics-table th { color: #8b93a7; font-weight: 500; }
+.r-hist {
+  display: flex; align-items: flex-end; gap: 4px; height: 120px;
+  padding: 8px 4px 0;
+}
+.r-hist-col {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+  height: 100%; min-width: 18px;
+}
+.r-hist-bar {
+  width: 100%; max-width: 28px; background: #3d9cfd; border-radius: 3px 3px 0 0; min-height: 2px;
+}
+.r-hist-col span { font-size: 0.65rem; color: #8b93a7; margin-top: 4px; }
+@media (max-width: 640px) {
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .analytics-filters { flex-direction: column; align-items: stretch; }
+  .analytics-filters select, .analytics-filters input { width: 100%; }
+}

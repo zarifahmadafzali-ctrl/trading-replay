@@ -21,7 +21,7 @@ export type ReplaySession = {
   notes: string;
 };
 
-export type ViewName = "replay" | "watchlist" | "session" | "dataEngine" | "journal";
+export type ViewName = "replay" | "watchlist" | "session" | "dataEngine" | "journal" | "analytics";
 
 export const TIMEFRAMES: { label: string; seconds: number }[] = [
   { label: "1s", seconds: 1 },

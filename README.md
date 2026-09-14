@@ -191,3 +191,9 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Per-day `/api/bars/day` transfer
 - Local cache fills incrementally during recovery (no giant Warm)
 - Resume-safe day shards; dual BACKEND vs LOCAL UI
+
+## v3.17.0 Professional Analytics
+
+- Analytics view from closed Journal only
+- Equity/drawdown curves, R stats, streaks, time & breakdown tables
+- Session/account/symbol/date filters
