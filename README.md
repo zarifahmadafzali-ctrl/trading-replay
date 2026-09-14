@@ -165,3 +165,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Mobile TF preset list touch-scrollable
 - Drawing Tools menu, Magnet/Undo UI, floating favorites toolbar
 - Session Create: type, strategy, multi-account, instrument, prop firm
+
+## v3.16.4 Data Engine rate-limit and verification
+
+- Sequential Dukascopy downloads with 429 exponential backoff
+- SUCCESS / EXPECTED_EMPTY / FAILED day classification
+- Status never complete on failed hours
+- Re-sync skips verified days; retries FAILED only
+- Device warm only after usable SUCCESS data

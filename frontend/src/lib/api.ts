@@ -97,6 +97,22 @@ export type SyncReport = {
   files_missing: number;
   files_failed: number;
   errors: string[];
+  day_results?: Array<{
+    date: string;
+    status: string;
+    ticks?: number | null;
+    bars1s?: number;
+    successfulHours?: number;
+    failedHours?: number;
+    note?: string;
+  }>;
+  skipped_verified?: string[];
+  backend_verified?: boolean;
+  success_days?: string[];
+  expected_empty_days?: string[];
+  failed_days?: string[];
+  missing_days?: string[];
+  log?: string[];
 };
 
 export async function syncDukascopy(
@@ -124,8 +140,14 @@ export type DataStatus = {
   start?: string;
   end?: string;
   has_1s_cache: boolean;
+  backend_verified?: boolean;
+  usable_bars?: number;
+  success_days?: string[];
+  expected_empty_days?: string[];
+  failed_days?: string[];
   cached_days?: string[];
   missing_days?: string[];
+  day_details?: Array<Record<string, unknown>>;
   note: string;
 };
 

@@ -28,6 +28,7 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
   const [report, setReport] = useState<SyncReport | null>(null);
   const [status, setStatus] = useState<DataStatus | null>(null);
   const [localMissing, setLocalMissing] = useState<string[]>([]);
+  const [deviceVerified, setDeviceVerified] = useState(false);
   const [capability, setCapability] = useState<{
     base_resolution: string;
     derived: string[];
@@ -44,7 +45,7 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
   }, [backendOnline]);
 
   function pushLog(line: string) {
-    setLog((prev) => [...prev.slice(-40), line]);
+    setLog((prev) => [...prev.slice(-80), line]);
   }
 
   async function handleSync() {
@@ -65,76 +66,106 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
     setReport(null);
     setStatus(null);
     setLocalMissing([]);
+    setDeviceVerified(false);
     setPhase("syncing");
     pushLog(`Sync start ${symbol} ${start} → ${end}`);
+    pushLog("Downloader: sequential hours, 429 backoff, skip already-verified days");
 
     try {
       const res = await syncDukascopy(symbol, start, end, {
         onRetry: (attempt, err) => {
           if (gen !== genRef.current) return;
           setPhase("retrying");
-          pushLog(`Retry ${attempt}/2 after transient error: ${err instanceof Error ? err.message : String(err)}`);
+          pushLog(`Transport retry ${attempt}/2: ${err instanceof Error ? err.message : String(err)}`);
         },
       });
       if (gen !== genRef.current) return;
       setReport(res);
-      pushLog(
-        `Backend: days=${res.days} ticks=${res.ticks} 1s-bars=${res.seconds} files_ok=${res.files_ok} missing_hours=${res.files_missing} failed=${res.files_failed}`
-      );
-      if (res.errors?.length) {
-        for (const e of res.errors.slice(0, 5)) pushLog(`  · ${e}`);
+
+      if (res.log?.length) {
+        for (const line of res.log.slice(-60)) pushLog(line);
       }
+      for (const dr of res.day_results || []) {
+        pushLog(
+          `Day ${dr.date}: ${dr.status}` +
+            (dr.bars1s != null ? ` bars1s=${dr.bars1s}` : "") +
+            (dr.ticks != null ? ` ticks=${dr.ticks}` : "") +
+            (dr.failedHours ? ` failedHours=${dr.failedHours}` : "")
+        );
+      }
+
+      pushLog(
+        `Summary ticks=${res.ticks} 1s-bars=${res.seconds} ` +
+          `ok_hours=${res.files_ok} empty_hours=${res.files_missing} failed_hours=${res.files_failed}`
+      );
+      pushLog(
+        `SUCCESS days: ${(res.success_days || []).join(", ") || "—"} | ` +
+          `EMPTY: ${(res.expected_empty_days || []).join(", ") || "—"} | ` +
+          `FAILED: ${(res.failed_days || []).join(", ") || "—"}`
+      );
+      pushLog(`Backend verified: ${res.backend_verified ? "YES" : "NO"}`);
 
       setPhase("verifying");
       const st = await fetchDataStatus(symbol, start, end);
       if (gen !== genRef.current) return;
       setStatus(st);
-      const missingBackend = st.missing_days || [];
-      pushLog(
-        st.has_1s_cache
-          ? "Backend verify: all requested days present"
-          : `Backend verify: missing days [${missingBackend.join(", ") || "none listed"}]`
-      );
 
-      // Warm browser IndexedDB so Chart Load does not false-Missing
-      setPhase("warming");
-      pushLog("Warming device cache from backend…");
-      try {
-        const barsRes = await fetchBars(symbol, 1, start, end);
-        if (gen !== genRef.current) return;
-        const n = barsRes.bars?.length || 0;
-        if (n > 0) {
-          const days = await cachePutBars(symbol, barsRes.bars);
-          pushLog(`Device cache: ${n.toLocaleString()} bars → ${days} day shard(s)`);
-        } else {
-          pushLog("Device cache: backend returned 0 bars for range (holiday/weekend or no ticks).");
-        }
-        const local = await cacheGetRange(symbol, start, end);
-        setLocalMissing(local.missingDays);
-        if (local.missingDays.length) {
-          pushLog(`Local still missing: ${local.missingDays.join(", ")}`);
-        } else {
-          pushLog("Local verify: all requested days have data on device (or empty non-trading).");
-        }
-      } catch (warmErr) {
-        pushLog(`Warm cache failed: ${warmErr instanceof Error ? warmErr.message : String(warmErr)}`);
+      if (st.backend_verified) {
+        pushLog("Status API: backend_verified=true");
+      } else {
+        pushLog(
+          `Status API: NOT verified · failed=[${(st.failed_days || []).join(", ")}] ` +
+            `missing=[${(st.missing_days || []).join(", ")}]`
+        );
       }
 
-      const backendOk = res.files_failed === 0 && (res.files_ok > 0 || res.seconds > 0);
-      const partial =
-        !st.has_1s_cache ||
-        (res.files_failed > 0) ||
-        (status?.missing_days && status.missing_days.length > 0);
-
-      if (!backendOk && res.files_ok === 0 && res.seconds === 0) {
-        setPhase("failed");
-        pushLog("Sync finished with no usable data.");
-      } else if (partial || res.files_failed > 0 || (st.missing_days && st.missing_days.length)) {
-        setPhase("partial");
-        pushLog("Sync partial — some days incomplete. Successful days kept.");
+      // Warm device only when backend has some usable SUCCESS days
+      const hasUsable = (st.usable_bars || 0) > 0 || (st.success_days || []).length > 0;
+      if (hasUsable) {
+        setPhase("warming");
+        pushLog("Warming device IndexedDB from backend…");
+        try {
+          const barsRes = await fetchBars(symbol, 1, start, end);
+          const n = barsRes.bars?.length || 0;
+          if (n > 0) {
+            const days = await cachePutBars(symbol, barsRes.bars);
+            pushLog(`Device cache wrote ${n.toLocaleString()} bars → ${days} day shard(s)`);
+          } else {
+            pushLog("Device cache: backend returned 0 bars (only empty/failed days).");
+          }
+          const local = await cacheGetRange(symbol, start, end);
+          // Missing only for days that backend says should have data (SUCCESS) but device lacks
+          const need = new Set(st.success_days || []);
+          const still = local.missingDays.filter((d) => need.has(d));
+          setLocalMissing(still);
+          const ok = still.length === 0 && (st.success_days || []).every((d) => local.fromCacheDays.includes(d));
+          setDeviceVerified(ok);
+          pushLog(
+            ok
+              ? "Device verified: all SUCCESS days present on device"
+              : `Device incomplete: still missing ${still.join(", ") || "—"}`
+          );
+        } catch (warmErr) {
+          setDeviceVerified(false);
+          pushLog(`Warm cache failed: ${warmErr instanceof Error ? warmErr.message : String(warmErr)}`);
+        }
       } else {
-        setPhase("complete");
-        pushLog("Sync complete and verified.");
+        pushLog("Skip device warm — no usable SUCCESS days on backend yet.");
+        setDeviceVerified(false);
+      }
+
+      if (res.backend_verified && deviceVerified !== false) {
+        // phase from backend_verified + warm outcome
+      }
+      if (res.backend_verified) {
+        setPhase(hasUsable ? "complete" : "complete");
+        pushLog("Sync finished: backend range fully classified (SUCCESS + EXPECTED_EMPTY only).");
+      } else if ((res.success_days || []).length > 0) {
+        setPhase("partial");
+        pushLog("Sync partial — retry later to fill FAILED days (already-good days will be skipped).");
+      } else {
+        setPhase("failed");
+        pushLog("Sync finished with no usable data. Check 429 / network and retry.");
       }
     } catch (e) {
       if (gen !== genRef.current) return;
@@ -161,8 +192,8 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
       <div className="card">
         <b>True 1-second base</b>
         <p>
-          Sync downloads Dukascopy ticks, builds 1s OHLC on the server, then warms this device&apos;s
-          IndexedDB so Chart Load does not report false Missing.
+          Sequential Dukascopy downloads with 429 backoff. Days are classified SUCCESS /
+          EXPECTED_EMPTY / FAILED. Only verified data warms this device&apos;s IndexedDB.
         </p>
       </div>
 
@@ -177,15 +208,9 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
       <div className="sync-form">
         <h3>Sync tick data (Dukascopy)</h3>
         <div className="sync-row">
-          <select
-            value={symbol}
-            disabled={busy}
-            onChange={(e) => setSymbol(e.target.value)}
-          >
+          <select value={symbol} disabled={busy} onChange={(e) => setSymbol(e.target.value)}>
             {SYMBOLS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
+              <option key={s} value={s}>{s}</option>
             ))}
           </select>
           <input type="date" value={start} disabled={busy} onChange={(e) => setStart(e.target.value)} />
@@ -195,25 +220,44 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
             {busy ? phase : "Sync"}
           </button>
         </div>
+
         <p className="hint">
           Phase: <b>{phase}</b>
-          {report ? ` · backend days ${report.days} · 1s bars ${report.seconds.toLocaleString()}` : null}
+          {report ? ` · ticks ${report.ticks.toLocaleString()} · 1s bars ${report.seconds.toLocaleString()}` : null}
         </p>
+
         {status && (
-          <p className="sync-result">
-            Backend cache: {status.has_1s_cache ? "complete for range" : "incomplete"}
-            {status.missing_days?.length ? ` · missing ${status.missing_days.join(", ")}` : ""}
-          </p>
+          <div className="sync-result">
+            <p>
+              Backend verified:{" "}
+              <b>{status.backend_verified ? "YES" : "NO"}</b>
+              {status.usable_bars != null ? ` · usable 1s bars ~${status.usable_bars.toLocaleString()}` : ""}
+            </p>
+            {status.success_days?.length ? (
+              <p>SUCCESS: {status.success_days.join(", ")}</p>
+            ) : null}
+            {status.expected_empty_days?.length ? (
+              <p>EXPECTED_EMPTY (weekend/holiday): {status.expected_empty_days.join(", ")}</p>
+            ) : null}
+            {status.failed_days?.length ? (
+              <p className="warn-text">FAILED (retry): {status.failed_days.join(", ")}</p>
+            ) : null}
+            {status.missing_days?.length ? (
+              <p className="warn-text">MISSING: {status.missing_days.join(", ")}</p>
+            ) : null}
+          </div>
         )}
-        {localMissing.length > 0 && (
-          <p className="sync-result warn-text">Device still missing: {localMissing.join(", ")}</p>
-        )}
-        {log.length > 0 && (
-          <pre className="sync-log">{log.join("\n")}</pre>
-        )}
+
+        <p className="sync-result">
+          Device verified: <b>{deviceVerified ? "YES" : "NO"}</b>
+          {localMissing.length > 0 ? ` · still missing SUCCESS days: ${localMissing.join(", ")}` : ""}
+        </p>
+
+        {log.length > 0 && <pre className="sync-log">{log.join("\n")}</pre>}
+
         <p className="hint">
-          Weekend/holiday days may be empty (expected). Failed network hours are reported separately.
-          Double-click Sync is ignored while busy.
+          Re-sync skips already-verified SUCCESS / EXPECTED_EMPTY days and only retries FAILED.
+          Double-click while busy is ignored. HTTP 429 uses exponential backoff (not parallel storms).
         </p>
       </div>
     </section>

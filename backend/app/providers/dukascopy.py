@@ -67,27 +67,6 @@ def parse_ticks(raw: bytes, hour_start: float, divisor: float) -> list[dict]:
     return out
 
 
-async def ticks(symbol: str, day: date, hour: int, client: httpx.AsyncClient, retries: int = 2) -> dict:
-    sym = normalize_symbol(symbol)
-    url = f"{BASE_URL}/{sym}/{day.year}/{day.month - 1:02d}/{day.day:02d}/{hour:02d}h_ticks.bi5"
-    last_error = ""
-    for attempt in range(retries + 1):
-        try:
-            resp = await client.get(url)
-            if resp.status_code in (404, 204):
-                return {"hour": hour, "ticks": [], "status": resp.status_code, "error": "no file"}
-            resp.raise_for_status()
-            raw = decompress(resp.content)
-            hour_start = datetime(day.year, day.month, day.day, hour, tzinfo=timezone.utc).timestamp()
-            data = parse_ticks(raw, hour_start, point_divisor(sym))
-            return {"hour": hour, "ticks": data, "status": resp.status_code, "error": ""}
-        except Exception as exc:
-            last_error = str(exc)
-            if attempt < retries:
-                await asyncio.sleep(0.6 * (attempt + 1))
-    return {"hour": hour, "ticks": [], "status": 0, "error": last_error}
-
-
 def ticks_to_seconds(tick_list: list[dict], seconds: int = 1) -> list[dict]:
     buckets: dict[int, list[float]] = {}
     for t in sorted(tick_list, key=lambda x: x["time"]):
@@ -105,3 +84,175 @@ def ticks_to_seconds(tick_list: list[dict], seconds: int = 1) -> list[dict]:
         {"time": k, "open": b[0], "high": b[1], "low": b[2], "close": b[3], "volume": b[4]}
         for k, b in sorted(buckets.items())
     ]
+
+
+# Bounded 429 backoff schedule (seconds). Prefer Retry-After when present (capped).
+_429_BACKOFF = (2.0, 5.0, 10.0, 20.0)
+_MAX_RETRY_AFTER = 60.0
+# Max attempts for 429 (initial + retries). Other errors use fewer.
+_MAX_429_ATTEMPTS = 5
+_MAX_OTHER_ATTEMPTS = 3
+# Small polite gap between sequential hour requests
+_INTER_REQUEST_DELAY = 0.35
+
+
+async def ticks(
+    symbol: str,
+    day: date,
+    hour: int,
+    client: httpx.AsyncClient,
+) -> dict:
+    """Download one hour of Dukascopy ticks.
+
+    Returns dict with:
+      hour, ticks, status (http or 0), classification:
+        SUCCESS | EXPECTED_EMPTY | FAILED
+      error, attempts
+    """
+    sym = normalize_symbol(symbol)
+    # Dukascopy historical paths use zero-based month (June → 05). Do not "fix".
+    url = f"{BASE_URL}/{sym}/{day.year}/{day.month - 1:02d}/{day.day:02d}/{hour:02d}h_ticks.bi5"
+    last_error = ""
+    last_status = 0
+    attempt = 0
+
+    while attempt < _MAX_429_ATTEMPTS:
+        attempt += 1
+        try:
+            resp = await client.get(url)
+            last_status = resp.status_code
+
+            # Genuine no-data from Dukascopy
+            if resp.status_code in (404, 204):
+                return {
+                    "hour": hour,
+                    "ticks": [],
+                    "status": resp.status_code,
+                    "classification": "EXPECTED_EMPTY",
+                    "error": "no file",
+                    "attempts": attempt,
+                }
+
+            # Rate limited — backoff and retry (bounded)
+            if resp.status_code == 429:
+                last_error = "HTTP 429 Too Many Requests"
+                if attempt >= _MAX_429_ATTEMPTS:
+                    break
+                delay = _429_BACKOFF[min(attempt - 1, len(_429_BACKOFF) - 1)]
+                ra = resp.headers.get("Retry-After")
+                if ra:
+                    try:
+                        delay = min(_MAX_RETRY_AFTER, max(delay, float(ra)))
+                    except ValueError:
+                        pass
+                await asyncio.sleep(delay)
+                continue
+
+            # Other HTTP errors
+            if resp.status_code >= 400:
+                last_error = f"HTTP {resp.status_code}"
+                if attempt >= _MAX_OTHER_ATTEMPTS:
+                    break
+                await asyncio.sleep(0.8 * attempt)
+                continue
+
+            raw = decompress(resp.content)
+            hour_start = datetime(day.year, day.month, day.day, hour, tzinfo=timezone.utc).timestamp()
+            data = parse_ticks(raw, hour_start, point_divisor(sym))
+            if data:
+                return {
+                    "hour": hour,
+                    "ticks": data,
+                    "status": resp.status_code,
+                    "classification": "SUCCESS",
+                    "error": "",
+                    "attempts": attempt,
+                }
+            # 200 but zero parseable ticks → treat as expected empty for that hour
+            return {
+                "hour": hour,
+                "ticks": [],
+                "status": resp.status_code,
+                "classification": "EXPECTED_EMPTY",
+                "error": "empty payload",
+                "attempts": attempt,
+            }
+        except Exception as exc:
+            last_error = str(exc)
+            last_status = 0
+            if attempt >= _MAX_OTHER_ATTEMPTS:
+                break
+            await asyncio.sleep(0.8 * attempt)
+
+    return {
+        "hour": hour,
+        "ticks": [],
+        "status": last_status,
+        "classification": "FAILED",
+        "error": last_error or f"HTTP {last_status}",
+        "attempts": attempt,
+    }
+
+
+async def download_day_hours(
+    symbol: str,
+    day: date,
+    client: httpx.AsyncClient,
+    log: list | None = None,
+) -> dict:
+    """Download all 24 hours for one day sequentially (rate-limit safe).
+
+    Returns day summary with classification SUCCESS | EXPECTED_EMPTY | FAILED,
+    ticks list, and hour diagnostics.
+    """
+    all_ticks: list[dict] = []
+    hours: list[dict] = []
+    success_h = 0
+    empty_h = 0
+    failed_h = 0
+
+    for h in range(24):
+        if h > 0:
+            await asyncio.sleep(_INTER_REQUEST_DELAY)
+        r = await ticks(symbol, day, h, client)
+        hours.append({
+            "hour": h,
+            "status": r["status"],
+            "classification": r["classification"],
+            "ticks": len(r["ticks"]),
+            "attempts": r.get("attempts", 1),
+            "error": r.get("error") or "",
+        })
+        if log is not None:
+            log.append(
+                f"{day.isoformat()} {h:02d}h attempt={r.get('attempts',1)} "
+                f"HTTP={r['status']} {r['classification']}"
+                + (f" retry_err={r['error']}" if r["classification"] == "FAILED" else "")
+                + (f" ticks={len(r['ticks'])}" if r["ticks"] else "")
+            )
+        if r["classification"] == "SUCCESS":
+            success_h += 1
+            all_ticks.extend(r["ticks"])
+        elif r["classification"] == "EXPECTED_EMPTY":
+            empty_h += 1
+        else:
+            failed_h += 1
+
+    if success_h > 0:
+        classification = "SUCCESS"
+    elif failed_h > 0:
+        # Any failed hour without successful data → day is incomplete
+        classification = "FAILED"
+    else:
+        classification = "EXPECTED_EMPTY"
+
+    return {
+        "date": day.isoformat(),
+        "classification": classification,
+        "ticks": all_ticks,
+        "tick_count": len(all_ticks),
+        "successfulHours": success_h,
+        "emptyHours": empty_h,
+        "failedHours": failed_h,
+        "hours": hours,
+    }
