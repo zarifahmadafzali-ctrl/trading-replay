@@ -225,6 +225,8 @@ export type DataStatus = {
   end?: string;
   has_1s_cache: boolean;
   backend_verified?: boolean;
+  /** True while backend _sync_lock is held (optional signal; poll must not rely on it alone). */
+  sync_in_progress?: boolean;
   usable_bars?: number;
   success_days?: string[];
   expected_empty_days?: string[];

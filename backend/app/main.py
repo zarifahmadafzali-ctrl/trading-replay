@@ -20,7 +20,7 @@ from .data import (
 from .journal import TradeIn, compute_stats, new_trade_record
 from .providers.dukascopy import download_day_hours, ticks_to_seconds
 
-app = FastAPI(title="Trading Replay Data Engine", version="3.16.4")
+app = FastAPI(title="Trading Replay Data Engine", version="3.16.6")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # Serialize sync jobs so two clients cannot hammer Dukascopy at once.
@@ -29,7 +29,7 @@ _sync_lock = asyncio.Lock()
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "trading-replay-data-engine", "paper_only": True, "version": "3.16.4"}
+    return {"ok": True, "service": "trading-replay-data-engine", "paper_only": True, "version": "3.16.6"}
 
 
 @app.get("/api/data/status")
@@ -59,6 +59,7 @@ def status(symbol: str, start: str, end: str):
         "end": end,
         "has_1s_cache": complete and usable_bars >= 0,  # complete range classification
         "backend_verified": complete,
+        "sync_in_progress": _sync_lock.locked(),
         "usable_bars": usable_bars,
         "success_days": info["success"],
         "expected_empty_days": info["expected_empty"],

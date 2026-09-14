@@ -179,3 +179,9 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - AbortError / client timeout: no second Sync POST; poll /api/data/status
 - HTTP 409: no second POST; wait/poll
 - Device warm after recovery when backend_verified
+
+## v3.16.6 Recovery polling fix
+
+- Do not stop recovery on stable partial status with trailing MISSING days
+- Warm only when backend_verified / range complete
+- Optional status.sync_in_progress from lock

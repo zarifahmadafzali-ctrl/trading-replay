@@ -21,8 +21,8 @@ function isoDaysAgo(days: number) {
 type Phase =
   | "idle"
   | "syncing"
-  | "retrying" // cold-start 502/503 only
-  | "waiting_server" // abort recovery
+  | "retrying"
+  | "waiting_server"
   | "conflict_409"
   | "verifying"
   | "warming"
@@ -34,6 +34,17 @@ type Phase =
 const RECOVERY_POLL_MS = 3000;
 /** Max time to poll status after abort/409 before giving up (no new POST). */
 const RECOVERY_MAX_MS = 20 * 60 * 1000;
+
+/** Range is fully classified: every day SUCCESS or EXPECTED_EMPTY, none MISSING/FAILED. */
+function isRangeComplete(st: DataStatus): boolean {
+  if (st.backend_verified) return true;
+  const missing = st.missing_days || [];
+  const failed = st.failed_days || [];
+  if (missing.length > 0 || failed.length > 0) return false;
+  const ok =
+    (st.success_days || []).length + (st.expected_empty_days || []).length > 0;
+  return ok;
+}
 
 export function DataEngineView({ backendOnline }: { backendOnline: boolean | null }) {
   const [symbol, setSymbol] = useState(SYMBOLS[0]);
@@ -71,9 +82,8 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
     st: DataStatus,
     gen: number
   ): Promise<boolean> {
-    const hasUsable = (st.usable_bars || 0) > 0 || (st.success_days || []).length > 0;
-    if (!hasUsable) {
-      pushLog("Skip device warm — no usable SUCCESS days on backend yet.");
+    if (!isRangeComplete(st)) {
+      pushLog("Sync incomplete — device warm skipped until backend verification.");
       setDeviceVerified(false);
       return false;
     }
@@ -87,7 +97,7 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
         const days = await cachePutBars(sym, barsRes.bars);
         pushLog(`Device cache wrote ${n.toLocaleString()} bars → ${days} day shard(s)`);
       } else {
-        pushLog("Device cache: backend returned 0 bars (only empty/failed days).");
+        pushLog("Device cache: backend returned 0 bars (only empty days in range).");
       }
       const local = await cacheGetRange(sym, rangeStart, rangeEnd);
       const need = new Set(st.success_days || []);
@@ -112,26 +122,30 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
 
   function applyTerminalFromStatus(st: DataStatus) {
     setStatus(st);
-    if (st.backend_verified) {
+    if (isRangeComplete(st)) {
       setPhase("complete");
       pushLog("Backend verified: all days SUCCESS or EXPECTED_EMPTY.");
       return "complete" as const;
     }
-    if ((st.success_days || []).length > 0 || (st.failed_days || []).length > 0) {
+    if ((st.failed_days || []).length > 0 && (st.missing_days || []).length === 0) {
       setPhase("incomplete");
       pushLog(
         `Incomplete — success=[${(st.success_days || []).join(", ")}] ` +
-          `failed=[${(st.failed_days || []).join(", ")}] ` +
-          `missing=[${(st.missing_days || []).join(", ")}]`
+          `failed=[${(st.failed_days || []).join(", ")}]`
       );
       return "incomplete" as const;
+    }
+    if ((st.missing_days || []).length > 0) {
+      // Still open — not terminal for recovery
+      return "running" as const;
     }
     return "running" as const;
   }
 
   /**
    * After AbortError or 409: do NOT POST again.
-   * Poll lightweight /api/data/status for the same symbol/start/end until terminal or timeout.
+   * Poll /api/data/status for the SAME symbol/start/end until verified, failed-complete, or max time.
+   * Do NOT treat stable partial progress (trailing MISSING) as finished.
    */
   async function recoverViaStatusPoll(
     sym: string,
@@ -152,7 +166,6 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
 
     const started = Date.now();
     let lastFingerprint = "";
-    let stableTicks = 0;
 
     while (Date.now() - started < RECOVERY_MAX_MS) {
       if (gen !== genRef.current) return null;
@@ -166,6 +179,7 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
 
         const fp = JSON.stringify({
           v: st.backend_verified,
+          running: st.sync_in_progress,
           s: st.success_days,
           e: st.expected_empty_days,
           f: st.failed_days,
@@ -174,45 +188,42 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
         });
         if (fp !== lastFingerprint) {
           lastFingerprint = fp;
-          stableTicks = 0;
           pushLog(
-            `Status: verified=${st.backend_verified} usable=${st.usable_bars ?? 0} ` +
+            `Status: verified=${!!st.backend_verified} running=${st.sync_in_progress ?? "?"} ` +
+              `usable=${st.usable_bars ?? 0} ` +
               `S=${(st.success_days || []).join("|") || "—"} ` +
               `E=${(st.expected_empty_days || []).join("|") || "—"} ` +
               `F=${(st.failed_days || []).join("|") || "—"} ` +
               `M=${(st.missing_days || []).join("|") || "—"}`
           );
-        } else {
-          stableTicks += 1;
         }
 
-        if (st.backend_verified) {
+        // A) fully verified
+        if (st.backend_verified || isRangeComplete(st)) {
           return st;
         }
 
-        // Incomplete but stable: some days settled and missing/failed not growing for a while
-        // after lock likely released (fingerprint stable ~5 polls ≈ 15s) with no pure-missing-only
-        const hasProgress =
-          (st.success_days || []).length > 0 ||
-          (st.expected_empty_days || []).length > 0 ||
-          (st.failed_days || []).length > 0;
-        const onlyMissing =
-          (st.missing_days || []).length > 0 &&
-          !(st.success_days || []).length &&
-          !(st.failed_days || []).length &&
-          !(st.expected_empty_days || []).length;
-
-        if (hasProgress && !onlyMissing && stableTicks >= 5) {
-          // Likely finished with partial result
+        // C) no MISSING left, but some FAILED → terminal incomplete (job done with failures)
+        const missing = st.missing_days || [];
+        const failed = st.failed_days || [];
+        if (missing.length === 0 && failed.length > 0) {
+          // Prefer waiting while lock still held (optional signal)
+          if (st.sync_in_progress) {
+            continue;
+          }
           return st;
         }
+
+        // Trailing MISSING: keep polling (backend may still be on those days)
+        // Optional: if sync_in_progress is explicitly false AND missing remains for a long
+        // stretch after max time — handled by outer timeout (D).
       } catch (e) {
         pushLog(`Status poll error: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
     pushLog(
-      "Server sync may still be running. Reopen Data Engine later to verify the result. No new Sync was started."
+      "Recovery timeout — the server may still be syncing. Reopen later to check progress. No new Sync was started."
     );
     return null;
   }
@@ -228,16 +239,22 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
     const terminal = applyTerminalFromStatus(st);
     if (terminal === "running") {
       setPhase("incomplete");
-      pushLog("No terminal backend state yet.");
+      pushLog("No terminal backend state yet (days still missing or unknown).");
+      // Do not warm incomplete range
+      pushLog("Sync incomplete — device warm skipped until backend verification.");
+      setDeviceVerified(false);
       return;
     }
+    if (terminal === "incomplete") {
+      // failed days present, no missing — skip warm
+      pushLog("Sync incomplete — device warm skipped until backend verification.");
+      setDeviceVerified(false);
+      return;
+    }
+    // complete only
     await warmDevice(sym, rangeStart, rangeEnd, st, gen);
     if (gen !== genRef.current) return;
-    if (st.backend_verified) {
-      setPhase("complete");
-    } else {
-      setPhase("incomplete");
-    }
+    setPhase("complete");
   }
 
   async function handleSync() {
@@ -253,6 +270,7 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
       return;
     }
 
+    // Capture original range for the whole operation (including recovery)
     const rangeSymbol = symbol;
     const rangeStart = start;
     const rangeEnd = end;
@@ -301,18 +319,21 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
       const st = await fetchDataStatus(rangeSymbol, rangeStart, rangeEnd);
       if (gen !== genRef.current) return;
       setStatus(st);
-      await warmDevice(rangeSymbol, rangeStart, rangeEnd, st, gen);
-      if (gen !== genRef.current) return;
 
-      if (res.backend_verified || st.backend_verified) {
+      if (isRangeComplete(st) || res.backend_verified) {
+        await warmDevice(rangeSymbol, rangeStart, rangeEnd, st, gen);
+        if (gen !== genRef.current) return;
         setPhase("complete");
         pushLog("Sync finished: backend range fully classified.");
-      } else if ((res.success_days || st.success_days || []).length > 0) {
-        setPhase("incomplete");
-        pushLog("Sync incomplete — some days failed or missing. Re-Sync later retries FAILED only.");
       } else {
-        setPhase("failed");
-        pushLog("Sync finished with no usable data.");
+        pushLog("Sync incomplete — device warm skipped until backend verification.");
+        setDeviceVerified(false);
+        setPhase("incomplete");
+        pushLog(
+          `Incomplete — success=[${(st.success_days || []).join(", ")}] ` +
+            `failed=[${(st.failed_days || []).join(", ")}] ` +
+            `missing=[${(st.missing_days || []).join(", ")}]`
+        );
       }
     } catch (e) {
       if (gen !== genRef.current) return;
@@ -330,6 +351,7 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
           await finishFromStatus(rangeSymbol, rangeStart, rangeEnd, st, gen);
         } else {
           setPhase("incomplete");
+          setDeviceVerified(false);
         }
         return;
       }
@@ -377,8 +399,8 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
       <div className="card">
         <b>True 1-second base</b>
         <p>
-          Sequential Dukascopy downloads with 429 backoff. Long Sync may outlive the browser wait;
-          on timeout the UI polls status instead of starting a second POST.
+          Sequential Dukascopy downloads with 429 backoff. Recovery polling continues while
+          requested days are still MISSING (does not stop after a few quiet seconds).
         </p>
       </div>
 
@@ -417,6 +439,9 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
           <div className="sync-result">
             <p>
               Backend verified: <b>{status.backend_verified ? "YES" : "NO"}</b>
+              {status.sync_in_progress != null
+                ? ` · sync_in_progress=${status.sync_in_progress ? "yes" : "no"}`
+                : ""}
               {status.usable_bars != null ? ` · usable 1s bars ~${status.usable_bars.toLocaleString()}` : ""}
             </p>
             {status.success_days?.length ? <p>SUCCESS: {status.success_days.join(", ")}</p> : null}
@@ -440,10 +465,25 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
         {log.length > 0 && <pre className="sync-log">{log.join("\n")}</pre>}
 
         <p className="hint">
-          Abort/timeout and HTTP 409 never start a second Sync POST. Status polling uses the same
-          symbol/dates. Re-sync skips verified days.
+          Abort/timeout and HTTP 409 never start a second Sync POST. Trailing MISSING days keep
+          recovery polling until verified, failed-complete, or 20-minute recovery timeout.
         </p>
       </div>
     </section>
   );
+}
+
+/** Exported for unit tests of termination rules (no React). */
+export function shouldStopRecoveryPoll(st: DataStatus, syncInProgressUnknown = false): boolean {
+  if (st.backend_verified || isRangeComplete(st)) return true;
+  const missing = st.missing_days || [];
+  const failed = st.failed_days || [];
+  if (missing.length === 0 && failed.length > 0) {
+    if (st.sync_in_progress === true) return false;
+    if (st.sync_in_progress === false) return true;
+    // unknown lock: treat failed-complete as terminal
+    return syncInProgressUnknown || st.sync_in_progress == null;
+  }
+  // Trailing missing: never stop solely due to silence
+  return false;
 }
