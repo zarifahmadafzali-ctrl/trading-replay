@@ -12,13 +12,44 @@ export type RequestOptions = RequestInit & {
   onRetry?: (attempt: number, err: unknown) => void;
 };
 
+function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === "AbortError") return true;
+  if (err instanceof Error && err.name === "AbortError") return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /signal is aborted|aborted without reason|The operation was aborted/i.test(msg);
+}
+
 function isTransient(status: number | undefined, err: unknown): boolean {
   if (status === 502 || status === 503 || status === 504 || status === 408) return true;
-  if (err instanceof DOMException && err.name === "AbortError") return true;
+  if (isAbortError(err)) return true;
   if (err instanceof TypeError) return true; // network
   const msg = err instanceof Error ? err.message : String(err);
   if (/failed to fetch|network|timeout|abort/i.test(msg)) return true;
   return false;
+}
+
+/** Cold-start only — never AbortError / 409 (unsafe for long-running Sync POST). */
+function isSyncTransportTransient(status: number | undefined, _err: unknown): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
+/** Client timed out while backend may still be processing Sync. */
+export class SyncClientAbortError extends Error {
+  readonly code = "SYNC_CLIENT_ABORT" as const;
+  constructor(message = "Sync request timed out or was aborted; server may still be processing") {
+    super(message);
+    this.name = "SyncClientAbortError";
+  }
+}
+
+/** Backend _sync_lock held — another sync is in progress. */
+export class SyncConflictError extends Error {
+  readonly code = "SYNC_CONFLICT" as const;
+  readonly status = 409;
+  constructor(message = "Another sync is already running") {
+    super(message);
+    this.name = "SyncConflictError";
+  }
 }
 
 async function sleep(ms: number) {
@@ -115,17 +146,70 @@ export type SyncReport = {
   log?: string[];
 };
 
+/**
+ * Long-running sequential Dukascopy sync (Design A: single HTTP POST).
+ *
+ * - AbortError / client timeout: NO automatic re-POST (backend may still hold the lock).
+ * - HTTP 409: NO automatic re-POST (another sync is running).
+ * - 502/503/504 only: bounded cold-start retry before work is assumed started.
+ */
 export async function syncDukascopy(
   symbol: string,
   start: string,
   end: string,
   opts?: { onRetry?: (attempt: number, err: unknown) => void }
-) {
-  // Long-running: up to ~3 attempts for cold start; 4 min per attempt.
-  return request<SyncReport>(
-    `/api/dukascopy/sync?symbol=${encodeURIComponent(symbol)}&start=${start}&end=${end}`,
-    { method: "POST", timeoutMs: 240_000, retries: 2, onRetry: opts?.onRetry }
-  );
+): Promise<SyncReport> {
+  const path =
+    `/api/dukascopy/sync?symbol=${encodeURIComponent(symbol)}&start=${start}&end=${end}`;
+  const timeoutMs = 240_000;
+  const coldStartRetries = 1; // only 502/503/504
+  let lastErr: unknown;
+
+  for (let attempt = 0; attempt <= coldStartRetries; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${BASE}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+
+      if (res.status === 409) {
+        const text = await res.text().catch(() => "");
+        throw new SyncConflictError(text || "Another sync is already running");
+      }
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        const err = new Error(`${res.status} ${res.statusText}: ${text}`);
+        (err as any).status = res.status;
+        if (attempt < coldStartRetries && isSyncTransportTransient(res.status, err)) {
+          opts?.onRetry?.(attempt + 1, err);
+          await sleep(Math.min(8000, 600 * 2 ** attempt));
+          continue;
+        }
+        throw err;
+      }
+      return (await res.json()) as SyncReport;
+    } catch (err) {
+      clearTimeout(timer);
+      if (err instanceof SyncConflictError) throw err;
+      if (isAbortError(err)) {
+        throw new SyncClientAbortError();
+      }
+      lastErr = err;
+      const status = (err as any)?.status as number | undefined;
+      if (attempt < coldStartRetries && isSyncTransportTransient(status, err)) {
+        opts?.onRetry?.(attempt + 1, err);
+        await sleep(Math.min(8000, 600 * 2 ** attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 export async function fetchCapability() {

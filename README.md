@@ -173,3 +173,9 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Status never complete on failed hours
 - Re-sync skips verified days; retries FAILED only
 - Device warm only after usable SUCCESS data
+
+## v3.16.5 Sync transport recovery
+
+- AbortError / client timeout: no second Sync POST; poll /api/data/status
+- HTTP 409: no second POST; wait/poll
+- Device warm after recovery when backend_verified
