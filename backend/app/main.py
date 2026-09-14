@@ -13,6 +13,7 @@ from .data import (
     load,
     load_1s_range,
     load_day,
+    load_day_meta,
     save,
     save_day,
     verified_days_in_range,
@@ -20,7 +21,7 @@ from .data import (
 from .journal import TradeIn, compute_stats, new_trade_record
 from .providers.dukascopy import download_day_hours, ticks_to_seconds
 
-app = FastAPI(title="Trading Replay Data Engine", version="3.16.6")
+app = FastAPI(title="Trading Replay Data Engine", version="3.16.7")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # Serialize sync jobs so two clients cannot hammer Dukascopy at once.
@@ -29,7 +30,7 @@ _sync_lock = asyncio.Lock()
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "trading-replay-data-engine", "paper_only": True, "version": "3.16.6"}
+    return {"ok": True, "service": "trading-replay-data-engine", "paper_only": True, "version": "3.16.7"}
 
 
 @app.get("/api/data/status")
@@ -70,6 +71,37 @@ def status(symbol: str, start: str, end: str):
         "note": "1-second market data is stored as daily UTC shards. complete requires SUCCESS or EXPECTED_EMPTY for every day — never FAILED.",
     }
 
+
+
+@app.get("/api/bars/day")
+def bars_day(symbol: str = Query(...), day: str = Query(...)):
+    """Return one UTC day's true 1-second bars (bounded transfer for IndexedDB warm)."""
+    try:
+        date.fromisoformat(day)
+    except ValueError as exc:
+        raise HTTPException(400, "day must be YYYY-MM-DD") from exc
+    rows = load_day(symbol, day)
+    meta = load_day_meta(symbol, day)
+    classification = (meta or {}).get("classification")
+    if not rows and classification == "EXPECTED_EMPTY":
+        return {
+            "symbol": symbol,
+            "day": day,
+            "source": "1s-ticks",
+            "classification": "EXPECTED_EMPTY",
+            "bars": [],
+            "count": 0,
+        }
+    if not rows:
+        raise HTTPException(404, f"No 1-second data for {symbol} {day}")
+    return {
+        "symbol": symbol,
+        "day": day,
+        "source": "1s-ticks",
+        "classification": classification or "SUCCESS",
+        "bars": rows,
+        "count": len(rows),
+    }
 
 @app.get("/api/bars")
 def bars(symbol: str = "EURUSD", seconds: int = 60, start: str | None = None, end: str | None = None):

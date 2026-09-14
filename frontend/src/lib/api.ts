@@ -116,6 +116,21 @@ export async function fetchBars(symbol: string, seconds: number, start?: string,
   );
 }
 
+/** One UTC day of 1s bars — bounded payload for incremental IndexedDB cache. */
+export async function fetchBarsDay(symbol: string, day: string) {
+  return request<{
+    symbol: string;
+    day: string;
+    source: string;
+    classification?: string;
+    bars: Bar[];
+    count: number;
+  }>(
+    `/api/bars/day?symbol=${encodeURIComponent(symbol)}&day=${encodeURIComponent(day)}`,
+    { timeoutMs: 60_000, retries: 2 }
+  );
+}
+
 export type SyncReport = {
   ok: boolean;
   symbol: string;

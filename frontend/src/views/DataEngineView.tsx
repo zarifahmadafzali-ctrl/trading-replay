@@ -9,7 +9,8 @@ import {
   type DataStatus,
   type SyncReport,
 } from "../lib/api";
-import { cacheGetRange, cachePutBars } from "../lib/barCache";
+import { summarizeLocalCache, type LocalCacheSummary } from "../lib/barCache";
+import { reconcileLocalFromBackendStatus } from "../lib/localCache";
 import { SYMBOLS } from "../lib/types";
 
 function isoDaysAgo(days: number) {
@@ -56,6 +57,8 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
   const [status, setStatus] = useState<DataStatus | null>(null);
   const [localMissing, setLocalMissing] = useState<string[]>([]);
   const [deviceVerified, setDeviceVerified] = useState(false);
+  const [localSummary, setLocalSummary] = useState<LocalCacheSummary | null>(null);
+  const [localCaching, setLocalCaching] = useState(false);
   const [capability, setCapability] = useState<{
     base_resolution: string;
     derived: string[];
@@ -75,48 +78,66 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
     setLog((prev) => [...prev.slice(-80), line]);
   }
 
-  async function warmDevice(
+  async function warmDeviceIncremental(
     sym: string,
     rangeStart: string,
     rangeEnd: string,
     st: DataStatus,
     gen: number
   ): Promise<boolean> {
-    if (!isRangeComplete(st)) {
-      pushLog("Sync incomplete — device warm skipped until backend verification.");
-      setDeviceVerified(false);
-      return false;
-    }
-    setPhase("warming");
-    pushLog("Warming device IndexedDB from backend…");
+    // Pull only backend SUCCESS / EXPECTED_EMPTY days missing locally — one day at a time.
+    setLocalCaching(true);
+    pushLog("Local cache: pulling available days incrementally (no giant Warm)…");
     try {
-      const barsRes = await fetchBars(sym, 1, rangeStart, rangeEnd);
-      if (gen !== genRef.current) return false;
-      const n = barsRes.bars?.length || 0;
-      if (n > 0) {
-        const days = await cachePutBars(sym, barsRes.bars);
-        pushLog(`Device cache wrote ${n.toLocaleString()} bars → ${days} day shard(s)`);
-      } else {
-        pushLog("Device cache: backend returned 0 bars (only empty days in range).");
-      }
-      const local = await cacheGetRange(sym, rangeStart, rangeEnd);
-      const need = new Set(st.success_days || []);
-      const still = local.missingDays.filter((d) => need.has(d));
-      setLocalMissing(still);
-      const ok =
-        still.length === 0 &&
-        (st.success_days || []).every((d) => local.fromCacheDays.includes(d));
-      setDeviceVerified(ok);
-      pushLog(
-        ok
-          ? "Device verified: all SUCCESS days present on device"
-          : `Device incomplete: still missing ${still.join(", ") || "—"}`
+      const result = await reconcileLocalFromBackendStatus(
+        sym,
+        rangeStart,
+        rangeEnd,
+        {
+          success_days: st.success_days || [],
+          expected_empty_days: st.expected_empty_days || [],
+        },
+        {
+          shouldStop: () => gen !== genRef.current,
+          onProgress: (p, summary) => {
+            setLocalSummary(summary);
+            if (p.status === "fetched" || p.status === "empty") {
+              pushLog(
+                `Local day ${p.day}: ${p.status}` +
+                  (p.bars != null ? ` bars=${p.bars}` : "")
+              );
+            } else if (p.status === "failed") {
+              pushLog(`Local day ${p.day}: failed ${p.error || ""}`);
+            }
+          },
+        }
       );
+      if (gen !== genRef.current) return false;
+      setLocalSummary(result.summary);
+      const need = new Set([...(st.success_days || []), ...(st.expected_empty_days || [])]);
+      const have = new Set(result.summary.cachedDays);
+      const missingLocal = [...need].filter((d) => !have.has(d));
+      const ok = missingLocal.length === 0 && isRangeComplete(st);
+      setDeviceVerified(ok);
+      if (ok) {
+        pushLog(
+          `Local cache complete: ${result.summary.daysCached}/${result.summary.daysRequested} days, ` +
+            `${result.summary.barsCached.toLocaleString()} bars`
+        );
+      } else {
+        pushLog(
+          `Local cache partial: ${result.summary.daysCached}/${result.summary.daysRequested} days` +
+            (missingLocal.length ? `; still missing ${missingLocal.join(", ")}` : "") +
+            (result.failed.length ? `; failed ${result.failed.join(", ")}` : "")
+        );
+      }
       return ok;
-    } catch (warmErr) {
+    } catch (e) {
       setDeviceVerified(false);
-      pushLog(`Warm cache failed: ${warmErr instanceof Error ? warmErr.message : String(warmErr)}`);
+      pushLog(`Local cache failed: ${e instanceof Error ? e.message : String(e)}`);
       return false;
+    } finally {
+      setLocalCaching(false);
     }
   }
 
@@ -196,6 +217,26 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
               `F=${(st.failed_days || []).join("|") || "—"} ` +
               `M=${(st.missing_days || []).join("|") || "—"}`
           );
+          // Incremental local cache as soon as backend has new SUCCESS/EMPTY days
+          const haveDays =
+            (st.success_days || []).length + (st.expected_empty_days || []).length > 0;
+          if (haveDays) {
+            try {
+              const pull = await reconcileLocalFromBackendStatus(
+                sym,
+                rangeStart,
+                rangeEnd,
+                {
+                  success_days: st.success_days || [],
+                  expected_empty_days: st.expected_empty_days || [],
+                },
+                { shouldStop: () => gen !== genRef.current }
+              );
+              setLocalSummary(pull.summary);
+            } catch {
+              /* non-fatal during poll */
+            }
+          }
         }
 
         // A) fully verified
@@ -252,7 +293,7 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
       return;
     }
     // complete only
-    await warmDevice(sym, rangeStart, rangeEnd, st, gen);
+    await warmDeviceIncremental(sym, rangeStart, rangeEnd, st, gen);
     if (gen !== genRef.current) return;
     setPhase("complete");
   }
@@ -321,7 +362,7 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
       setStatus(st);
 
       if (isRangeComplete(st) || res.backend_verified) {
-        await warmDevice(rangeSymbol, rangeStart, rangeEnd, st, gen);
+        await warmDeviceIncremental(rangeSymbol, rangeStart, rangeEnd, st, gen);
         if (gen !== genRef.current) return;
         setPhase("complete");
         pushLog("Sync finished: backend range fully classified.");
@@ -369,7 +410,8 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
     phase === "waiting_server" ||
     phase === "conflict_409" ||
     phase === "verifying" ||
-    phase === "warming";
+    phase === "warming" ||
+    localCaching;
 
   const phaseLabel: Record<Phase, string> = {
     idle: "idle",
@@ -457,10 +499,35 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
           </div>
         )}
 
-        <p className="sync-result">
-          Device verified: <b>{deviceVerified ? "YES" : "NO"}</b>
-          {localMissing.length > 0 ? ` · still missing SUCCESS days: ${localMissing.join(", ")}` : ""}
-        </p>
+        <div className="sync-result">
+          <p>
+            <b>BACKEND:</b>{" "}
+            {status?.backend_verified
+              ? "Verified"
+              : status?.sync_in_progress
+                ? "Syncing"
+                : status
+                  ? "Incomplete"
+                  : "—"}
+            {status?.usable_bars != null
+              ? ` · ~${status.usable_bars.toLocaleString()} usable 1s bars`
+              : ""}
+          </p>
+          <p>
+            <b>LOCAL DEVICE CACHE:</b>{" "}
+            {localCaching
+              ? "Downloading local cache…"
+              : deviceVerified
+                ? "Local cache complete"
+                : localSummary
+                  ? `Cached ${localSummary.daysCached}/${localSummary.daysRequested} days · ${localSummary.barsCached.toLocaleString()} bars`
+                  : "—"}
+            {deviceVerified ? " · Device verified: YES" : " · Device verified: NO"}
+          </p>
+          {localMissing.length > 0 ? (
+            <p className="warn-text">Local missing: {localMissing.join(", ")}</p>
+          ) : null}
+        </div>
 
         {log.length > 0 && <pre className="sync-log">{log.join("\n")}</pre>}
 

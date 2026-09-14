@@ -185,3 +185,9 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Do not stop recovery on stable partial status with trailing MISSING days
 - Warm only when backend_verified / range complete
 - Optional status.sync_in_progress from lock
+
+## v3.16.7 Incremental IndexedDB cache
+
+- Per-day `/api/bars/day` transfer
+- Local cache fills incrementally during recovery (no giant Warm)
+- Resume-safe day shards; dual BACKEND vs LOCAL UI
