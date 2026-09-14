@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Chart, type ClosedPosition, type DrawTool, type IndicatorSpec, type OrderType, type Shape } from "../components/Chart";
+import { Chart, type ClosedPosition, type DrawTool, type IndicatorSpec, type MagnetMode, type OrderType, type Shape } from "../components/Chart";
 import { Toolbar } from "../components/Toolbar";
 import { fetchBars, addTrade } from "../lib/api";
 import { appendTradeAsync, rMultiple } from "../lib/journal";
@@ -121,8 +121,33 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   );
   const [loading, setLoading] = useState(() => !!(saved && saved.dataSource !== "demo"));
   const [drawTool, setDrawTool] = useState<DrawTool>(() => (saved?.drawTool as DrawTool) || "crosshair");
+  const [magnetMode, setMagnetMode] = useState<MagnetMode>("off");
+  const shapesUndoRef = useRef<Shape[][]>([]);
+  const shapesRedoRef = useRef<Shape[][]>([]);
   const [goToValue, setGoToValue] = useState("");
   const [shapes, setShapes] = useState<Shape[]>(() => loadShapesFor(saved?.symbol ?? SYMBOLS[0]));
+  const shapesRefForUndo = useRef(shapes);
+  shapesRefForUndo.current = shapes;
+  function pushShapes(next: Shape[]) {
+    shapesUndoRef.current = [...shapesUndoRef.current.slice(-40), shapesRefForUndo.current];
+    shapesRedoRef.current = [];
+    shapesRefForUndo.current = next;
+    setShapes(next);
+  }
+  function undoShapes() {
+    const prev = shapesUndoRef.current.pop();
+    if (!prev) return;
+    shapesRedoRef.current.push(shapesRefForUndo.current);
+    shapesRefForUndo.current = prev;
+    setShapes(prev);
+  }
+  function redoShapes() {
+    const next = shapesRedoRef.current.pop();
+    if (!next) return;
+    shapesUndoRef.current.push(shapesRefForUndo.current);
+    shapesRefForUndo.current = next;
+    setShapes(next);
+  }
   const [orderType, setOrderType] = useState<OrderType>(() => (saved?.orderType as OrderType) || "market");
   const [riskPercent, setRiskPercent] = useState(1);
   const [sessionMeta, setSessionMeta] = useState<SessionMeta | null>(null);
@@ -912,7 +937,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           execBars={execBars}
           followPrice={followPrice}
           shapes={shapes}
-          onShapesChange={setShapes}
+          onShapesChange={pushShapes}
+          magnetMode={magnetMode}
           selectedShapeId={selectedShapeId}
           onSelectedShapeId={setSelectedShapeId}
           onDrawToolChange={pickTool}

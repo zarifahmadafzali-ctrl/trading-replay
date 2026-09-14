@@ -26,6 +26,8 @@ export type DrawTool =
   | "none"
   | "crosshair"
   | "trendline"
+  | "ray"
+  | "extended"
   | "hline"
   | "vline"
   | "rectangle"
@@ -33,6 +35,8 @@ export type DrawTool =
   | "measure"
   | "long"
   | "short";
+
+export type MagnetMode = "off" | "weak" | "strong";
 
 export type OrderType =
   | "market"
@@ -47,9 +51,14 @@ export type ChartPoint = { time: number; price: number };
 
 export type TrendlineShape = {
   id: string;
-  kind: "trendline";
+  kind: "trendline" | "ray" | "extended";
   a: ChartPoint;
   b: ChartPoint;
+  locked?: boolean;
+  visible?: boolean;
+  color?: string;
+  lineWidth?: number;
+  lineStyle?: "solid" | "dashed" | "dotted";
 };
 
 export type RectangleShape = {
@@ -241,6 +250,7 @@ export function Chart({
   onPositionClosed,
   captureRiskSnapshot,
   indicators = [],
+  magnetMode = "off" as MagnetMode,
 }: {
   bars: Bar[];
   cursor: number;
@@ -264,13 +274,18 @@ export function Chart({
   /** Build immutable risk snapshot at fill time (v3.16.1). */
   captureRiskSnapshot?: (pos: PositionShape) => Record<string, unknown> | null;
   indicators?: IndicatorSpec[];
+  magnetMode?: MagnetMode;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
   const handlesRef = useRef<ChartHandles | null>(null);
   const indicatorSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
   const shapesRef = useRef(shapes);
+  const barsRef = useRef(bars);
+  barsRef.current = bars;
   const drawToolRef = useRef(drawTool);
+  const magnetModeRef = useRef(magnetMode);
+  magnetModeRef.current = magnetMode;
   const orderTypeRef = useRef(orderType);
   const marketRef = useRef({ price: marketPrice, time: marketTime });
   const replayBarRef = useRef<Bar | null>(replayBar);
@@ -446,23 +461,122 @@ export function Chart({
   }, [drawTool, orderType]);
 
   /** Chart-space point → screen (canvas) pixel coordinates. */
+  /**
+   * Logical continuous mapping (v3.16.2).
+   * Price is continuous via series.coordinateToPrice — any Y on the scale.
+   * Time is continuous via coordinateToLogical + interpolation between bars,
+   * so drawings are NOT limited to candle OHLC times.
+   */
+  function timeToLogicalIndex(time: number): number | null {
+    const data = barsRef.current;
+    if (!data.length) return null;
+    if (time <= data[0].time) {
+      const dt = data.length > 1 ? data[1].time - data[0].time : 1;
+      return (time - data[0].time) / Math.max(1, dt);
+    }
+    if (time >= data[data.length - 1].time) {
+      const n = data.length - 1;
+      const dt = n > 0 ? data[n].time - data[n - 1].time : 1;
+      return n + (time - data[n].time) / Math.max(1, dt);
+    }
+    // binary search
+    let lo = 0, hi = data.length - 1;
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >> 1;
+      if (data[mid].time <= time) lo = mid;
+      else hi = mid;
+    }
+    const t0 = data[lo].time;
+    const t1 = data[hi].time;
+    const frac = t1 === t0 ? 0 : (time - t0) / (t1 - t0);
+    return lo + frac;
+  }
+
+  function logicalIndexToTime(logical: number): number | null {
+    const data = barsRef.current;
+    if (!data.length) return null;
+    if (logical <= 0) {
+      const dt = data.length > 1 ? data[1].time - data[0].time : 1;
+      return data[0].time + logical * Math.max(1, dt);
+    }
+    if (logical >= data.length - 1) {
+      const n = data.length - 1;
+      const dt = n > 0 ? data[n].time - data[n - 1].time : 1;
+      return data[n].time + (logical - n) * Math.max(1, dt);
+    }
+    const i0 = Math.floor(logical);
+    const i1 = Math.min(data.length - 1, i0 + 1);
+    const frac = logical - i0;
+    return data[i0].time + (data[i1].time - data[i0].time) * frac;
+  }
+
   function toXY(p: ChartPoint): { x: number; y: number } | null {
     const handles = handlesRef.current;
     if (!handles) return null;
-    const x = handles.chart.timeScale().timeToCoordinate(p.time as UTCTimestamp);
+    let x = handles.chart.timeScale().timeToCoordinate(p.time as UTCTimestamp);
+    // Fallback: continuous logical → coordinate when time is between/outside bars
+    if (x == null) {
+      const logical = timeToLogicalIndex(p.time);
+      if (logical != null) {
+        x = handles.chart.timeScale().logicalToCoordinate(logical as any);
+      }
+    }
     const y = handles.candles.priceToCoordinate(p.price);
     if (x == null || y == null) return null;
     return { x, y };
   }
 
-  /** Screen pixel coordinates → chart-space point (time + price). */
+  /** Screen pixel → continuous { time, price }. Never requires a candle at that price. */
   function fromXY(x: number, y: number): ChartPoint | null {
     const handles = handlesRef.current;
     if (!handles) return null;
-    const time = handles.chart.timeScale().coordinateToTime(x);
     const price = handles.candles.coordinateToPrice(y);
-    if (time == null || price == null) return null;
-    return { time: Number(time), price };
+    if (price == null) return null;
+
+    // Continuous time via logical index (works for any visible X, not only bar centers)
+    const logical = handles.chart.timeScale().coordinateToLogical(x);
+    let time: number | null = null;
+    if (logical != null && Number.isFinite(logical as number)) {
+      time = logicalIndexToTime(logical as number);
+    }
+    if (time == null) {
+      const t = handles.chart.timeScale().coordinateToTime(x);
+      if (t != null) time = Number(t);
+    }
+    if (time == null) return null;
+    return { time, price: Number(price) };
+  }
+
+  function applyMagnet(point: ChartPoint, mode: MagnetMode): ChartPoint {
+    if (mode === "off") return point;
+    const data = barsRef.current;
+    if (!data.length) return point;
+    // Find nearest bar by time
+    let best = data[0];
+    let bestDt = Math.abs(data[0].time - point.time);
+    for (let i = 1; i < data.length; i++) {
+      const dt = Math.abs(data[i].time - point.time);
+      if (dt < bestDt) {
+        bestDt = dt;
+        best = data[i];
+      }
+    }
+    const ohlc = [best.open, best.high, best.low, best.close];
+    let nearestPrice = ohlc[0];
+    let bestDp = Math.abs(ohlc[0] - point.price);
+    for (const v of ohlc) {
+      const dp = Math.abs(v - point.price);
+      if (dp < bestDp) {
+        bestDp = dp;
+        nearestPrice = v;
+      }
+    }
+    const thresh = mode === "strong" ? 1e12 : Math.abs(best.high - best.low) * 0.35 + 1e-9;
+    // weak: only snap if close; strong: always snap to nearest OHLC
+    if (mode === "strong" || bestDp <= thresh) {
+      return { time: best.time, price: nearestPrice };
+    }
+    return point;
   }
 
   function drawLabel(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, color: string) {
@@ -501,27 +615,40 @@ export function Chart({
     ctx.clearRect(0, 0, w, h);
 
     for (const s of shapesRef.current) {
-      if (s.kind === "trendline") {
+      if (s.kind === "trendline" || s.kind === "ray" || s.kind === "extended") {
         const A = toXY(s.a);
         const B = toXY(s.b);
         if (!A || !B) continue;
         const sel = selectedShapeIdRef?.current === s.id;
-        ctx.strokeStyle = sel ? "#fbbf24" : "#60a5fa";
-        ctx.lineWidth = sel ? 2.5 : 1.5;
+        ctx.strokeStyle = sel ? "#fbbf24" : (s.color || "#60a5fa");
+        ctx.lineWidth = sel ? 2.5 : (s.lineWidth || 1.5);
+        // Extend ray/extended beyond anchors in screen space
+        let x0 = A.x, y0 = A.y, x1 = B.x, y1 = B.y;
+        const dx = x1 - x0;
+        const dy = y1 - y0;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len;
+        const uy = dy / len;
+        const BIG = 5000;
+        if (s.kind === "ray") {
+          x1 = x0 + ux * BIG;
+          y1 = y0 + uy * BIG;
+        } else if (s.kind === "extended") {
+          x0 = A.x - ux * BIG;
+          y0 = A.y - uy * BIG;
+          x1 = A.x + ux * BIG;
+          y1 = A.y + uy * BIG;
+        }
         ctx.beginPath();
-        ctx.moveTo(A.x, A.y);
-        ctx.lineTo(B.x, B.y);
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
         ctx.stroke();
-        // Endpoint handles are always visible (small) so it's obvious the
-        // line can be grabbed and dragged; they grow when selected.
         const r = sel ? 6 : 4;
-        ctx.fillStyle = sel ? "#fbbf24" : "#60a5fa";
+        ctx.fillStyle = sel ? "#fbbf24" : (s.color || "#60a5fa");
         ctx.beginPath(); ctx.arc(A.x, A.y, r, 0, Math.PI * 2); ctx.fill();
         ctx.beginPath(); ctx.arc(B.x, B.y, r, 0, Math.PI * 2); ctx.fill();
         if (sel) {
-          const bx = B.x + 14;
-          const by = B.y - 14;
-          drawDeleteButton(ctx, s.id, bx, by);
+          drawDeleteButton(ctx, s.id, B.x + 14, B.y - 14);
         }
       } else if (s.kind === "rectangle") {
         const A = toXY(s.a);
@@ -816,13 +943,22 @@ export function Chart({
     drawLabel(ctx, midX - ctx.measureText(text).width / 2, Math.max(16, midY), text, color);
   }
 
-  function placePoint(point: ChartPoint) {
+  function placePoint(raw: ChartPoint) {
     const tool = drawToolRef.current;
-    if (tool !== "trendline" && tool !== "rectangle" && tool !== "measure" && tool !== "fib") return;
+    if (
+      tool !== "trendline" &&
+      tool !== "ray" &&
+      tool !== "extended" &&
+      tool !== "rectangle" &&
+      tool !== "measure" &&
+      tool !== "fib"
+    )
+      return;
+    const point = applyMagnet(raw, magnetModeRef.current);
     const steps = stepsRef.current;
     if (steps.length === 0) {
       stepsRef.current = [point];
-      setHint(tool === "measure" ? "Move, then click 2nd point" : "Double-click 2nd point");
+      setHint(tool === "measure" ? "Move, then click 2nd point" : "Click / double-click 2nd point");
       scheduleRedraw();
       return;
     }
@@ -830,8 +966,8 @@ export function Chart({
     const b = point;
     stepsRef.current = [];
     const shape: Shape =
-      tool === "trendline"
-        ? { id: uid(), kind: "trendline", a, b }
+      tool === "trendline" || tool === "ray" || tool === "extended"
+        ? { id: uid(), kind: tool, a, b }
         : tool === "rectangle"
         ? { id: uid(), kind: "rectangle", a, b }
         : tool === "fib"
@@ -839,7 +975,9 @@ export function Chart({
         : { id: uid(), kind: "measure", a, b };
     setShapes([...shapesRef.current, shape]);
     onSelectedShapeIdRef.current?.(shape.id);
-    setHint("Done · tap it to select, Delete or × to remove");
+    // Auto-return to select/crosshair after placing (TradingView-like)
+    onDrawToolChangeRef.current?.("crosshair");
+    setHint("Done · select to move · Delete / × to remove");
   }
 
   function hitTestDrag(x: number, y: number, touch: boolean): DragTarget | null {
@@ -853,7 +991,7 @@ export function Chart({
 
     // Trend line / rectangle / measure / fib endpoints — grab either point 'a' or 'b'.
     for (const s of shapesRef.current) {
-      if (s.kind !== "trendline" && s.kind !== "rectangle" && s.kind !== "measure" && s.kind !== "fib") continue;
+      if (s.kind !== "trendline" && s.kind !== "ray" && s.kind !== "extended" && s.kind !== "rectangle" && s.kind !== "measure" && s.kind !== "fib") continue;
       const A = toXY(s.a);
       const B = toXY(s.b);
       if (A && Math.hypot(A.x - x, A.y - y) <= pointThreshold) return { id: s.id, field: "a" };
@@ -925,7 +1063,7 @@ export function Chart({
       setShapes(
         shapesRef.current.map((s) =>
           s.id === d.id &&
-          (s.kind === "trendline" || s.kind === "rectangle" || s.kind === "measure" || s.kind === "fib")
+          (s.kind === "trendline" || s.kind === "ray" || s.kind === "extended" || s.kind === "rectangle" || s.kind === "measure" || s.kind === "fib")
             ? ({ ...s, [d.field]: newPoint } as Shape)
             : s
         )
@@ -990,7 +1128,7 @@ export function Chart({
     const handles = handlesRef.current;
     if (!handles) return null;
     for (const s of shapesRef.current) {
-      if (s.kind === "trendline" || s.kind === "measure" || s.kind === "fib") {
+      if (s.kind === "trendline" || s.kind === "ray" || s.kind === "extended" || s.kind === "measure" || s.kind === "fib") {
         const A = toXY(s.a);
         const B = toXY(s.b);
         if (!A || !B) continue;
@@ -1148,6 +1286,8 @@ export function Chart({
           (shape.kind === "hline" ||
             shape.kind === "vline" ||
             shape.kind === "trendline" ||
+            shape.kind === "ray" ||
+            shape.kind === "extended" ||
             shape.kind === "rectangle" ||
             shape.kind === "measure" ||
             shape.kind === "fib");
@@ -1227,11 +1367,9 @@ export function Chart({
             onSelectedShapeIdRef.current?.(existingId);
             setHint("Selected · drag to move, tap × or Delete to remove");
           } else {
-            // One-point tools: touch uses the tap point; mouse prefers live crosshair.
-            const pt =
-              ev.pointerType === "touch"
-                ? fromXY(x, y)
-                : crosshairRef.current ?? fromXY(x, y);
+            // Free continuous coordinate — not restricted to candle OHLC (v3.16.2)
+            const raw = fromXY(x, y);
+            const pt = raw ? applyMagnet(raw, magnetModeRef.current) : null;
             if (pt) {
               const shape: Shape =
                 tool === "hline"
@@ -1243,6 +1381,24 @@ export function Chart({
               onDrawToolChangeRef.current?.("crosshair");
               setHint("Done · drag to move, tap × or Delete to remove");
             }
+          }
+        } else if (
+          tool === "trendline" ||
+          tool === "ray" ||
+          tool === "extended" ||
+          tool === "rectangle" ||
+          tool === "measure" ||
+          tool === "fib"
+        ) {
+          // v3.16.2: single-click place for multi-point tools (TradingView-like).
+          // Prefer selecting an existing drawing if the tap hits one.
+          const existingId = hitTestSelect(x, y, threshold);
+          if (existingId && stepsRef.current.length === 0) {
+            onSelectedShapeIdRef.current?.(existingId);
+            setHint("Selected · drag to move, tap × or Delete to remove");
+          } else {
+            const pt = fromXY(x, y);
+            if (pt) placePoint(pt);
           }
         } else {
           const hitId = hitTestSelect(x, y, threshold);
@@ -1258,7 +1414,7 @@ export function Chart({
         if (prevTap && now - prevTap.time < 400 && Math.hypot(x - prevTap.x, y - prevTap.y) < 30) {
           doubleTapRef.current = null;
           const tool = drawToolRef.current;
-          if (tool === "trendline" || tool === "rectangle" || tool === "measure" || tool === "fib") {
+          if (tool === "trendline" || tool === "ray" || tool === "extended" || tool === "rectangle" || tool === "measure" || tool === "fib") {
             const pt = fromXY(x, y);
             if (pt) placePoint(pt);
           }

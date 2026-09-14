@@ -150,3 +150,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Instrument specification (contract/tick/point) — calculated lots, no hard-coded 0.37
 - finalLot = min(riskLot, marginMaxLot, volumeMax), round DOWN to lot step
 - Trade snapshot fields in Journal; Prop Firm config foundation
+
+## v3.16.2 Professional free drawing
+
+- Continuous time/price coordinates (not limited to candle OHLC)
+- Ray + Extended Line
+- Magnet OFF/WEAK/STRONG
+- Drawing undo/redo
+- Auto-return to Select after place

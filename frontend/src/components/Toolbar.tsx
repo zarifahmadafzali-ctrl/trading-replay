@@ -26,6 +26,19 @@ const ICONS: Record<string, JSX.Element> = {
       <line x1="5" y1="19" x2="19" y2="5" />
     </svg>
   ),
+  ray: (
+    <svg {...iconProps}>
+      <circle cx="5" cy="19" r="1.8" fill="currentColor" stroke="none" />
+      <line x1="5" y1="19" x2="22" y2="2" />
+    </svg>
+  ),
+  extended: (
+    <svg {...iconProps}>
+      <line x1="2" y1="22" x2="22" y2="2" />
+      <circle cx="8" cy="16" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="16" cy="8" r="1.5" fill="currentColor" stroke="none" />
+    </svg>
+  ),
   hline: (
     <svg {...iconProps}>
       <line x1="3" y1="12" x2="21" y2="12" />
@@ -84,11 +97,13 @@ const ICONS: Record<string, JSX.Element> = {
 const TOOLS: ToolDef[] = [
   { id: "crosshair", label: "Cursor / Select", icon: ICONS.cursor },
   { id: "trendline", label: "Trend Line", icon: ICONS.trendline },
+  { id: "ray", label: "Ray", icon: ICONS.ray },
+  { id: "extended", label: "Extended Line", icon: ICONS.extended },
   { id: "hline", label: "Horizontal Line", icon: ICONS.hline },
   { id: "vline", label: "Vertical Line", icon: ICONS.vline },
   { id: "rectangle", label: "Rectangle", icon: ICONS.rectangle },
   { id: "fib", label: "Fibonacci Retracement", icon: ICONS.fib },
-  { id: "measure", label: "Measure", icon: ICONS.measure },
+  { id: "measure", label: "Measure (Price + Time)", icon: ICONS.measure },
 ];
 
 const POSITION_TOOLS: ToolDef[] = [
