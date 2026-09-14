@@ -17,6 +17,7 @@ export type SessionMeta = {
   start: string;
   end: string;
   dataSource: SessionDataSource;
+  strategy?: string;
   createdAt: number;
   updatedAt: number;
   /** Up to 3 account profiles (v3.16.1). */
@@ -217,10 +218,21 @@ export async function createSession(input: {
   start: string;
   end: string;
   dataSource?: SessionDataSource;
+  strategy?: string;
+  sessionType?: "backtest" | "prop";
+  accounts?: import("./riskModel").AccountProfile[];
+  activeAccountId?: string;
+  instrument?: import("./riskModel").InstrumentSpec;
+  propFirm?: import("./riskModel").PropFirmConfig;
 }): Promise<SessionMeta> {
   const id = uid();
   const now = Date.now();
-  const acc = defaultAccount({ name: "Account 1", initialBalance: 5000, balance: 5000, leverage: 20 });
+  const accounts = (input.accounts && input.accounts.length
+    ? input.accounts.slice(0, 3)
+    : [defaultAccount({ name: "Account 1", initialBalance: 5000, balance: 5000, leverage: 20 })]);
+  const activeAccountId = input.activeAccountId || accounts[0].accountId;
+  const prop = input.propFirm || defaultPropFirm();
+  if (input.sessionType === "prop") prop.enabled = true;
   const meta: SessionMeta = {
     id,
     name: input.name.trim(),
@@ -228,13 +240,14 @@ export async function createSession(input: {
     start: input.start,
     end: input.end,
     dataSource: input.dataSource ?? "demo",
+    strategy: input.strategy?.trim() || undefined,
     createdAt: now,
     updatedAt: now,
-    accounts: [acc],
-    activeAccountId: acc.accountId,
-    instrument: defaultInstrument(input.symbol),
-    propFirm: defaultPropFirm(),
-    sessionType: "backtest",
+    accounts,
+    activeAccountId,
+    instrument: input.instrument || defaultInstrument(input.symbol),
+    propFirm: prop,
+    sessionType: input.sessionType || "backtest",
   };
   await upsertSession(meta);
   await putRuntime(

@@ -545,9 +545,12 @@ footer {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 220px;
+  max-height: min(50vh, 320px);
+  overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 .tf-list button, .tools-panel > button {
   width: 100%;
@@ -633,9 +636,20 @@ footer {
     position: fixed;
     left: 8px;
     right: 8px;
-    max-height: 50vh;
+    max-height: min(70vh, 480px);
     min-width: 0;
     z-index: 60;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    overscroll-behavior: contain;
+  }
+  .tf-list {
+    max-height: min(55vh, 400px);
+    overflow-y: auto;
+    touch-action: pan-y;
+    overscroll-behavior: contain;
   }
   /* Top-bar panels (TF/Orders/Indicators) drop near the top, where their
      toggle buttons actually are, instead of teleporting to the bottom —
@@ -856,3 +870,70 @@ footer {
   margin: 2px 0;
   line-height: 1.35;
 }
+
+/* v3.16.3 drawing discoverability */
+.draw-menu-wrap { position: relative; display: inline-flex; align-items: center; gap: 6px; }
+.draw-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 70;
+  min-width: 200px;
+  max-height: min(70vh, 420px);
+  overflow-y: auto;
+  background: #0e141c;
+  border: 1px solid #2a3544;
+  border-radius: 10px;
+  padding: 8px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+  touch-action: pan-y;
+}
+.draw-menu-group { margin-bottom: 8px; }
+.draw-menu-group b { display: block; font-size: 11px; color: #8b9bb0; margin: 4px 0; }
+.draw-menu button { width: 100%; text-align: left; height: 34px; }
+.draw-menu button.fav::after { content: " ★"; color: #fbbf24; }
+.float-toolbar {
+  position: absolute;
+  z-index: 25;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
+  background: rgba(14,20,28,0.94);
+  border: 1px solid #2a3544;
+  border-radius: 10px;
+  max-width: min(92vw, 320px);
+  cursor: grab;
+  touch-action: none;
+}
+.float-toolbar.dragging { cursor: grabbing; opacity: 0.95; }
+.float-toolbar button { height: 32px; min-width: 32px; padding: 0 8px; font-size: 11px; }
+.float-toolbar button.active { outline: 1px solid #60a5fa; }
+.magnet-row, .draw-actions { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.sync-log {
+  background: #0a0e14;
+  border: 1px solid #27323e;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 11px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: #c5d0dc;
+}
+.session-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.session-form-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #8b9bb0; }
+.session-form-grid input, .session-form-grid select { height: 34px; }
+.account-card {
+  border: 1px solid #27323e;
+  border-radius: 8px;
+  padding: 8px;
+  margin-bottom: 8px;
+  background: #111820;
+}
+.prop-block { border-top: 1px solid #27323e; padding-top: 10px; margin-top: 10px; }

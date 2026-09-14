@@ -158,3 +158,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Magnet OFF/WEAK/STRONG
 - Drawing undo/redo
 - Auto-return to Select after place
+
+## v3.16.3 Reliability and UX hardening
+
+- Data Engine: sync retry/backoff, verify, warm IndexedDB cache
+- Mobile TF preset list touch-scrollable
+- Drawing Tools menu, Magnet/Undo UI, floating favorites toolbar
+- Session Create: type, strategy, multi-account, instrument, prop firm

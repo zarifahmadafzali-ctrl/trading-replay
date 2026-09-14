@@ -37,6 +37,11 @@ export type PropFirmConfig = {
   dailyDdPercent: number;
   overallDdPercent: number;
   minTradingDays: number;
+  maxTradingDays?: number | null;
+  consistencyRulePercent?: number | null;
+  profitCapPercent?: number | null;
+  trailingDrawdownPercent?: number | null;
+  staticDrawdownPercent?: number | null;
 };
 
 export type RiskCalcInput = {
@@ -152,6 +157,11 @@ export function defaultPropFirm(): PropFirmConfig {
     dailyDdPercent: 5,
     overallDdPercent: 10,
     minTradingDays: 4,
+    maxTradingDays: null,
+    consistencyRulePercent: null,
+    profitCapPercent: null,
+    trailingDrawdownPercent: null,
+    staticDrawdownPercent: null,
   };
 }
 

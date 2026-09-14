@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chart, type ClosedPosition, type DrawTool, type IndicatorSpec, type MagnetMode, type OrderType, type Shape } from "../components/Chart";
 import { Toolbar } from "../components/Toolbar";
+import {
+  GROUP_LABELS,
+  IMPLEMENTED_TOOLS,
+  loadFavorites,
+  saveFavorites,
+  type ToolGroup,
+} from "../lib/drawingTools";
 import { fetchBars, addTrade } from "../lib/api";
 import { appendTradeAsync, rMultiple } from "../lib/journal";
 import { cacheGetRange, cachePutBars } from "../lib/barCache";
@@ -122,6 +129,16 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [loading, setLoading] = useState(() => !!(saved && saved.dataSource !== "demo"));
   const [drawTool, setDrawTool] = useState<DrawTool>(() => (saved?.drawTool as DrawTool) || "crosshair");
   const [magnetMode, setMagnetMode] = useState<MagnetMode>("off");
+  const [drawMenuOpen, setDrawMenuOpen] = useState(false);
+  const [favorites, setFavorites] = useState<DrawTool[]>(() => loadFavorites());
+  const [floatPos, setFloatPos] = useState(() => {
+    try {
+      const raw = localStorage.getItem("tr-float-toolbar-pos");
+      if (raw) return JSON.parse(raw) as { x: number; y: number };
+    } catch { /* */ }
+    return { x: 56, y: 12 };
+  });
+  const floatDragRef = useRef<{ dx: number; dy: number } | null>(null);
   const shapesUndoRef = useRef<Shape[][]>([]);
   const shapesRedoRef = useRef<Shape[][]>([]);
   const [goToValue, setGoToValue] = useState("");
@@ -181,6 +198,16 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       localStorage.setItem("tr-custom-tfs", JSON.stringify(customTfs));
     } catch { /* */ }
   }, [customTfs]);
+
+  useEffect(() => {
+    saveFavorites(favorites);
+  }, [favorites]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("tr-float-toolbar-pos", JSON.stringify(floatPos));
+    } catch { /* */ }
+  }, [floatPos]);
 
   // Drawings + indicators: session-scoped in IndexedDB (v3.16)
   useEffect(() => {
@@ -364,13 +391,14 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     function onDoc(e: PointerEvent) {
       const t = e.target as Node;
       if (tfOpen && tfPanelRef.current && !tfPanelRef.current.contains(t)) setTfOpen(false);
+      if (drawMenuOpen && !(t as HTMLElement).closest?.(".draw-menu-wrap")) setDrawMenuOpen(false);
       if (ordersOpen && ordersPanelRef.current && !ordersPanelRef.current.contains(t)) setOrdersOpen(false);
       if (indOpen && indPanelRef.current && !indPanelRef.current.contains(t)) setIndOpen(false);
       if (stepOpen && stepPanelRef.current && !stepPanelRef.current.contains(t)) setStepOpen(false);
     }
     document.addEventListener("pointerdown", onDoc);
     return () => document.removeEventListener("pointerdown", onDoc);
-  }, [tfOpen, ordersOpen, indOpen, stepOpen]);
+  }, [tfOpen, ordersOpen, indOpen, stepOpen, drawMenuOpen]);
 
   // Space = play/pause, ArrowRight/ArrowLeft = step one second. Ignored
   // while typing in an input (symbol search, custom TF box, etc).
@@ -769,6 +797,59 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           ))}
         </select>
 
+        <div className="draw-menu-wrap">
+          <button type="button" className={drawMenuOpen ? "on" : ""} onClick={() => setDrawMenuOpen((v) => !v)}>
+            Drawing Tools ▾
+          </button>
+          {drawMenuOpen && (
+            <div className="draw-menu panel-top">
+              {(Object.keys(GROUP_LABELS) as ToolGroup[]).map((g) => {
+                const items = IMPLEMENTED_TOOLS.filter((x) => x.group === g);
+                if (!items.length) return null;
+                return (
+                  <div className="draw-menu-group" key={g}>
+                    <b>{GROUP_LABELS[g]}</b>
+                    {items.map((tool) => (
+                      <button
+                        key={tool.id}
+                        type="button"
+                        className={`${drawTool === tool.id ? "on" : ""}${favorites.includes(tool.id) ? " fav" : ""}`}
+                        onClick={() => {
+                          pickTool(tool.id);
+                          setDrawMenuOpen(false);
+                        }}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setFavorites((prev) =>
+                            prev.includes(tool.id) ? prev.filter((x) => x !== tool.id) : [...prev, tool.id]
+                          );
+                        }}
+                        title="Click to select · right-click toggle favorite"
+                      >
+                        {tool.label}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })}
+              <p className="tools-note">Right-click a tool to add/remove Favorites.</p>
+            </div>
+          )}
+        </div>
+
+        <label className="magnet-row" title="Snap to OHLC">
+          Magnet
+          <select value={magnetMode} onChange={(e) => setMagnetMode(e.target.value as MagnetMode)}>
+            <option value="off">OFF</option>
+            <option value="weak">Weak</option>
+            <option value="strong">Strong</option>
+          </select>
+        </label>
+        <span className="draw-actions">
+          <button type="button" onClick={undoShapes} title="Undo drawing">Undo</button>
+          <button type="button" onClick={redoShapes} title="Redo drawing">Redo</button>
+        </span>
+
         <div className="tf-wrap" ref={tfPanelRef}>
           <button type="button" className="tf-current on" onClick={() => setTfOpen((v) => !v)}>
             TF {formatTf(timeframeSeconds)} ▾
@@ -920,6 +1001,42 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       </div>
 
       <div className="chartbox">
+        <div
+          className="float-toolbar"
+          style={{ left: floatPos.x, top: floatPos.y }}
+          onPointerDown={(e) => {
+            if ((e.target as HTMLElement).tagName === "BUTTON") return;
+            const el = e.currentTarget;
+            el.setPointerCapture(e.pointerId);
+            floatDragRef.current = { dx: e.clientX - floatPos.x, dy: e.clientY - floatPos.y };
+          }}
+          onPointerMove={(e) => {
+            if (!floatDragRef.current) return;
+            setFloatPos({
+              x: Math.max(0, e.clientX - floatDragRef.current.dx),
+              y: Math.max(0, e.clientY - floatDragRef.current.dy),
+            });
+          }}
+          onPointerUp={() => {
+            floatDragRef.current = null;
+          }}
+        >
+          {(favorites.length ? favorites : (["crosshair", "trendline", "hline"] as DrawTool[])).map((id) => {
+            const meta = IMPLEMENTED_TOOLS.find((x) => x.id === id);
+            if (!meta) return null;
+            return (
+              <button
+                key={id}
+                type="button"
+                className={drawTool === id ? "active on" : ""}
+                title={meta.label}
+                onClick={() => pickTool(id)}
+              >
+                {meta.label.split(" ")[0]}
+              </button>
+            );
+          })}
+        </div>
         <Toolbar
           activeTool={drawTool}
           onToolChange={pickTool}
