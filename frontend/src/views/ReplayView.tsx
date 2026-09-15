@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chart, type ClosedPosition, type DrawTool, type IndicatorSpec, type MagnetMode, type OrderType, type Shape } from "../components/Chart";
-import { Toolbar } from "../components/Toolbar";
 import {
   GROUP_LABELS,
   IMPLEMENTED_TOOLS,
@@ -166,7 +165,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     setShapes(next);
   }
   const [orderType, setOrderType] = useState<OrderType>(() => (saved?.orderType as OrderType) || "market");
-  const [riskPercent, setRiskPercent] = useState(1);
+  const [riskPercent, setRiskPercent] = useState(2);
+  const [riskPercentInput, setRiskPercentInput] = useState("2");
   const [sessionMeta, setSessionMeta] = useState<SessionMeta | null>(null);
   const lastRiskSnapshotRef = useRef<RiskCalcResult | null>(null);
   const [followPrice, setFollowPrice] = useState(() => saved?.followPrice ?? false);
@@ -718,6 +718,18 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const STEP_PRESETS = [1, 5, 10, 30, 60, 120, 300, 600, 900, 1800, 3600];
 
 
+
+  useEffect(() => {
+    const onAcc = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail as SessionMeta | undefined;
+      if (detail && detail.id === (sessionMeta?.id || getActiveSessionId())) {
+        setSessionMeta(ensureSessionAccounts(detail));
+      }
+    };
+    window.addEventListener("tr-session-accounts-updated", onAcc as EventListener);
+    return () => window.removeEventListener("tr-session-accounts-updated", onAcc as EventListener);
+  }, [sessionMeta?.id]);
+
   // v3.16.1 live risk calculator from draft/selected position + order risk %
   const captureRiskSnapshot = useCallback(
     (pos: import("../components/Chart").PositionShape) => {
@@ -933,7 +945,9 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                   }}
                   title="Active account"
                 >
-                  {ensureSessionAccounts(sessionMeta).accounts!.map((a) => (
+                  {ensureSessionAccounts(sessionMeta)
+                    .accounts!.filter((a) => a.enabled !== false)
+                    .map((a) => (
                     <option key={a.accountId} value={a.accountId}>
                       {a.name} · {a.currency} {a.balance.toLocaleString()} · 1:{a.leverage}
                     </option>
@@ -947,10 +961,38 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                   min={0.01}
                   max={100}
                   step={0.01}
-                  value={riskPercent}
-                  onChange={(e) => setRiskPercent(Math.max(0.01, Number(e.target.value) || 1))}
+                  value={riskPercentInput}
+                  onChange={(e) => setRiskPercentInput(e.target.value)}
+                  onBlur={() => {
+                    const n = Number(riskPercentInput);
+                    if (!Number.isFinite(n) || n < 0.01 || n > 100) {
+                      setRiskPercentInput(String(riskPercent));
+                      return;
+                    }
+                    const v = Math.round(n * 100) / 100;
+                    setRiskPercent(v);
+                    setRiskPercentInput(String(v));
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  }}
                 />
               </label>
+              <div className="risk-presets">
+                {[1, 2, 3].map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    className={riskPercent === p ? "on" : ""}
+                    onClick={() => {
+                      setRiskPercent(p);
+                      setRiskPercentInput(String(p));
+                    }}
+                  >
+                    {p}%
+                  </button>
+                ))}
+              </div>
               <button type="button" className="on" onClick={confirmOrder}>Confirm</button>
               <button type="button" onClick={() => window.dispatchEvent(new Event("tr-cancel-draft"))}>Cancel draft</button>
               <button type="button" onClick={() => { setShapes([]); setSelectedShapeId(null); }}>Clear drawings</button>
@@ -1037,12 +1079,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
             );
           })}
         </div>
-        <Toolbar
-          activeTool={drawTool}
-          onToolChange={pickTool}
-          hasSelection={!!selectedShapeId}
-          onDeleteSelected={deleteSelectedShape}
-        />
+        {/* v3.17.1: full .tv-toolbar demoted — favorites float-toolbar is primary */}
+
         <Chart
           bars={visibleBars}
           cursor={visibleBars.length}

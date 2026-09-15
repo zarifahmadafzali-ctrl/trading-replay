@@ -197,3 +197,12 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Analytics view from closed Journal only
 - Equity/drawdown curves, R stats, streaks, time & breakdown tables
 - Session/account/symbol/date filters
+
+## v3.17.1
+
+- Analytics starting balance / account filter fix
+- Risk % editable (default 2%)
+- Orders panel above date-range bar
+- Edit accounts on existing sessions
+- Live R:R preview + collision-aware labels
+- Favorites float-toolbar primary (full tv-toolbar demoted)

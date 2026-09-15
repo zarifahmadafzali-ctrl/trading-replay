@@ -9,6 +9,7 @@ import {
   listSessions,
   migrateLegacyToSessionIfNeeded,
   setActiveSessionId,
+  upsertSession,
   type SessionMeta,
 } from "../lib/sessionStore";
 import {
@@ -39,6 +40,9 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editAccounts, setEditAccounts] = useState<AccountProfile[]>([]);
+  const [editActiveId, setEditActiveId] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const [sessionType, setSessionType] = useState<"backtest" | "prop">("backtest");
@@ -148,6 +152,60 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
       emitSessionChanged(getActiveSessionId());
     } catch {
       setError("Could not delete session");
+    }
+  }
+
+
+  async function startEditAccounts(s: SessionMeta) {
+    const full = ensureSessionAccounts(s);
+    setEditingId(s.id);
+    setEditAccounts((full.accounts || []).map((a) => ({ ...a })));
+    setEditActiveId(full.activeAccountId || full.accounts?.[0]?.accountId || "");
+  }
+
+  function updateEditAccount(id: string, patch: Partial<AccountProfile>) {
+    setEditAccounts((prev) => prev.map((a) => (a.accountId === id ? { ...a, ...patch } : a)));
+  }
+
+  function addEditAccount() {
+    if (editAccounts.length >= 3) return;
+    const a = newAccount(editAccounts.length + 1);
+    setEditAccounts((prev) => [...prev, a]);
+  }
+
+  function removeEditAccount(id: string) {
+    if (editAccounts.length <= 1) return;
+    const next = editAccounts.filter((a) => a.accountId !== id);
+    setEditAccounts(next);
+    if (editActiveId === id) setEditActiveId(next[0].accountId);
+  }
+
+  async function saveEditAccounts() {
+    if (!editingId) return;
+    const meta = sessions.find((s) => s.id === editingId);
+    if (!meta) return;
+    const enabled = editAccounts.filter((a) => a.enabled !== false);
+    const list = (enabled.length ? enabled : editAccounts).slice(0, 3).map((a) => ({
+      ...a,
+      balance: a.balance || a.initialBalance,
+      initialBalance: a.initialBalance || a.balance,
+    }));
+    let active = list.find((a) => a.accountId === editActiveId && a.enabled !== false)?.accountId;
+    if (!active) active = list.find((a) => a.enabled !== false)?.accountId || list[0]?.accountId;
+    const next: SessionMeta = {
+      ...meta,
+      accounts: list,
+      activeAccountId: active,
+      updatedAt: Date.now(),
+    };
+    await upsertSession(next);
+    setSessions((prev) => prev.map((s) => (s.id === editingId ? next : s)));
+    setEditingId(null);
+    // If this is the active session, notify replay to refresh meta via storage event / reload list
+    if (getActiveSessionId() === editingId) {
+      try {
+        window.dispatchEvent(new CustomEvent("tr-session-accounts-updated", { detail: next }));
+      } catch { /* */ }
     }
   }
 
@@ -414,10 +472,93 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                       Open
                     </button>
                   )}
+                  <button type="button" onClick={() => void startEditAccounts(s)}>
+                    Edit Accounts
+                  </button>
                   <button type="button" onClick={() => void handleDelete(s.id)}>
                     Delete
                   </button>
                 </div>
+                {editingId === s.id && (
+                  <div className="account-edit-panel">
+                    <h4>Edit accounts (max 3)</h4>
+                    {editAccounts.map((a) => (
+                      <div className="account-card" key={a.accountId}>
+                        <div className="session-form-grid">
+                          <label>
+                            Name
+                            <input value={a.name} onChange={(e) => updateEditAccount(a.accountId, { name: e.target.value })} />
+                          </label>
+                          <label>
+                            Balance
+                            <input
+                              type="number"
+                              value={a.balance}
+                              onChange={(e) => {
+                                const v = Number(e.target.value) || 0;
+                                updateEditAccount(a.accountId, { balance: v, initialBalance: v });
+                              }}
+                            />
+                          </label>
+                          <label>
+                            Currency
+                            <input value={a.currency} onChange={(e) => updateEditAccount(a.accountId, { currency: e.target.value })} />
+                          </label>
+                          <label>
+                            Leverage (1:N)
+                            <input
+                              type="number"
+                              min={1}
+                              value={a.leverage}
+                              onChange={(e) =>
+                                updateEditAccount(a.accountId, { leverage: Math.max(1, Number(e.target.value) || 1) })
+                              }
+                            />
+                          </label>
+                          <label>
+                            Enabled
+                            <select
+                              value={a.enabled !== false ? "1" : "0"}
+                              onChange={(e) => updateEditAccount(a.accountId, { enabled: e.target.value === "1" })}
+                            >
+                              <option value="1">Yes</option>
+                              <option value="0">No</option>
+                            </select>
+                          </label>
+                        </div>
+                        <div className="session-actions">
+                          <label>
+                            <input
+                              type="radio"
+                              name={`edit-active-${s.id}`}
+                              checked={editActiveId === a.accountId}
+                              onChange={() => setEditActiveId(a.accountId)}
+                            />{" "}
+                            Active
+                          </label>
+                          {editAccounts.length > 1 && (
+                            <button type="button" onClick={() => removeEditAccount(a.accountId)}>
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {editAccounts.length < 3 && (
+                      <button type="button" onClick={addEditAccount}>
+                        + Add account
+                      </button>
+                    )}
+                    <div className="session-actions">
+                      <button type="button" className="on" onClick={() => void saveEditAccounts()}>
+                        Save accounts
+                      </button>
+                      <button type="button" onClick={() => setEditingId(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
               </li>
             );
           })}

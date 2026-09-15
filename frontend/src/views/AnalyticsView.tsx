@@ -18,10 +18,13 @@ import {
 } from "../lib/analytics";
 import { loadJournalForSession, type JournalTrade } from "../lib/journal";
 import {
+  ensureSessionAccounts,
   getActiveSessionId,
+  getSession,
   listSessions,
   type SessionMeta,
 } from "../lib/sessionStore";
+import type { AccountProfile } from "../lib/riskModel";
 
 function EquitySvg({
   points,
@@ -153,6 +156,7 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [loading, setLoading] = useState(true);
+  const [sessionAccounts, setSessionAccounts] = useState<AccountProfile[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -163,19 +167,30 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
       setSessions(sess);
       const active = getActiveSessionId();
       let all: JournalTrade[] = [];
+      let profiles: AccountProfile[] = [];
       if (sessionFilter === "all") {
         for (const s of sess) {
-          const t = await loadJournalForSession(s.id);
-          all = all.concat(t);
+          const jt = await loadJournalForSession(s.id);
+          all = all.concat(jt);
+          const full = ensureSessionAccounts(s);
+          profiles = profiles.concat(full.accounts || []);
         }
         const legacy = await loadJournalForSession(null);
         all = all.concat(legacy);
       } else {
         const sid = sessionFilter === "active" ? active : sessionFilter;
         all = await loadJournalForSession(sid);
+        if (sid) {
+          const meta = await getSession(sid);
+          if (meta) profiles = ensureSessionAccounts(meta).accounts || [];
+        }
       }
       if (!cancelled) {
         setTrades(all);
+        setSessionAccounts(profiles);
+        // Invalid accountFilter after session change → All
+        const ids = new Set(profiles.map((a) => a.accountId));
+        setAccountFilter((prev) => (prev !== "all" && !ids.has(prev) ? "all" : prev));
         setLoading(false);
       }
     })();
@@ -183,12 +198,6 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
       cancelled = true;
     };
   }, [sessionFilter]);
-
-  const accounts = useMemo(() => {
-    const ids = new Set<string>();
-    for (const t of trades) if (t.accountId) ids.add(t.accountId);
-    return Array.from(ids);
-  }, [trades]);
 
   const symbols = useMemo(() => {
     const ids = new Set<string>();
@@ -224,18 +233,25 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
 
   const filtered = useMemo(() => filterTrades(trades, filters), [trades, filters]);
 
-  const startingBalance = useMemo(() => {
+  const startingBalance = useMemo((): number | null => {
+    if (accountFilter !== "all") {
+      const acc = sessionAccounts.find((a) => a.accountId === accountFilter);
+      if (acc) return acc.initialBalance ?? acc.balance;
+      return null;
+    }
+    // All accounts: prefer first trade snapshot, else first profile, else null (never invent 10000)
     const withBal = filtered.find((t) => t.balanceBefore != null);
     if (withBal?.balanceBefore != null) return withBal.balanceBefore;
-    return 10000;
-  }, [filtered]);
+    if (sessionAccounts[0]) return sessionAccounts[0].initialBalance ?? sessionAccounts[0].balance;
+    return null;
+  }, [accountFilter, sessionAccounts, filtered]);
 
   const summary = useMemo(
-    () => computeSummary(filtered, startingBalance),
+    () => computeSummary(filtered, startingBalance ?? 0),
     [filtered, startingBalance]
   );
   const curve = useMemo(
-    () => buildEquityCurve(filtered, startingBalance),
+    () => buildEquityCurve(filtered, startingBalance ?? 0),
     [filtered, startingBalance]
   );
   const ddInfo = useMemo(() => maxDrawdownFromCurve(curve), [curve]);
@@ -258,7 +274,7 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
         fromTime: timeBounds.from,
         toTime: timeBounds.to,
       });
-      const sum = computeSummary(st, startingBalance);
+      const sum = computeSummary(st, startingBalance ?? 0);
       return {
         name: s.name || s.id,
         trades: sum.totalTrades,
@@ -294,10 +310,10 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
         <label>
           Account
           <select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)}>
-            <option value="all">All</option>
-            {accounts.map((a) => (
-              <option key={a} value={a}>
-                {a}
+            <option value="all">All Accounts</option>
+            {sessionAccounts.map((a) => (
+              <option key={a.accountId} value={a.accountId}>
+                {a.name} · {(a.initialBalance ?? a.balance).toLocaleString()} {a.currency}
               </option>
             ))}
           </select>
@@ -346,8 +362,14 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
               tone={summary.netPnl >= 0 ? "pos" : "neg"}
             />
             <Card label="Return %" value={formatPct(summary.returnPercent)} />
-            <Card label="Starting" value={formatNum(summary.startingBalance, 0)} />
-            <Card label="Ending" value={formatNum(summary.endingBalance, 0)} />
+            <Card
+              label="Starting"
+              value={startingBalance == null ? "—" : formatNum(startingBalance, 0)}
+            />
+            <Card
+              label="Ending"
+              value={startingBalance == null && filtered.length === 0 ? "—" : formatNum(summary.endingBalance, 0)}
+            />
             <Card label="Gross profit" value={formatNum(summary.grossProfit)} tone="pos" />
             <Card label="Gross loss" value={formatNum(summary.grossLoss)} tone="neg" />
             <Card label="Profit factor" value={formatNum(summary.profitFactor)} />

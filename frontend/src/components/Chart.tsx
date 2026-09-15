@@ -845,9 +845,9 @@ export function Chart({
           ctx.fillRect(w - 28, E.y - 10, 20, 20);
         }
 
-        ctx.font = "11px system-ui, sans-serif";
+        // Live R:R for draft / pending / open (preview before Confirm)
         const rr = riskReward(s.entry.price, s.stop.price, s.takeProfit.price);
-        const rrText = rr != null && s.status === "open" ? ` · R:R 1:${rr.toFixed(2)}` : "";
+        const rrText = rr != null ? `R:R 1:${rr.toFixed(2)}` : "R:R —";
         const st =
           s.status === "draft" ? "DRAFT" : s.status === "pending" ? "PENDING" : "OPEN";
         let liveText = "";
@@ -856,19 +856,68 @@ export function Chart({
           const live = long ? px - s.entry.price : s.entry.price - px;
           liveText = ` · ${live >= 0 ? "+" : ""}${live.toFixed(2)}`;
         }
-        ctx.fillStyle = entryColor;
-        ctx.fillText(
-          `${st} ${s.side.toUpperCase()} ${s.orderType} @ ${s.entry.price.toFixed(2)}${rrText}${liveText}`,
-          8,
-          Math.max(14, E.y - 8)
-        );
-        if (S && (s.status === "open" || draft)) {
-          ctx.fillStyle = "#f59e0b";
-          ctx.fillText(`SL ${s.stop.price.toFixed(2)}`, 8, Math.max(14, S.y - 8));
+
+        // Collision-aware label Y positions (left side of chart)
+        const labels: { key: string; y: number; text: string; color: string; prio: number }[] = [];
+        labels.push({
+          key: "entry",
+          y: E.y,
+          text: `${st} ${s.side.toUpperCase()} ${s.orderType} @ ${s.entry.price.toFixed(2)}${liveText}`,
+          color: entryColor,
+          prio: 1,
+        });
+        if (S && (s.status === "open" || draft || pending)) {
+          labels.push({
+            key: "sl",
+            y: S.y,
+            text: `SL ${s.stop.price.toFixed(2)}`,
+            color: "#f59e0b",
+            prio: 2,
+          });
         }
-        if (T && (s.status === "open" || draft)) {
-          ctx.fillStyle = "#38bdf8";
-          ctx.fillText(`TP ${s.takeProfit.price.toFixed(2)}`, 8, Math.max(14, T.y - 8));
+        if (T && (s.status === "open" || draft || pending)) {
+          labels.push({
+            key: "tp",
+            y: T.y,
+            text: `TP ${s.takeProfit.price.toFixed(2)}`,
+            color: "#38bdf8",
+            prio: 3,
+          });
+        }
+        if (s.status === "open" || draft || pending) {
+          // Place R:R near midpoint of entry–TP when possible
+          const rrY =
+            T && E ? (E.y + T.y) / 2 : E.y - 18;
+          labels.push({
+            key: "rr",
+            y: rrY,
+            text: rrText,
+            color: "#a78bfa",
+            prio: 4,
+          });
+        }
+        // Sort by y, then separate vertically if closer than 14px
+        labels.sort((a, b) => a.y - b.y || a.prio - b.prio);
+        const minGap = 14;
+        for (let i = 1; i < labels.length; i++) {
+          if (labels[i].y - labels[i - 1].y < minGap) {
+            labels[i].y = labels[i - 1].y + minGap;
+          }
+        }
+        // Clamp into chart
+        for (const lb of labels) {
+          lb.y = Math.max(12, Math.min(h - 6, lb.y));
+        }
+        // Second pass bottom-up if clamped caused overlap
+        for (let i = labels.length - 2; i >= 0; i--) {
+          if (labels[i + 1].y - labels[i].y < minGap) {
+            labels[i].y = Math.max(12, labels[i + 1].y - minGap);
+          }
+        }
+        ctx.font = "11px system-ui, sans-serif";
+        for (const lb of labels) {
+          ctx.fillStyle = lb.color;
+          ctx.fillText(lb.text, 8, lb.y);
         }
       }
     }

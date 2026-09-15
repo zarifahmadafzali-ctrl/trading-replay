@@ -998,3 +998,16 @@ footer {
   .analytics-filters { flex-direction: column; align-items: stretch; }
   .analytics-filters select, .analytics-filters input { width: 100%; }
 }
+
+
+/* v3.17.1: Orders/TF panels live in topbar stacking context — keep above date-range bar */
+.bar.replay-topbar {
+  z-index: 40 !important;
+  position: relative;
+}
+.bar.replay-range {
+  z-index: 20 !important;
+  position: relative;
+}
+.risk-presets { display: inline-flex; gap: 4px; margin-left: 4px; }
+.risk-presets button { height: 28px; min-width: 36px; padding: 0 6px; font-size: 11px; }
