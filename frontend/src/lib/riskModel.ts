@@ -12,6 +12,8 @@ export type AccountProfile = {
   /** e.g. 20 means 1:20 */
   leverage: number;
   enabled: boolean;
+  /** Future prop support — no rule engine in v3.17.4 */
+  accountType?: "personal" | "prop";
 };
 
 export type InstrumentSpec = {
@@ -89,6 +91,7 @@ export function defaultAccount(partial?: Partial<AccountProfile>): AccountProfil
     currency: partial?.currency || "USD",
     leverage: partial?.leverage ?? 20,
     enabled: partial?.enabled !== false,
+    accountType: partial?.accountType || "personal",
   };
 }
 

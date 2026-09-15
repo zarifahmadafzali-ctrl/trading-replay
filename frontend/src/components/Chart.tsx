@@ -115,6 +115,8 @@ export type PositionShape = {
   limitPrice?: number;
   /** Stop-Limit only: true after stop trigger, waiting for limit fill. */
   stopTriggered?: boolean;
+  /** Owning account at draft/confirm (v3.17.4) — frozen; not rewritten on switch. */
+  accountId?: string;
   /** Frozen at actual fill (v3.16.1). */
   riskSnapshot?: Record<string, unknown>;
 };
@@ -249,6 +251,7 @@ export function Chart({
   onDrawToolChange,
   onPositionClosed,
   captureRiskSnapshot,
+  activeAccountId,
   indicators = [],
   magnetMode = "off" as MagnetMode,
 }: {
@@ -273,6 +276,8 @@ export function Chart({
   onPositionClosed?: (closed: ClosedPosition) => void;
   /** Build immutable risk snapshot at fill time (v3.16.1). */
   captureRiskSnapshot?: (pos: PositionShape) => Record<string, unknown> | null;
+  /** Active account when drafting (stamped onto position; not changed by later switches). */
+  activeAccountId?: string | null;
   indicators?: IndicatorSpec[];
   magnetMode?: MagnetMode;
 }) {
@@ -305,6 +310,8 @@ export function Chart({
   onPositionClosedRef.current = onPositionClosed;
   const captureRiskSnapshotRef = useRef(captureRiskSnapshot);
   captureRiskSnapshotRef.current = captureRiskSnapshot;
+  const activeAccountIdRef = useRef(activeAccountId);
+  activeAccountIdRef.current = activeAccountId;
   // Screen-space hit area for the on-canvas "×" delete button drawn next to
   // whichever trendline/rectangle/measure shape is currently selected.
   const deleteButtonRef = useRef<{ id: string; x: number; y: number; r: number } | null>(null);
@@ -404,6 +411,7 @@ export function Chart({
       status: "draft",
       ...levels,
       ...(stopPrice != null ? { stopPrice, limitPrice, stopTriggered: false } : {}),
+      ...(activeAccountIdRef.current ? { accountId: activeAccountIdRef.current } : {}),
     };
     setShapes([...kept, draft]);
     if (ot === "market") {
@@ -421,11 +429,13 @@ export function Chart({
         // Market fills immediately; all pending types wait for entry on 1s bars.
         const nextStatus: PositionShape["status"] =
           s.orderType === "market" ? "open" : "pending";
+        const ownerId = s.accountId || activeAccountIdRef.current || undefined;
         const snap =
-          nextStatus === "open" ? captureRiskSnapshotRef.current?.(s) : null;
+          nextStatus === "open" ? captureRiskSnapshotRef.current?.({ ...s, accountId: ownerId }) : null;
         return {
           ...s,
           status: nextStatus,
+          ...(ownerId ? { accountId: ownerId } : {}),
           ...(snap ? { riskSnapshot: snap } : {}),
         };
       }

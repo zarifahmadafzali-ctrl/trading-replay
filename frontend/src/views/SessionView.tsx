@@ -9,6 +9,7 @@ import {
   listSessions,
   migrateLegacyToSessionIfNeeded,
   setActiveSessionId,
+  MAX_SESSION_ACCOUNTS,
   upsertSession,
   type SessionMeta,
 } from "../lib/sessionStore";
@@ -104,7 +105,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
 
 
   function addAccount() {
-    if (accounts.length >= 3) return;
+    if (accounts.length >= MAX_SESSION_ACCOUNTS) return;
     const a = newAccount(accounts.length + 1);
     setAccounts((prev) => [...prev, a]);
     if (!activeAccountId) setActiveAccountId(a.accountId);
@@ -136,7 +137,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
         dataSource,
         strategy: strategy.trim() || undefined,
         sessionType,
-        accounts: accounts.slice(0, 3).map((a) => {
+        accounts: accounts.slice(0, MAX_SESSION_ACCOUNTS).map((a) => {
           const balRaw = createBalDraft[a.accountId] ?? String(a.balance);
           const levRaw = createLevDraft[a.accountId] ?? String(a.leverage);
           const bal = commitBalance(balRaw, a.balance) ?? a.balance ?? a.initialBalance;
@@ -202,7 +203,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
   }
 
   function addEditAccount() {
-    if (editAccounts.length >= 3) return;
+    if (editAccounts.length >= MAX_SESSION_ACCOUNTS) return;
     const a = newAccount(editAccounts.length + 1);
     setEditAccounts((prev) => [...prev, a]);
   }
@@ -227,7 +228,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
       return { ...a, balance: bal, initialBalance: bal, leverage: lev };
     });
     const enabled = committed.filter((a) => a.enabled !== false);
-    const list = (enabled.length ? enabled : committed).slice(0, 3).map((a) => ({
+    const list = (enabled.length ? enabled : committed).slice(0, MAX_SESSION_ACCOUNTS).map((a) => ({
       ...a,
       balance: a.balance || a.initialBalance,
       initialBalance: a.initialBalance || a.balance,
@@ -304,7 +305,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
           </label>
         </div>
 
-        <h3>Accounts (max 3) · Risk % is per order, not here</h3>
+        <h3>{`Accounts (max ${MAX_SESSION_ACCOUNTS}) · Risk % is per order, not here`}</h3>
         {accounts.map((a) => (
           <div className="account-card" key={a.accountId}>
             <div className="session-form-grid">
@@ -387,7 +388,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
             </div>
           </div>
         ))}
-        {accounts.length < 3 && (
+        {accounts.length < MAX_SESSION_ACCOUNTS && (
           <button type="button" onClick={addAccount}>Add account</button>
         )}
 
@@ -547,7 +548,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                 </div>
                 {editingId === s.id && (
                   <div className="account-edit-panel">
-                    <h4>Edit accounts (max 3)</h4>
+                    <h4>{`Edit accounts (max ${MAX_SESSION_ACCOUNTS})`}</h4>
                     {editAccounts.map((a) => (
                       <div className="account-card" key={a.accountId}>
                         <div className="session-form-grid">
@@ -632,7 +633,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                         </div>
                       </div>
                     ))}
-                    {editAccounts.length < 3 && (
+                    {editAccounts.length < MAX_SESSION_ACCOUNTS && (
                       <button type="button" onClick={addEditAccount}>
                         + Add account
                       </button>

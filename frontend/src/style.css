@@ -1012,3 +1012,13 @@ footer {
 }
 .risk-presets { display: inline-flex; gap: 4px; margin-left: 4px; }
 .risk-presets button { height: 28px; min-width: 36px; padding: 0 6px; font-size: 11px; }
+
+.active-account-block { margin: 4px 0 8px; }
+.active-account-label { font-size: 10px; letter-spacing: 0.04em; color: #8b93a7; margin-bottom: 4px; }
+.account-switch-list { list-style: none; margin: 6px 0 0; padding: 0; max-height: 140px; overflow-y: auto; }
+.account-switch-list li button {
+  width: 100%; text-align: left; background: transparent; border: 0; color: #c5d0dc;
+  padding: 4px 2px; font-size: 12px; cursor: pointer;
+}
+.account-switch-list li.acc-active button { color: #3ecf8e; }
+.account-switch-list li.acc-disabled button { color: #5a6575; cursor: not-allowed; }

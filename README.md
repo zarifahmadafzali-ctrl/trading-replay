@@ -216,3 +216,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 ## v3.17.3
 
 - Fix Account Size / Leverage inputs allowing temporary empty string while editing
+
+## v3.17.4 Multi-Account Core
+
+- Up to 4 accounts per session
+- Exactly one Active Account (enabled only)
+- trade/position accountId stamped at draft/confirm/fill
+- Switcher UI in Orders panel

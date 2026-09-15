@@ -736,7 +736,12 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     (pos: import("../components/Chart").PositionShape) => {
       if (!sessionMeta) return null;
       const full = ensureSessionAccounts(sessionMeta);
-      const account = getActiveAccount(full);
+      // Prefer ownership stamped on the position (pending fill keeps original account)
+      const account =
+        (pos.accountId
+          ? full.accounts?.find((a) => a.accountId === pos.accountId)
+          : null) || getActiveAccount(full);
+      if (!account) return null;
       const instrument = full.instrument || defaultInstrument(symbol);
       const result = calculateRisk({
         account,
@@ -777,6 +782,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     if (!sessionMeta) return null;
     const full = ensureSessionAccounts(sessionMeta);
     const account = getActiveAccount(full);
+    if (!account) return null;
     const instrument = full.instrument || defaultInstrument(symbol);
     const pos = shapes.find((s) => s.kind === "position" && (s.status === "draft" || s.id === selectedShapeId)) as
       | import("../components/Chart").PositionShape
@@ -936,24 +942,64 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                 <option value="sell_stop_limit">Sell Stop Limit</option>
               </select>
               {sessionMeta && ensureSessionAccounts(sessionMeta).accounts && (
-                <select
-                  value={sessionMeta.activeAccountId || ""}
-                  onChange={(e) => {
-                    const full = ensureSessionAccounts(sessionMeta);
-                    const next = { ...full, activeAccountId: e.target.value, updatedAt: Date.now() };
-                    setSessionMeta(next);
-                    void upsertSession(next);
-                  }}
-                  title="Active account"
-                >
-                  {ensureSessionAccounts(sessionMeta)
-                    .accounts!.filter((a) => a.enabled !== false)
-                    .map((a) => (
-                    <option key={a.accountId} value={a.accountId}>
-                      {a.name} · {a.currency} {a.balance.toLocaleString()} · 1:{a.leverage}
-                    </option>
-                  ))}
-                </select>
+                <div className="active-account-block">
+                  <div className="active-account-label">ACTIVE ACCOUNT</div>
+                  <select
+                    value={sessionMeta.activeAccountId || ""}
+                    onChange={(e) => {
+                      const full = ensureSessionAccounts(sessionMeta);
+                      const id = e.target.value;
+                      if (!full.accounts?.some((a) => a.accountId === id && a.enabled !== false)) return;
+                      const next = { ...full, activeAccountId: id, updatedAt: Date.now() };
+                      setSessionMeta(next);
+                      void upsertSession(next);
+                    }}
+                    title="Active account for new trades"
+                  >
+                    {ensureSessionAccounts(sessionMeta)
+                      .accounts!.filter((a) => a.enabled !== false)
+                      .map((a) => (
+                      <option key={a.accountId} value={a.accountId}>
+                        {a.accountId === sessionMeta.activeAccountId ? "● " : ""}
+                        {a.name} · {a.currency} {(a.balance ?? a.initialBalance).toLocaleString()} · 1:{a.leverage}
+                      </option>
+                    ))}
+                  </select>
+                  <ul className="account-switch-list">
+                    {ensureSessionAccounts(sessionMeta).accounts!.map((a) => (
+                      <li
+                        key={a.accountId}
+                        className={
+                          a.accountId === sessionMeta.activeAccountId
+                            ? "acc-active"
+                            : a.enabled === false
+                              ? "acc-disabled"
+                              : ""
+                        }
+                      >
+                        <button
+                          type="button"
+                          disabled={a.enabled === false}
+                          onClick={() => {
+                            if (a.enabled === false) return;
+                            const full = ensureSessionAccounts(sessionMeta);
+                            const next = { ...full, activeAccountId: a.accountId, updatedAt: Date.now() };
+                            setSessionMeta(next);
+                            void upsertSession(next);
+                          }}
+                        >
+                          {a.accountId === sessionMeta.activeAccountId ? "🟢" : a.enabled === false ? "⛔" : "⚪"}{" "}
+                          {a.name}
+                          <span className="muted">
+                            {" "}
+                            {(a.balance ?? a.initialBalance).toLocaleString()} · 1:{a.leverage}
+                            {a.accountId === sessionMeta.activeAccountId ? " · Active" : ""}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
               <label className="risk-label">
                 Risk %
@@ -1073,6 +1119,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           onDrawToolChange={pickTool}
           onPositionClosed={handlePositionClosed}
           captureRiskSnapshot={captureRiskSnapshot}
+          activeAccountId={sessionMeta?.activeAccountId ?? null}
           indicators={indicators}
         />
       </div>

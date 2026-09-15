@@ -20,7 +20,7 @@ export type SessionMeta = {
   strategy?: string;
   createdAt: number;
   updatedAt: number;
-  /** Up to 3 account profiles (v3.16.1). */
+  /** Up to 4 account profiles (v3.17.4). */
   accounts?: AccountProfile[];
   activeAccountId?: string;
   instrument?: InstrumentSpec;
@@ -366,8 +366,12 @@ export function emitSessionChanged(sessionId: string | null): void {
   window.dispatchEvent(new CustomEvent(SESSION_CHANGED_EVENT, { detail: { sessionId } }));
 }
 
+/** Max accounts per backtest session (v3.17.4). */
+export const MAX_SESSION_ACCOUNTS = 4;
+
 export function ensureSessionAccounts(meta: SessionMeta): SessionMeta {
-  let accounts = meta.accounts?.filter((a) => a && a.enabled !== false) ?? [];
+  // Keep disabled accounts in the list; only Active must be enabled.
+  let accounts = (meta.accounts || []).filter((a) => a && a.accountId);
   if (!accounts.length) {
     const acc = defaultAccount({ name: "Account 1" });
     accounts = [acc];
@@ -380,10 +384,16 @@ export function ensureSessionAccounts(meta: SessionMeta): SessionMeta {
       sessionType: meta.sessionType || "backtest",
     };
   }
-  // Cap at 3
-  accounts = accounts.slice(0, 3);
-  const active =
-    accounts.find((a) => a.accountId === meta.activeAccountId)?.accountId || accounts[0].accountId;
+  accounts = accounts.slice(0, MAX_SESSION_ACCOUNTS).map((a) => ({
+    ...a,
+    accountType: a.accountType || "personal",
+    enabled: a.enabled !== false,
+  }));
+  const enabled = accounts.filter((a) => a.enabled !== false);
+  let active: string | undefined = meta.activeAccountId || undefined;
+  if (!active || !enabled.some((a) => a.accountId === active)) {
+    active = enabled[0]?.accountId || undefined;
+  }
   return {
     ...meta,
     accounts,
@@ -394,8 +404,9 @@ export function ensureSessionAccounts(meta: SessionMeta): SessionMeta {
   };
 }
 
-export function getActiveAccount(meta: SessionMeta): AccountProfile {
+export function getActiveAccount(meta: SessionMeta): AccountProfile | null {
   const m = ensureSessionAccounts(meta);
-  return m.accounts!.find((a) => a.accountId === m.activeAccountId) || m.accounts![0];
+  if (!m.activeAccountId || !m.accounts?.length) return null;
+  return m.accounts.find((a) => a.accountId === m.activeAccountId) || m.accounts.find((a) => a.enabled !== false) || null;
 }
 
