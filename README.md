@@ -223,3 +223,9 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Exactly one Active Account (enabled only)
 - trade/position accountId stamped at draft/confirm/fill
 - Switcher UI in Orders panel
+
+## v3.17.5 Multi-Account Dynamic Risk
+
+- Account-level minLot/maxLot/lotStep
+- Realized PnL updates account.balance; initialBalance immutable
+- Margin/risk/finalLot centralized; no shared account maxLot

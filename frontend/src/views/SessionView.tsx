@@ -49,6 +49,12 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
   const [createLevDraft, setCreateLevDraft] = useState<Record<string, string>>({});
   const [editBalDraft, setEditBalDraft] = useState<Record<string, string>>({});
   const [editLevDraft, setEditLevDraft] = useState<Record<string, string>>({});
+  const [createMinLotDraft, setCreateMinLotDraft] = useState<Record<string, string>>({});
+  const [createMaxLotDraft, setCreateMaxLotDraft] = useState<Record<string, string>>({});
+  const [createStepDraft, setCreateStepDraft] = useState<Record<string, string>>({});
+  const [editMinLotDraft, setEditMinLotDraft] = useState<Record<string, string>>({});
+  const [editMaxLotDraft, setEditMaxLotDraft] = useState<Record<string, string>>({});
+  const [editStepDraft, setEditStepDraft] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   const [sessionType, setSessionType] = useState<"backtest" | "prop">("backtest");
@@ -101,6 +107,12 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
     const n = Number(raw);
     if (raw.trim() === "" || !Number.isFinite(n) || n < 1) return null;
     return Math.floor(n);
+  }
+
+  function commitLot(raw: string, fallback: number): number | null {
+    const n = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(n) || n <= 0) return null;
+    return n;
   }
 
 
@@ -190,12 +202,21 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
     setEditActiveId(full.activeAccountId || full.accounts?.[0]?.accountId || "");
     const bal: Record<string, string> = {};
     const lev: Record<string, string> = {};
+    const minD: Record<string, string> = {};
+    const maxD: Record<string, string> = {};
+    const stepD: Record<string, string> = {};
     for (const a of list) {
       bal[a.accountId] = String(a.balance ?? a.initialBalance ?? "");
       lev[a.accountId] = String(a.leverage ?? "");
+      minD[a.accountId] = String(a.minLot ?? 0.01);
+      maxD[a.accountId] = String(a.maxLot ?? 100);
+      stepD[a.accountId] = String(a.lotStep ?? 0.01);
     }
     setEditBalDraft(bal);
     setEditLevDraft(lev);
+    setEditMinLotDraft(minD);
+    setEditMaxLotDraft(maxD);
+    setEditStepDraft(stepD);
   }
 
   function updateEditAccount(id: string, patch: Partial<AccountProfile>) {
@@ -225,7 +246,17 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
       const levRaw = editLevDraft[a.accountId] ?? String(a.leverage);
       const bal = commitBalance(balRaw, a.balance) ?? a.balance;
       const lev = commitLeverage(levRaw, a.leverage) ?? a.leverage;
-      return { ...a, balance: bal, initialBalance: bal, leverage: lev };
+      const minL = commitLot(editMinLotDraft[a.accountId] ?? String(a.minLot ?? 0.01), a.minLot ?? 0.01) ?? a.minLot;
+      const maxL = commitLot(editMaxLotDraft[a.accountId] ?? String(a.maxLot ?? 100), a.maxLot ?? 100) ?? a.maxLot;
+      const step = commitLot(editStepDraft[a.accountId] ?? String(a.lotStep ?? 0.01), a.lotStep ?? 0.01) ?? a.lotStep;
+      return {
+        ...a,
+        balance: bal,
+        leverage: lev,
+        minLot: minL,
+        maxLot: maxL,
+        lotStep: step,
+      };
     });
     const enabled = committed.filter((a) => a.enabled !== false);
     const list = (enabled.length ? enabled : committed).slice(0, MAX_SESSION_ACCOUNTS).map((a) => ({
@@ -358,6 +389,63 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                   }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  }}
+                />
+              </label>
+              <label>
+                Min Lot
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={createMinLotDraft[a.accountId] ?? String(a.minLot ?? 0.01)}
+                  onChange={(e) => setCreateMinLotDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                  onBlur={() => {
+                    const raw = createMinLotDraft[a.accountId] ?? String(a.minLot ?? 0.01);
+                    const v = commitLot(raw, a.minLot ?? 0.01);
+                    if (v == null) {
+                      setCreateMinLotDraft((d) => ({ ...d, [a.accountId]: String(a.minLot ?? 0.01) }));
+                      return;
+                    }
+                    updateAccount(a.accountId, { minLot: v });
+                    setCreateMinLotDraft((d) => ({ ...d, [a.accountId]: String(v) }));
+                  }}
+                />
+              </label>
+              <label>
+                Max Lot
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={createMaxLotDraft[a.accountId] ?? String(a.maxLot ?? 100)}
+                  onChange={(e) => setCreateMaxLotDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                  onBlur={() => {
+                    const raw = createMaxLotDraft[a.accountId] ?? String(a.maxLot ?? 100);
+                    const v = commitLot(raw, a.maxLot ?? 100);
+                    if (v == null) {
+                      setCreateMaxLotDraft((d) => ({ ...d, [a.accountId]: String(a.maxLot ?? 100) }));
+                      return;
+                    }
+                    updateAccount(a.accountId, { maxLot: v });
+                    setCreateMaxLotDraft((d) => ({ ...d, [a.accountId]: String(v) }));
+                  }}
+                />
+              </label>
+              <label>
+                Lot Step
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={createStepDraft[a.accountId] ?? String(a.lotStep ?? 0.01)}
+                  onChange={(e) => setCreateStepDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                  onBlur={() => {
+                    const raw = createStepDraft[a.accountId] ?? String(a.lotStep ?? 0.01);
+                    const v = commitLot(raw, a.lotStep ?? 0.01);
+                    if (v == null) {
+                      setCreateStepDraft((d) => ({ ...d, [a.accountId]: String(a.lotStep ?? 0.01) }));
+                      return;
+                    }
+                    updateAccount(a.accountId, { lotStep: v });
+                    setCreateStepDraft((d) => ({ ...d, [a.accountId]: String(v) }));
                   }}
                 />
               </label>
@@ -570,7 +658,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                                   setEditBalDraft((d) => ({ ...d, [a.accountId]: String(a.balance) }));
                                   return;
                                 }
-                                updateEditAccount(a.accountId, { balance: v, initialBalance: v });
+                                updateEditAccount(a.accountId, { balance: v });
                                 setEditBalDraft((d) => ({ ...d, [a.accountId]: String(v) }));
                               }}
                               onKeyDown={(e) => {
@@ -601,6 +689,63 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                               }}
                               onKeyDown={(e) => {
                                 if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                              }}
+                            />
+                          </label>
+                          <label>
+                            Min Lot
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={editMinLotDraft[a.accountId] ?? String(a.minLot ?? 0.01)}
+                              onChange={(e) => setEditMinLotDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                              onBlur={() => {
+                                const raw = editMinLotDraft[a.accountId] ?? String(a.minLot ?? 0.01);
+                                const v = commitLot(raw, a.minLot ?? 0.01);
+                                if (v == null) {
+                                  setEditMinLotDraft((d) => ({ ...d, [a.accountId]: String(a.minLot ?? 0.01) }));
+                                  return;
+                                }
+                                updateEditAccount(a.accountId, { minLot: v });
+                                setEditMinLotDraft((d) => ({ ...d, [a.accountId]: String(v) }));
+                              }}
+                            />
+                          </label>
+                          <label>
+                            Max Lot
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={editMaxLotDraft[a.accountId] ?? String(a.maxLot ?? 100)}
+                              onChange={(e) => setEditMaxLotDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                              onBlur={() => {
+                                const raw = editMaxLotDraft[a.accountId] ?? String(a.maxLot ?? 100);
+                                const v = commitLot(raw, a.maxLot ?? 100);
+                                if (v == null) {
+                                  setEditMaxLotDraft((d) => ({ ...d, [a.accountId]: String(a.maxLot ?? 100) }));
+                                  return;
+                                }
+                                updateEditAccount(a.accountId, { maxLot: v });
+                                setEditMaxLotDraft((d) => ({ ...d, [a.accountId]: String(v) }));
+                              }}
+                            />
+                          </label>
+                          <label>
+                            Lot Step
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={editStepDraft[a.accountId] ?? String(a.lotStep ?? 0.01)}
+                              onChange={(e) => setEditStepDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                              onBlur={() => {
+                                const raw = editStepDraft[a.accountId] ?? String(a.lotStep ?? 0.01);
+                                const v = commitLot(raw, a.lotStep ?? 0.01);
+                                if (v == null) {
+                                  setEditStepDraft((d) => ({ ...d, [a.accountId]: String(a.lotStep ?? 0.01) }));
+                                  return;
+                                }
+                                updateEditAccount(a.accountId, { lotStep: v });
+                                setEditStepDraft((d) => ({ ...d, [a.accountId]: String(v) }));
                               }}
                             />
                           </label>

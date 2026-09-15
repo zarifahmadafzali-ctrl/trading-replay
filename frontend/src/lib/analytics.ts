@@ -1,3 +1,4 @@
+import { currencyPnLFromTradeFields } from "./riskModel";
 /**
  * v3.17.0 — Professional analytics from closed Journal trades only.
  * Pure functions; no market-data dependency. Prop-firm hooks left for v3.18.
@@ -147,16 +148,22 @@ export function tradeOutcome(t: JournalTrade): "win" | "loss" | "breakeven" {
 
 /** Monetary P&L from frozen trade fields — never from live account settings. */
 export function tradePnLCurrency(t: JournalTrade): number {
-  if (t.rMultiple != null && t.actualRiskAmount != null && Number.isFinite(t.actualRiskAmount)) {
-    return t.rMultiple * t.actualRiskAmount;
-  }
-  if (t.rMultiple != null && t.riskAmount != null && Number.isFinite(t.riskAmount)) {
-    return t.rMultiple * t.riskAmount;
-  }
-  const lot = t.finalLot ?? t.riskBasedLot ?? 1;
-  const pv = t.snapshot?.pointValue ?? 1;
-  if (Number.isFinite(t.pnlPoints)) return t.pnlPoints * pv * (lot || 1);
-  return 0;
+  const snap = t.snapshot as Record<string, unknown> | undefined;
+  const pv =
+    typeof snap?.pointValue === "number"
+      ? snap.pointValue
+      : typeof t.snapshot === "object" && t.snapshot && "pointValue" in (t.snapshot as object)
+        ? Number((t.snapshot as any).pointValue)
+        : null;
+  return currencyPnLFromTradeFields({
+    rMultiple: t.rMultiple,
+    actualRiskAmount: t.actualRiskAmount,
+    riskAmount: t.riskAmount,
+    pnlPoints: t.pnlPoints,
+    finalLot: t.finalLot,
+    riskBasedLot: t.riskBasedLot,
+    pointValue: pv,
+  });
 }
 
 function median(nums: number[]): number | null {

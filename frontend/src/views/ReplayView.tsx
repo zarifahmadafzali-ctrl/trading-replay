@@ -32,8 +32,11 @@ import {
   type SessionMeta,
 } from "../lib/sessionStore";
 import {
+  applyRealizedPnL,
   calculateRisk,
+  currencyPnLFromTradeFields,
   defaultInstrument,
+  normalizeAccount,
   type RiskCalcResult,
 } from "../lib/riskModel";
 import { SYMBOLS, TIMEFRAMES, formatTf } from "../lib/types";
@@ -637,6 +640,33 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     // Local storage is the immediate source of truth, so an auto-closed replay
     // trade is never lost just because the backend is sleeping/offline.
     void appendTradeAsync({ ...localTrade, sessionId: sessionIdRef.current || undefined });
+
+    // Realized currency PnL → owning account.balance (initialBalance stays immutable)
+    try {
+      const rMult = localTrade.rMultiple;
+      const ccy = currencyPnLFromTradeFields({
+        rMultiple: rMult,
+        actualRiskAmount: localTrade.actualRiskAmount,
+        riskAmount: localTrade.riskAmount,
+        pnlPoints: localTrade.pnlPoints,
+        finalLot: localTrade.finalLot,
+        riskBasedLot: localTrade.riskBasedLot,
+        pointValue: num("pointValue") ?? 1,
+      });
+      const ownerId = localTrade.accountId;
+      if (sessionMeta && ownerId && Number.isFinite(ccy) && ccy !== 0) {
+        const full = ensureSessionAccounts(sessionMeta);
+        const nextAccounts = (full.accounts || []).map((a) =>
+          a.accountId === ownerId ? applyRealizedPnL(a, ccy) : a
+        );
+        const nextMeta = { ...full, accounts: nextAccounts, updatedAt: Date.now() };
+        setSessionMeta(nextMeta);
+        void upsertSession(nextMeta);
+      }
+    } catch {
+      /* non-fatal */
+    }
+
     setMessage(
       `Closed ${closed.side.toUpperCase()} on ${closed.reason.toUpperCase()} @ ${closed.exitPrice.toFixed(2)} (${closed.pnlPoints >= 0 ? "+" : ""}${closed.pnlPoints.toFixed(2)}) · Journal saved`
     );
@@ -754,9 +784,13 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       });
       return {
         accountId: account.accountId,
+        initialBalance: account.initialBalance,
         balance: result.balance,
+        balanceBefore: result.balance,
         equity: result.equity,
+        equityBefore: result.equity,
         freeMargin: result.freeMargin,
+        freeMarginBefore: result.freeMargin,
         leverage: result.leverage,
         riskPercent: result.riskPercent,
         riskAmount: result.riskAmount,
@@ -766,6 +800,11 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         slDistance: result.slDistance,
         tpDistance: result.tpDistance,
         pointValue: result.pointValue,
+        contractSize: instrument.contractSize,
+        accountMinLot: result.accountMinLot,
+        accountMaxLot: result.accountMaxLot,
+        instrumentMaxLot: result.instrumentMaxLot,
+        lotStep: account.lotStep ?? instrument.lotStep,
         riskBasedLot: result.riskBasedLot,
         marginMaxLot: result.marginMaxLot,
         finalLot: result.finalLot,
@@ -781,9 +820,10 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const liveRisk = useMemo((): RiskCalcResult | null => {
     if (!sessionMeta) return null;
     const full = ensureSessionAccounts(sessionMeta);
-    const account = getActiveAccount(full);
-    if (!account) return null;
+    const rawAcc = getActiveAccount(full);
+    if (!rawAcc) return null;
     const instrument = full.instrument || defaultInstrument(symbol);
+    const account = normalizeAccount(rawAcc, instrument);
     const pos = shapes.find((s) => s.kind === "position" && (s.status === "draft" || s.id === selectedShapeId)) as
       | import("../components/Chart").PositionShape
       | undefined;

@@ -6,7 +6,7 @@
  */
 
 import type { AccountProfile, InstrumentSpec, PropFirmConfig } from "./riskModel";
-import { defaultAccount, defaultInstrument, defaultPropFirm } from "./riskModel";
+import { defaultAccount, defaultInstrument, defaultPropFirm, normalizeAccount } from "./riskModel";
 
 export type SessionDataSource = "demo" | "loaded" | "csv";
 
@@ -384,11 +384,17 @@ export function ensureSessionAccounts(meta: SessionMeta): SessionMeta {
       sessionType: meta.sessionType || "backtest",
     };
   }
-  accounts = accounts.slice(0, MAX_SESSION_ACCOUNTS).map((a) => ({
-    ...a,
-    accountType: a.accountType || "personal",
-    enabled: a.enabled !== false,
-  }));
+  const inst = meta.instrument || defaultInstrument(meta.symbol);
+  accounts = accounts.slice(0, MAX_SESSION_ACCOUNTS).map((a) =>
+    normalizeAccount(
+      {
+        ...a,
+        accountType: a.accountType || "personal",
+        enabled: a.enabled !== false,
+      },
+      inst
+    )
+  );
   const enabled = accounts.filter((a) => a.enabled !== false);
   let active: string | undefined = meta.activeAccountId || undefined;
   if (!active || !enabled.some((a) => a.accountId === active)) {
