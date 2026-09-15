@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chart, type ClosedPosition, type DrawTool, type IndicatorSpec, type MagnetMode, type OrderType, type Shape } from "../components/Chart";
+import { Toolbar } from "../components/Toolbar";
 import {
   GROUP_LABELS,
   IMPLEMENTED_TOOLS,
@@ -1043,44 +1044,17 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       </div>
 
       <div className="chartbox">
-        <div
-          className="float-toolbar"
-          style={{ left: floatPos.x, top: floatPos.y }}
-          onPointerDown={(e) => {
-            if ((e.target as HTMLElement).tagName === "BUTTON") return;
-            const el = e.currentTarget;
-            el.setPointerCapture(e.pointerId);
-            floatDragRef.current = { dx: e.clientX - floatPos.x, dy: e.clientY - floatPos.y };
-          }}
-          onPointerMove={(e) => {
-            if (!floatDragRef.current) return;
-            setFloatPos({
-              x: Math.max(0, e.clientX - floatDragRef.current.dx),
-              y: Math.max(0, e.clientY - floatDragRef.current.dy),
-            });
-          }}
-          onPointerUp={() => {
-            floatDragRef.current = null;
-          }}
-        >
-          {(favorites.length ? favorites : (["crosshair", "trendline", "hline"] as DrawTool[])).map((id) => {
-            const meta = IMPLEMENTED_TOOLS.find((x) => x.id === id);
-            if (!meta) return null;
-            return (
-              <button
-                key={id}
-                type="button"
-                className={drawTool === id ? "active on" : ""}
-                title={meta.label}
-                onClick={() => pickTool(id)}
-              >
-                {meta.label.split(" ")[0]}
-              </button>
-            );
-          })}
-        </div>
-        {/* v3.17.1: full .tv-toolbar demoted — favorites float-toolbar is primary */}
 
+
+        <Toolbar
+          activeTool={drawTool}
+          onToolChange={pickTool}
+          hasSelection={!!selectedShapeId}
+          onDeleteSelected={deleteSelectedShape}
+          favorites={favorites}
+          position={floatPos}
+          onPositionChange={setFloatPos}
+        />
         <Chart
           bars={visibleBars}
           cursor={visibleBars.length}

@@ -206,3 +206,9 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Edit accounts on existing sessions
 - Live R:R preview + collision-aware labels
 - Favorites float-toolbar primary (full tv-toolbar demoted)
+
+## v3.17.2
+
+- Restored legacy icon-based floating Drawing Toolbar (Toolbar.tsx)
+- Removed text float-toolbar UI
+- Shared Favorites drive menu + icon toolbar

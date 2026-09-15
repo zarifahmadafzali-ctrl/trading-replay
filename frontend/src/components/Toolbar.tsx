@@ -1,3 +1,8 @@
+/**
+ * Legacy icon-based drawing toolbar (TradingView-style).
+ * v3.17.2: rendered as floating/movable overlay; icons driven by shared Favorites.
+ */
+import { useRef } from "react";
 import type { DrawTool } from "./Chart";
 
 type ToolDef = { id: DrawTool; label: string; icon: JSX.Element };
@@ -89,13 +94,24 @@ const ICONS: Record<string, JSX.Element> = {
   ),
   trash: (
     <svg {...iconProps}>
-      <path d="M4 7h16M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2m2 0v13a1 1 0 01-1 1H8a1 1 0 01-1-1V7h10z" />
+      <path d="M4 7h16M9 7V5h6v2M8 7l1 12h6l1-12" />
+    </svg>
+  ),
+  grip: (
+    <svg {...iconProps} width={14} height={14}>
+      <circle cx="8" cy="6" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="14" cy="6" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="8" cy="12" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="14" cy="12" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="8" cy="18" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="14" cy="18" r="1.2" fill="currentColor" stroke="none" />
     </svg>
   ),
 };
 
-const TOOLS: ToolDef[] = [
-  { id: "crosshair", label: "Cursor / Select", icon: ICONS.cursor },
+/** Canonical tool defs with icons — same set as drawing engine supports. */
+export const TOOLBAR_TOOLS: ToolDef[] = [
+  { id: "crosshair", label: "Crosshair / Select", icon: ICONS.cursor },
   { id: "trendline", label: "Trend Line", icon: ICONS.trendline },
   { id: "ray", label: "Ray", icon: ICONS.ray },
   { id: "extended", label: "Extended Line", icon: ICONS.extended },
@@ -104,32 +120,81 @@ const TOOLS: ToolDef[] = [
   { id: "rectangle", label: "Rectangle", icon: ICONS.rectangle },
   { id: "fib", label: "Fibonacci Retracement", icon: ICONS.fib },
   { id: "measure", label: "Measure (Price + Time)", icon: ICONS.measure },
+  { id: "long", label: "Long Position", icon: ICONS.long },
+  { id: "short", label: "Short Position", icon: ICONS.short },
 ];
 
-const POSITION_TOOLS: ToolDef[] = [
-  { id: "long", label: "Long", icon: ICONS.long },
-  { id: "short", label: "Short", icon: ICONS.short },
-];
+const DEFAULT_FAVORITES: DrawTool[] = ["crosshair", "trendline", "hline", "long", "short"];
+
+function resolveTools(favorites: DrawTool[] | undefined): ToolDef[] {
+  const ids = favorites && favorites.length ? favorites : DEFAULT_FAVORITES;
+  const out: ToolDef[] = [];
+  for (const id of ids) {
+    const def = TOOLBAR_TOOLS.find((t) => t.id === id);
+    if (def) out.push(def);
+  }
+  return out.length ? out : TOOLBAR_TOOLS.filter((t) => DEFAULT_FAVORITES.includes(t.id));
+}
 
 export function Toolbar({
   activeTool,
   onToolChange,
   onDeleteSelected,
   hasSelection,
+  favorites,
+  position,
+  onPositionChange,
 }: {
   activeTool: DrawTool;
   onToolChange: (tool: DrawTool) => void;
   onDeleteSelected?: () => void;
   hasSelection?: boolean;
+  /** Shared Favorites from ReplayView — same source as Drawing Tools menu. */
+  favorites?: DrawTool[];
+  position?: { x: number; y: number };
+  onPositionChange?: (pos: { x: number; y: number }) => void;
 }) {
+  const tools = resolveTools(favorites);
+  const pos = position || { x: 8, y: 8 };
+  const dragRef = useRef<{ dx: number; dy: number } | null>(null);
+
   return (
-    <div className="tv-toolbar">
-      {TOOLS.map((t) => (
-        <ToolButton key={t.id} tool={t} active={activeTool === t.id} onClick={() => onToolChange(t.id)} />
-      ))}
-      <div className="tv-sep" />
-      {POSITION_TOOLS.map((t) => (
-        <ToolButton key={t.id} tool={t} active={activeTool === t.id} onClick={() => onToolChange(t.id)} />
+    <div
+      className="tv-toolbar tv-toolbar-float"
+      style={{ left: pos.x, top: pos.y }}
+      onPointerDown={(e) => {
+        const t = e.target as HTMLElement;
+        if (t.closest("button.tv-tool")) return;
+        const el = e.currentTarget;
+        el.setPointerCapture(e.pointerId);
+        dragRef.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y };
+        el.classList.add("dragging");
+      }}
+      onPointerMove={(e) => {
+        if (!dragRef.current || !onPositionChange) return;
+        const x = Math.max(0, e.clientX - dragRef.current.dx);
+        const y = Math.max(0, e.clientY - dragRef.current.dy);
+        onPositionChange({ x, y });
+      }}
+      onPointerUp={(e) => {
+        dragRef.current = null;
+        (e.currentTarget as HTMLElement).classList.remove("dragging");
+      }}
+      onPointerCancel={(e) => {
+        dragRef.current = null;
+        (e.currentTarget as HTMLElement).classList.remove("dragging");
+      }}
+    >
+      <span className="tv-toolbar-grip" title="Drag toolbar" aria-hidden>
+        {ICONS.grip}
+      </span>
+      {tools.map((t) => (
+        <ToolButton
+          key={t.id}
+          tool={t}
+          active={activeTool === t.id}
+          onClick={() => onToolChange(t.id)}
+        />
       ))}
       <div className="tv-sep" />
       <button
