@@ -1022,3 +1022,13 @@ footer {
 }
 .account-switch-list li.acc-active button { color: #3ecf8e; }
 .account-switch-list li.acc-disabled button { color: #5a6575; cursor: not-allowed; }
+
+.prop-rules-box {
+  grid-column: 1 / -1;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  padding: 8px;
+  margin: 6px 0;
+  background: rgba(15, 23, 42, 0.45);
+}
+.prop-rules-box label { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; font-size: 12px; }

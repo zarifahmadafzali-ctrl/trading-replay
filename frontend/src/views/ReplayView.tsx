@@ -39,6 +39,7 @@ import {
   normalizeAccount,
   type RiskCalcResult,
 } from "../lib/riskModel";
+import { buildPropRuleSnapshot, getEffectiveLeverage } from "../lib/propRules";
 import { SYMBOLS, TIMEFRAMES, formatTf } from "../lib/types";
 import type { Bar } from "../lib/types";
 
@@ -773,8 +774,10 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           : null) || getActiveAccount(full);
       if (!account) return null;
       const instrument = full.instrument || defaultInstrument(symbol);
+      const lev = getEffectiveLeverage(account);
+      const accountForRisk = lev !== account.leverage ? { ...account, leverage: lev } : account;
       const result = calculateRisk({
-        account,
+        account: accountForRisk,
         instrument,
         riskPercent,
         entryPrice: pos.entry.price,
@@ -782,6 +785,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         takeProfitPrice: pos.takeProfit.price,
         side: pos.side,
       });
+      const propSnap = buildPropRuleSnapshot(account);
       return {
         accountId: account.accountId,
         initialBalance: account.initialBalance,
@@ -812,6 +816,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         actualRiskAmount: result.actualRiskAmount,
         actualRiskPercent: result.actualRiskPercent,
         entryTime: pos.entry.time,
+        ...(propSnap ? { propRuleSnapshot: propSnap } : {}),
       };
     },
     [sessionMeta, riskPercent, symbol]

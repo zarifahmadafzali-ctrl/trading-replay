@@ -229,3 +229,9 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Account-level minLot/maxLot/lotStep
 - Realized PnL updates account.balance; initialBalance immutable
 - Margin/risk/finalLot centralized; no shared account maxLot
+
+## v3.17.6 Prop Firm Profiles + Phase Engine
+
+- Generic PropProgram / PropPhase / PropRuleSet
+- Evaluation helpers only (no auto lifecycle)
+- propRuleSnapshot frozen at fill

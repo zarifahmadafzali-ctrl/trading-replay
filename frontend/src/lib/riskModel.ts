@@ -22,6 +22,13 @@ export type AccountProfile = {
   minLot?: number;
   maxLot?: number;
   lotStep?: number;
+  /** v3.17.6 Prop program (optional; only when accountType === "prop"). */
+  propFirmName?: string;
+  propProgramName?: string;
+  propProgramId?: string;
+  activePropPhaseId?: string;
+  /** Full program with phases — stored on the account for session isolation. */
+  propProgram?: import("./propRules").PropProgramConfig;
 };
 
 export type InstrumentSpec = {
@@ -90,6 +97,8 @@ export type TradeRiskSnapshot = {
   actualRiskAmount?: number | null;
   actualRiskPercent?: number | null;
   entryTime?: number;
+  /** Frozen Prop phase/rules at fill (v3.17.6). */
+  propRuleSnapshot?: import("./propRules").PropRuleSnapshot;
   [key: string]: unknown;
 };
 

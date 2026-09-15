@@ -21,6 +21,14 @@ import {
   type InstrumentSpec,
   type PropFirmConfig,
 } from "../lib/riskModel";
+import {
+  defaultPropProgram,
+  ensurePropProgram,
+  emptyPropRules,
+  type PropPhaseConfig,
+  type PropProgramConfig,
+  type PropRuleSet,
+} from "../lib/propRules";
 
 function isoDaysAgo(days: number) {
   const d = new Date();
@@ -55,6 +63,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
   const [editMinLotDraft, setEditMinLotDraft] = useState<Record<string, string>>({});
   const [editMaxLotDraft, setEditMaxLotDraft] = useState<Record<string, string>>({});
   const [editStepDraft, setEditStepDraft] = useState<Record<string, string>>({});
+  const [propNumDraft, setPropNumDraft] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   const [sessionType, setSessionType] = useState<"backtest" | "prop">("backtest");
@@ -95,6 +104,48 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
 
   function updateAccount(id: string, patch: Partial<AccountProfile>) {
     setAccounts((prev) => prev.map((a) => (a.accountId === id ? { ...a, ...patch } : a)));
+  }
+
+  function setAccountType(id: string, accountType: "personal" | "prop", isEdit = false) {
+    const patch: Partial<AccountProfile> = { accountType };
+    if (accountType === "prop") {
+      const list = isEdit ? editAccounts : accounts;
+      const a = list.find((x) => x.accountId === id);
+      const size = a?.initialBalance || a?.balance || 5000;
+      const prog = a?.propProgram || defaultPropProgram(size);
+      patch.propProgram = prog;
+      patch.propProgramId = prog.id;
+      patch.propFirmName = prog.firmName || a?.propFirmName || "";
+      patch.propProgramName = prog.programName || a?.propProgramName || "";
+      patch.activePropPhaseId = a?.activePropPhaseId || prog.phases[0]?.id;
+    }
+    if (isEdit) updateEditAccount(id, patch);
+    else updateAccount(id, patch);
+  }
+
+  function patchActivePhaseRules(id: string, rulesPatch: Partial<PropRuleSet>, isEdit = false) {
+    const list = isEdit ? editAccounts : accounts;
+    const a = list.find((x) => x.accountId === id);
+    if (!a) return;
+    const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.initialBalance || a.balance);
+    const phaseId = a.activePropPhaseId || prog.phases[0]?.id;
+    const phases = prog.phases.map((ph) =>
+      ph.id === phaseId ? { ...ph, rules: { ...ph.rules, ...rulesPatch, accountSize: rulesPatch.accountSize ?? ph.rules.accountSize } } : ph
+    );
+    const nextProg: PropProgramConfig = { ...prog, phases };
+    const patch: Partial<AccountProfile> = {
+      propProgram: nextProg,
+      propProgramId: nextProg.id,
+      activePropPhaseId: phaseId,
+      propFirmName: nextProg.firmName,
+      propProgramName: nextProg.programName,
+    };
+    if (isEdit) updateEditAccount(id, patch);
+    else updateAccount(id, patch);
+  }
+
+  function propRulesDraftKey(accountId: string, field: string) {
+    return `${accountId}:${field}`;
   }
 
   function commitBalance(raw: string, fallback: number): number | null {
@@ -450,6 +501,106 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                 />
               </label>
               <label>
+                Account Type
+                <select
+                  value={a.accountType || "personal"}
+                  onChange={(e) => setAccountType(a.accountId, e.target.value as "personal" | "prop", false)}
+                >
+                  <option value="personal">Personal</option>
+                  <option value="prop">Prop</option>
+                </select>
+              </label>
+              {(a.accountType || "personal") === "prop" && (
+                <div className="prop-rules-box">
+                  <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>PROP PROGRAM</div>
+                  <label>
+                    Prop Firm
+                    <input
+                      value={a.propFirmName || a.propProgram?.firmName || ""}
+                      onChange={(e) => {
+                        const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.balance);
+                        const next = { ...prog, firmName: e.target.value };
+                        updateAccount(a.accountId, { propFirmName: e.target.value, propProgram: next, propProgramId: next.id });
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Program
+                    <input
+                      value={a.propProgramName || a.propProgram?.programName || ""}
+                      onChange={(e) => {
+                        const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.balance);
+                        const next = { ...prog, programName: e.target.value };
+                        updateAccount(a.accountId, { propProgramName: e.target.value, propProgram: next, propProgramId: next.id });
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Phase
+                    <select
+                      value={a.activePropPhaseId || a.propProgram?.phases?.[0]?.id || ""}
+                      onChange={(e) => updateAccount(a.accountId, { activePropPhaseId: e.target.value })}
+                    >
+                      {(a.propProgram?.phases || ensurePropProgram({ ...a, accountType: "prop" })?.phases || []).map((ph) => (
+                        <option key={ph.id} value={ph.id}>{ph.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={() => {
+                      const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.balance);
+                      const n = prog.phases.length + 1;
+                      const ph = {
+                        id: `phase_${Math.random().toString(36).slice(2, 8)}`,
+                        name: `Phase ${n}`,
+                        type: (n > 2 ? "funded" : "challenge") as "challenge" | "funded" | "custom",
+                        rules: { accountSize: a.initialBalance || a.balance || 5000 },
+                      };
+                      updateAccount(a.accountId, { propProgram: { ...prog, phases: [...prog.phases, ph] }, activePropPhaseId: ph.id });
+                    }}
+                  >
+                    + Phase
+                  </button>
+                  <div className="muted" style={{ fontSize: 11, margin: "6px 0 4px" }}>PROP RULES (active phase)</div>
+                  {(["accountSize", "profitTargetPct", "dailyLossLimitPct", "maxOverallLossPct", "minimumTradingDays", "consistencyPct", "leverage"] as const).map((field) => {
+                    const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
+                    const rules = phase?.rules || emptyPropRules(a.balance);
+                    const val = rules[field];
+                    const key = propRulesDraftKey(a.accountId, field);
+                    const label = field === "accountSize" ? "Account Size" : field === "profitTargetPct" ? "Profit Target %" : field === "dailyLossLimitPct" ? "Daily Loss Limit %" : field === "maxOverallLossPct" ? "Max Overall Loss %" : field === "minimumTradingDays" ? "Minimum Trading Days" : field === "consistencyPct" ? "Consistency %" : "Leverage (phase)";
+                    return (
+                      <label key={field}>
+                        {label}
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={propNumDraft[key] ?? (val != null ? String(val) : "")}
+                          onChange={(e) => setPropNumDraft((d) => ({ ...d, [key]: e.target.value }))}
+                          onBlur={() => {
+                            const raw = propNumDraft[key] ?? (val != null ? String(val) : "");
+                            if (raw.trim() === "") {
+                              patchActivePhaseRules(a.accountId, { [field]: undefined }, false);
+                              setPropNumDraft((d) => ({ ...d, [key]: "" }));
+                              return;
+                            }
+                            const n = Number(raw);
+                            if (!Number.isFinite(n) || n < 0) {
+                              setPropNumDraft((d) => ({ ...d, [key]: val != null ? String(val) : "" }));
+                              return;
+                            }
+                            patchActivePhaseRules(a.accountId, { [field]: n }, false);
+                            setPropNumDraft((d) => ({ ...d, [key]: String(n) }));
+                          }}
+                          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              <label>
                 Enabled
                 <select
                   value={a.enabled ? "1" : "0"}
@@ -749,6 +900,154 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                               }}
                             />
                           </label>
+
+              <label>
+                Account Type
+                <select
+                  value={a.accountType || "personal"}
+                  onChange={(e) => setAccountType(a.accountId, e.target.value as "personal" | "prop", true)}
+                >
+                  <option value="personal">Personal</option>
+                  <option value="prop">Prop</option>
+                </select>
+              </label>
+              {(a.accountType || "personal") === "prop" && (
+                <div className="prop-rules-box">
+                  <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>PROP PROGRAM</div>
+                  <label>
+                    Prop Firm
+                    <input
+                      value={a.propFirmName || a.propProgram?.firmName || ""}
+                      onChange={(e) => {
+                        const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.balance);
+                        const next = { ...prog, firmName: e.target.value };
+                        updateEditAccount(a.accountId, {
+                          propFirmName: e.target.value,
+                          propProgram: next,
+                          propProgramId: next.id,
+                        });
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Program
+                    <input
+                      value={a.propProgramName || a.propProgram?.programName || ""}
+                      onChange={(e) => {
+                        const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.balance);
+                        const next = { ...prog, programName: e.target.value };
+                        updateEditAccount(a.accountId, {
+                          propProgramName: e.target.value,
+                          propProgram: next,
+                          propProgramId: next.id,
+                        });
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Phase
+                    <select
+                      value={a.activePropPhaseId || a.propProgram?.phases?.[0]?.id || ""}
+                      onChange={(e) => updateEditAccount(a.accountId, { activePropPhaseId: e.target.value })}
+                    >
+                      {(a.propProgram?.phases || ensurePropProgram({ ...a, accountType: "prop" })?.phases || []).map((ph) => (
+                        <option key={ph.id} value={ph.id}>{ph.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={() => {
+                      const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.balance);
+                      const n = prog.phases.length + 1;
+                      const ph: PropPhaseConfig = {
+                        id: `phase_${Math.random().toString(36).slice(2, 8)}`,
+                        name: `Phase ${n}`,
+                        type: n > 2 ? "funded" : "challenge",
+                        rules: { accountSize: a.initialBalance || a.balance || 5000 },
+                      };
+                      const next = { ...prog, phases: [...prog.phases, ph] };
+                      updateEditAccount(a.accountId, { propProgram: next, activePropPhaseId: ph.id });
+                    }}
+                  >
+                    + Phase
+                  </button>
+                  <div className="muted" style={{ fontSize: 11, margin: "6px 0 4px" }}>PROP RULES (active phase)</div>
+                  {(["accountSize", "profitTargetPct", "dailyLossLimitPct", "maxOverallLossPct", "minimumTradingDays", "consistencyPct", "leverage"] as const).map((field) => {
+                    const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id))
+                      || a.propProgram?.phases?.[0];
+                    const rules = phase?.rules || emptyPropRules(a.balance);
+                    const val = rules[field];
+                    const key = propRulesDraftKey(a.accountId, field);
+                    const label =
+                      field === "accountSize" ? "Account Size" :
+                      field === "profitTargetPct" ? "Profit Target %" :
+                      field === "dailyLossLimitPct" ? "Daily Loss Limit %" :
+                      field === "maxOverallLossPct" ? "Max Overall Loss %" :
+                      field === "minimumTradingDays" ? "Minimum Trading Days" :
+                      field === "consistencyPct" ? "Consistency %" :
+                      "Leverage (phase)";
+                    return (
+                      <label key={field}>
+                        {label}
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={propNumDraft[key] ?? (val != null ? String(val) : "")}
+                          onChange={(e) => setPropNumDraft((d) => ({ ...d, [key]: e.target.value }))}
+                          onBlur={() => {
+                            const raw = propNumDraft[key] ?? (val != null ? String(val) : "");
+                            if (raw.trim() === "") {
+                              patchActivePhaseRules(a.accountId, { [field]: undefined }, true);
+                              setPropNumDraft((d) => ({ ...d, [key]: "" }));
+                              return;
+                            }
+                            const n = Number(raw);
+                            if (!Number.isFinite(n) || n < 0) {
+                              setPropNumDraft((d) => ({ ...d, [key]: val != null ? String(val) : "" }));
+                              return;
+                            }
+                            patchActivePhaseRules(a.accountId, { [field]: n }, true);
+                            setPropNumDraft((d) => ({ ...d, [key]: String(n) }));
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          }}
+                        />
+                      </label>
+                    );
+                  })}
+                  <label>
+                    News Trading
+                    <select
+                      value={(
+                        (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id))?.rules.newsTradingAllowed
+                      ) ? "1" : "0"}
+                      onChange={(e) =>
+                        patchActivePhaseRules(a.accountId, { newsTradingAllowed: e.target.value === "1" }, true)
+                      }
+                    >
+                      <option value="1">Allowed</option>
+                      <option value="0">Not allowed</option>
+                    </select>
+                  </label>
+                  <label>
+                    Weekend Holding
+                    <select
+                      value={(
+                        (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id))?.rules.weekendHoldingAllowed
+                      ) ? "1" : "0"}
+                      onChange={(e) =>
+                        patchActivePhaseRules(a.accountId, { weekendHoldingAllowed: e.target.value === "1" }, true)
+                      }
+                    >
+                      <option value="1">Allowed</option>
+                      <option value="0">Not allowed</option>
+                    </select>
+                  </label>
+                </div>
+              )}
                           <label>
                             Enabled
                             <select
