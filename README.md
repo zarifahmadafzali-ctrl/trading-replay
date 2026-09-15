@@ -212,3 +212,7 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Restored legacy icon-based floating Drawing Toolbar (Toolbar.tsx)
 - Removed text float-toolbar UI
 - Shared Favorites drive menu + icon toolbar
+
+## v3.17.3
+
+- Fix Account Size / Leverage inputs allowing temporary empty string while editing

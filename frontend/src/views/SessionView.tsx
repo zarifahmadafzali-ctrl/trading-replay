@@ -43,6 +43,11 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editAccounts, setEditAccounts] = useState<AccountProfile[]>([]);
   const [editActiveId, setEditActiveId] = useState("");
+  /** String drafts so Balance/Leverage can be temporarily empty while typing. */
+  const [createBalDraft, setCreateBalDraft] = useState<Record<string, string>>({});
+  const [createLevDraft, setCreateLevDraft] = useState<Record<string, string>>({});
+  const [editBalDraft, setEditBalDraft] = useState<Record<string, string>>({});
+  const [editLevDraft, setEditLevDraft] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   const [sessionType, setSessionType] = useState<"backtest" | "prop">("backtest");
@@ -85,6 +90,19 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
     setAccounts((prev) => prev.map((a) => (a.accountId === id ? { ...a, ...patch } : a)));
   }
 
+  function commitBalance(raw: string, fallback: number): number | null {
+    const n = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(n) || n <= 0) return null;
+    return n;
+  }
+
+  function commitLeverage(raw: string, fallback: number): number | null {
+    const n = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(n) || n < 1) return null;
+    return Math.floor(n);
+  }
+
+
   function addAccount() {
     if (accounts.length >= 3) return;
     const a = newAccount(accounts.length + 1);
@@ -118,11 +136,18 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
         dataSource,
         strategy: strategy.trim() || undefined,
         sessionType,
-        accounts: accounts.slice(0, 3).map((a) => ({
-          ...a,
-          balance: a.balance || a.initialBalance,
-          initialBalance: a.initialBalance || a.balance,
-        })),
+        accounts: accounts.slice(0, 3).map((a) => {
+          const balRaw = createBalDraft[a.accountId] ?? String(a.balance);
+          const levRaw = createLevDraft[a.accountId] ?? String(a.leverage);
+          const bal = commitBalance(balRaw, a.balance) ?? a.balance ?? a.initialBalance;
+          const lev = commitLeverage(levRaw, a.leverage) ?? a.leverage;
+          return {
+            ...a,
+            balance: bal,
+            initialBalance: bal,
+            leverage: lev,
+          };
+        }),
         activeAccountId: activeAccountId || accounts[0].accountId,
         instrument: { ...instrument, symbol },
         propFirm: pf,
@@ -158,9 +183,18 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
 
   async function startEditAccounts(s: SessionMeta) {
     const full = ensureSessionAccounts(s);
+    const list = (full.accounts || []).map((a) => ({ ...a }));
     setEditingId(s.id);
-    setEditAccounts((full.accounts || []).map((a) => ({ ...a })));
+    setEditAccounts(list);
     setEditActiveId(full.activeAccountId || full.accounts?.[0]?.accountId || "");
+    const bal: Record<string, string> = {};
+    const lev: Record<string, string> = {};
+    for (const a of list) {
+      bal[a.accountId] = String(a.balance ?? a.initialBalance ?? "");
+      lev[a.accountId] = String(a.leverage ?? "");
+    }
+    setEditBalDraft(bal);
+    setEditLevDraft(lev);
   }
 
   function updateEditAccount(id: string, patch: Partial<AccountProfile>) {
@@ -184,8 +218,16 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
     if (!editingId) return;
     const meta = sessions.find((s) => s.id === editingId);
     if (!meta) return;
-    const enabled = editAccounts.filter((a) => a.enabled !== false);
-    const list = (enabled.length ? enabled : editAccounts).slice(0, 3).map((a) => ({
+    // Commit open string drafts into numeric profiles before persist
+    const committed = editAccounts.map((a) => {
+      const balRaw = editBalDraft[a.accountId] ?? String(a.balance);
+      const levRaw = editLevDraft[a.accountId] ?? String(a.leverage);
+      const bal = commitBalance(balRaw, a.balance) ?? a.balance;
+      const lev = commitLeverage(levRaw, a.leverage) ?? a.leverage;
+      return { ...a, balance: bal, initialBalance: bal, leverage: lev };
+    });
+    const enabled = committed.filter((a) => a.enabled !== false);
+    const list = (enabled.length ? enabled : committed).slice(0, 3).map((a) => ({
       ...a,
       balance: a.balance || a.initialBalance,
       initialBalance: a.initialBalance || a.balance,
@@ -273,11 +315,22 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
               <label>
                 Balance
                 <input
-                  type="number"
-                  value={a.balance}
-                  onChange={(e) => {
-                    const v = Number(e.target.value) || 0;
+                  type="text"
+                  inputMode="decimal"
+                  value={createBalDraft[a.accountId] ?? String(a.balance)}
+                  onChange={(e) => setCreateBalDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                  onBlur={() => {
+                    const raw = createBalDraft[a.accountId] ?? String(a.balance);
+                    const v = commitBalance(raw, a.balance);
+                    if (v == null) {
+                      setCreateBalDraft((d) => ({ ...d, [a.accountId]: String(a.balance) }));
+                      return;
+                    }
                     updateAccount(a.accountId, { balance: v, initialBalance: v });
+                    setCreateBalDraft((d) => ({ ...d, [a.accountId]: String(v) }));
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
                   }}
                 />
               </label>
@@ -288,10 +341,23 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
               <label>
                 Leverage (1:N)
                 <input
-                  type="number"
-                  min={1}
-                  value={a.leverage}
-                  onChange={(e) => updateAccount(a.accountId, { leverage: Math.max(1, Number(e.target.value) || 1) })}
+                  type="text"
+                  inputMode="numeric"
+                  value={createLevDraft[a.accountId] ?? String(a.leverage)}
+                  onChange={(e) => setCreateLevDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                  onBlur={() => {
+                    const raw = createLevDraft[a.accountId] ?? String(a.leverage);
+                    const v = commitLeverage(raw, a.leverage);
+                    if (v == null) {
+                      setCreateLevDraft((d) => ({ ...d, [a.accountId]: String(a.leverage) }));
+                      return;
+                    }
+                    updateAccount(a.accountId, { leverage: v });
+                    setCreateLevDraft((d) => ({ ...d, [a.accountId]: String(v) }));
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  }}
                 />
               </label>
               <label>
@@ -492,11 +558,22 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                           <label>
                             Balance
                             <input
-                              type="number"
-                              value={a.balance}
-                              onChange={(e) => {
-                                const v = Number(e.target.value) || 0;
+                              type="text"
+                              inputMode="decimal"
+                              value={editBalDraft[a.accountId] ?? String(a.balance)}
+                              onChange={(e) => setEditBalDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                              onBlur={() => {
+                                const raw = editBalDraft[a.accountId] ?? String(a.balance);
+                                const v = commitBalance(raw, a.balance);
+                                if (v == null) {
+                                  setEditBalDraft((d) => ({ ...d, [a.accountId]: String(a.balance) }));
+                                  return;
+                                }
                                 updateEditAccount(a.accountId, { balance: v, initialBalance: v });
+                                setEditBalDraft((d) => ({ ...d, [a.accountId]: String(v) }));
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
                               }}
                             />
                           </label>
@@ -507,12 +584,23 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                           <label>
                             Leverage (1:N)
                             <input
-                              type="number"
-                              min={1}
-                              value={a.leverage}
-                              onChange={(e) =>
-                                updateEditAccount(a.accountId, { leverage: Math.max(1, Number(e.target.value) || 1) })
-                              }
+                              type="text"
+                              inputMode="numeric"
+                              value={editLevDraft[a.accountId] ?? String(a.leverage)}
+                              onChange={(e) => setEditLevDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                              onBlur={() => {
+                                const raw = editLevDraft[a.accountId] ?? String(a.leverage);
+                                const v = commitLeverage(raw, a.leverage);
+                                if (v == null) {
+                                  setEditLevDraft((d) => ({ ...d, [a.accountId]: String(a.leverage) }));
+                                  return;
+                                }
+                                updateEditAccount(a.accountId, { leverage: v });
+                                setEditLevDraft((d) => ({ ...d, [a.accountId]: String(v) }));
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                              }}
                             />
                           </label>
                           <label>
