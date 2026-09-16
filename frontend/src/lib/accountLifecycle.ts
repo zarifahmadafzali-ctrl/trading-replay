@@ -10,8 +10,13 @@ import {
   getActivePropPhase,
   ensurePropProgram,
   toUnixSec,
+  sumCurrencyPnL,
   type PropTradeLike,
 } from "./propRules";
+import {
+  calculatePayoutEligibility,
+  normalizePayoutSchedule,
+} from "./payoutSchedule";
 
 export type LifecycleState =
   | "ACTIVE"
@@ -273,19 +278,34 @@ export function suggestLifecycleTransitions(opts: {
     }
   }
 
-  // Payout eligibility (funded + payout rules)
+  // Payout eligibility via configurable schedule (v3.17.8)
   const rules = phase?.rules;
   if (
-    (derived.state === "FUNDED" || derived.state === "ACTIVE") &&
-    rules?.payout?.enabled &&
+    derived.state === "FUNDED" &&
+    rules?.payout &&
+    normalizePayoutSchedule(rules.payout).enabled !== false &&
     !evaluation.failed
   ) {
-    const minDays = rules.payout.minimumTradingDays ?? rules.minimumTradingDays;
-    const daysOk =
-      minDays == null || evaluation.tradingDays >= minDays;
-    // Simple: eligible when min days met and not already in payout states
-    const alreadyEligible = eventsUpTo(events, t).some((e) => e.type === "PAYOUT_ELIGIBLE");
-    if (daysOk && !alreadyEligible && derived.state === "FUNDED") {
+    const seq = eventsUpTo(events, t);
+    const fundedEv = [...seq].reverse().find((e) => e.type === "FUNDED");
+    const lastPaid = [...seq].reverse().find((e) => e.type === "PAYOUT_PAID");
+    const firstTrade = accountTrades
+      .filter((tr) => tr.exitTime != null)
+      .sort((a, b) => (a.exitTime! - b.exitTime!))[0];
+    const availableProfit = sumCurrencyPnL(accountTrades, account.accountId);
+    const elig = calculatePayoutEligibility({
+      schedule: rules.payout,
+      accountSize: rules.accountSize || account.initialBalance || account.balance || 0,
+      availableProfit,
+      trades: accountTrades,
+      accountId: account.accountId,
+      replayTime: t,
+      fundedAt: fundedEv?.timestamp,
+      firstFundedTradeAt: firstTrade?.exitTime ?? firstTrade?.entryTime,
+      lastPayoutAt: lastPaid?.timestamp,
+      events: seq,
+    });
+    if (elig.eligible) {
       out.push(
         makeLifecycleEvent({
           accountId: account.accountId,
@@ -293,6 +313,8 @@ export function suggestLifecycleTransitions(opts: {
           timestamp: t,
           phaseId: phase?.id,
           phaseName: phase?.name,
+          amount: elig.traderPayout,
+          note: elig.reasons.length ? undefined : "Schedule requirements met",
         })
       );
     }
@@ -307,16 +329,19 @@ export function buildPayoutEvents(opts: {
   amount: number;
   replayTime: number;
   cooldownDays?: number;
+  processingDays?: number;
   phaseId?: string;
   phaseName?: string;
 }): LifecycleEvent[] {
   const t = toUnixSec(opts.replayTime);
+  const proc = opts.processingDays != null && opts.processingDays > 0 ? opts.processingDays : 0;
   const days = opts.cooldownDays != null && opts.cooldownDays > 0 ? opts.cooldownDays : 0;
-  const reenableAt = t + days * 86400;
-  return [
+  const paidAt = t + proc * 86400;
+  const reenableAt = paidAt + days * 86400;
+  const out: LifecycleEvent[] = [
     makeLifecycleEvent({
       accountId: opts.accountId,
-      type: "PAYOUT_PAID",
+      type: "PAYOUT_REQUESTED",
       timestamp: t,
       amount: opts.amount,
       phaseId: opts.phaseId,
@@ -324,14 +349,27 @@ export function buildPayoutEvents(opts: {
     }),
     makeLifecycleEvent({
       accountId: opts.accountId,
-      type: "PAYOUT_COOLDOWN_STARTED",
-      timestamp: t,
-      reenableAt,
+      type: "PAYOUT_PAID",
+      timestamp: paidAt,
+      amount: opts.amount,
       phaseId: opts.phaseId,
       phaseName: opts.phaseName,
-      note: days > 0 ? `Cooldown ${days} day(s)` : "No cooldown",
     }),
   ];
+  if (days > 0) {
+    out.push(
+      makeLifecycleEvent({
+        accountId: opts.accountId,
+        type: "PAYOUT_COOLDOWN_STARTED",
+        timestamp: paidAt,
+        reenableAt,
+        phaseId: opts.phaseId,
+        phaseName: opts.phaseName,
+        note: `Cooldown ${days} day(s)`,
+      })
+    );
+  }
+  return out;
 }
 
 /** Append events to account profile (immutable). */

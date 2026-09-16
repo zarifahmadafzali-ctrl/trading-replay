@@ -15,12 +15,8 @@ export type PropRuleSet = {
   leverage?: number;
   newsTradingAllowed?: boolean;
   weekendHoldingAllowed?: boolean;
-  payout?: {
-    enabled?: boolean;
-    minimumTradingDays?: number;
-    minimumPayoutPct?: number;
-    payoutIntervalDays?: number;
-  };
+  /** v3.17.8 — configurable payout schedule (extends legacy interval fields). */
+  payout?: import("./payoutSchedule").PayoutSchedule;
 };
 
 export type PropPhaseConfig = {

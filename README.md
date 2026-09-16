@@ -241,3 +241,9 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Fix Prop numeric inputs (string drafts, no onChange Number coercion)
 - accountLifecycle: derive state from events at replay time
 - Phase pass/fail, funded, payout cooldown; block orders when failed/cooldown
+
+## v3.17.8 Configurable Prop Payout Schedules
+
+- Modes: on_demand, weekly, biweekly, monthly, interval
+- First delay, min payout, profit split, processing, cooldown
+- Pure helpers; lifecycle eligibility uses schedule at replay time

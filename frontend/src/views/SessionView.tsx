@@ -29,6 +29,7 @@ import {
   type PropProgramConfig,
   type PropRuleSet,
 } from "../lib/propRules";
+import { normalizePayoutSchedule, type PayoutSchedule, type PayoutScheduleMode } from "../lib/payoutSchedule";
 
 function isoDaysAgo(days: number) {
   const d = new Date();
@@ -162,6 +163,28 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
 
   function propRulesDraftKey(accountId: string, field: string) {
     return `${accountId}:${field}`;
+  }
+
+  function patchActivePhasePayout(id: string, payoutPatch: Partial<PayoutSchedule>, isEdit = false) {
+    const list = isEdit ? editAccounts : accounts;
+    const a = list.find((x) => x.accountId === id);
+    if (!a) return;
+    const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.initialBalance || a.balance);
+    const phaseId = a.activePropPhaseId || prog.phases[0]?.id;
+    const phases = prog.phases.map((ph) => {
+      if (ph.id !== phaseId) return ph;
+      const prev = normalizePayoutSchedule(ph.rules.payout || { mode: "on_demand" });
+      const next = { ...prev, ...payoutPatch, enabled: true };
+      return { ...ph, rules: { ...ph.rules, payout: next } };
+    });
+    const nextProg: PropProgramConfig = { ...prog, phases };
+    const patch: Partial<AccountProfile> = {
+      propProgram: nextProg,
+      propProgramId: nextProg.id,
+      activePropPhaseId: phaseId,
+    };
+    if (isEdit) updateEditAccount(id, patch);
+    else updateAccount(id, patch);
   }
 
   function commitBalance(raw: string, fallback: number): number | null {
@@ -619,6 +642,135 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                       </label>
                     );
                   })}
+
+                  <div className="muted" style={{ fontSize: 11, margin: "8px 0 4px" }}>PAYOUT SCHEDULE</div>
+                  {(() => {
+                    const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
+                    const sch = normalizePayoutSchedule(phase?.rules?.payout || { mode: "on_demand" });
+                    const mode = sch.mode || "on_demand";
+                    const numField = (field: keyof PayoutSchedule, label: string) => {
+                      const key = propRulesDraftKey(a.accountId, `payout_${String(field)}`);
+                      const val = sch[field];
+                      return (
+                        <label key={String(field)}>
+                          {label}
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={propNumDraft[key] ?? (val != null && typeof val !== "boolean" ? String(val) : "")}
+                            onChange={(e) => setPropNumDraft((d) => ({ ...d, [key]: e.target.value }))}
+                            onBlur={(e) => {
+                              const raw = e.currentTarget.value;
+                              setPropNumDraft((d) => ({ ...d, [key]: raw }));
+                              if (raw.trim() === "") {
+                                patchActivePhasePayout(a.accountId, { [field]: undefined }, false);
+                                return;
+                              }
+                              const n = Number(raw);
+                              if (!Number.isFinite(n) || n < 0) {
+                                setPropNumDraft((d) => ({ ...d, [key]: val != null ? String(val) : "" }));
+                                return;
+                              }
+                              patchActivePhasePayout(a.accountId, { [field]: n } as Partial<PayoutSchedule>, false);
+                              setPropNumDraft((d) => ({ ...d, [key]: String(n) }));
+                            }}
+                            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                          />
+                        </label>
+                      );
+                    };
+                    return (
+                      <>
+                        <label>
+                          Payout Mode
+                          <select
+                            value={mode}
+                            onChange={(e) =>
+                              patchActivePhasePayout(a.accountId, { mode: e.target.value as PayoutScheduleMode }, false)
+                            }
+                          >
+                            <option value="on_demand">On Demand</option>
+                            <option value="weekly">Weekly</option>
+                            <option value="biweekly">Bi-Weekly</option>
+                            <option value="monthly">Monthly</option>
+                            <option value="interval">Interval</option>
+                          </select>
+                        </label>
+                        {(mode === "weekly" || mode === "biweekly") && (
+                          <label>
+                            Payout Day
+                            <select
+                              value={sch.weekday != null ? String(sch.weekday) : "5"}
+                              onChange={(e) =>
+                                patchActivePhasePayout(a.accountId, { weekday: Number(e.target.value) }, false)
+                              }
+                            >
+                              <option value="1">Monday</option>
+                              <option value="2">Tuesday</option>
+                              <option value="3">Wednesday</option>
+                              <option value="4">Thursday</option>
+                              <option value="5">Friday</option>
+                              <option value="6">Saturday</option>
+                              <option value="0">Sunday</option>
+                            </select>
+                          </label>
+                        )}
+                        {mode === "biweekly" && (
+                          <label>
+                            Anchor Date (YYYY-MM-DD)
+                            <input
+                              type="date"
+                              value={
+                                sch.anchorDate
+                                  ? new Date(sch.anchorDate * 1000).toISOString().slice(0, 10)
+                                  : ""
+                              }
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                if (!v) {
+                                  patchActivePhasePayout(a.accountId, { anchorDate: undefined, anchor: "fixed_date" }, false);
+                                  return;
+                                }
+                                const sec = Math.floor(new Date(v + "T00:00:00Z").getTime() / 1000);
+                                patchActivePhasePayout(a.accountId, { anchorDate: sec, anchor: "fixed_date" }, false);
+                              }}
+                            />
+                          </label>
+                        )}
+                        {mode === "monthly" && numField("monthDay", "Day of Month (1–31)")}
+                        {mode === "interval" && (
+                          <>
+                            {numField("intervalDays", "Interval Days")}
+                            <label>
+                              Count From
+                              <select
+                                value={sch.anchor || "funded_start"}
+                                onChange={(e) =>
+                                  patchActivePhasePayout(
+                                    a.accountId,
+                                    { anchor: e.target.value as PayoutSchedule["anchor"] },
+                                    false
+                                  )
+                                }
+                              >
+                                <option value="funded_start">Funded Start</option>
+                                <option value="first_funded_trade">First Funded Trade</option>
+                                <option value="last_payout">Last Payout</option>
+                                <option value="fixed_date">Fixed Date</option>
+                              </select>
+                            </label>
+                          </>
+                        )}
+                        {numField("firstPayoutDelayDays", "First Payout Delay (days)")}
+                        {numField("minimumTradingDays", "Min Trading Days (payout)")}
+                        {numField("minimumPayoutPct", "Minimum Payout %")}
+                        {numField("minimumPayoutAmount", "Minimum Payout Amount")}
+                        {numField("profitSplitPct", "Profit Split % (trader)")}
+                        {numField("processingDays", "Processing Days")}
+                        {numField("cooldownDays", "Cooldown Days")}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
               <label>
@@ -1084,6 +1236,135 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                       </label>
                     );
                   })}
+
+                  <div className="muted" style={{ fontSize: 11, margin: "8px 0 4px" }}>PAYOUT SCHEDULE</div>
+                  {(() => {
+                    const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
+                    const sch = normalizePayoutSchedule(phase?.rules?.payout || { mode: "on_demand" });
+                    const mode = sch.mode || "on_demand";
+                    const numField = (field: keyof PayoutSchedule, label: string) => {
+                      const key = propRulesDraftKey(a.accountId, `payout_${String(field)}`);
+                      const val = sch[field];
+                      return (
+                        <label key={String(field)}>
+                          {label}
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={propNumDraft[key] ?? (val != null && typeof val !== "boolean" ? String(val) : "")}
+                            onChange={(e) => setPropNumDraft((d) => ({ ...d, [key]: e.target.value }))}
+                            onBlur={(e) => {
+                              const raw = e.currentTarget.value;
+                              setPropNumDraft((d) => ({ ...d, [key]: raw }));
+                              if (raw.trim() === "") {
+                                patchActivePhasePayout(a.accountId, { [field]: undefined }, true);
+                                return;
+                              }
+                              const n = Number(raw);
+                              if (!Number.isFinite(n) || n < 0) {
+                                setPropNumDraft((d) => ({ ...d, [key]: val != null ? String(val) : "" }));
+                                return;
+                              }
+                              patchActivePhasePayout(a.accountId, { [field]: n } as Partial<PayoutSchedule>, true);
+                              setPropNumDraft((d) => ({ ...d, [key]: String(n) }));
+                            }}
+                            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                          />
+                        </label>
+                      );
+                    };
+                    return (
+                      <>
+                        <label>
+                          Payout Mode
+                          <select
+                            value={mode}
+                            onChange={(e) =>
+                              patchActivePhasePayout(a.accountId, { mode: e.target.value as PayoutScheduleMode }, true)
+                            }
+                          >
+                            <option value="on_demand">On Demand</option>
+                            <option value="weekly">Weekly</option>
+                            <option value="biweekly">Bi-Weekly</option>
+                            <option value="monthly">Monthly</option>
+                            <option value="interval">Interval</option>
+                          </select>
+                        </label>
+                        {(mode === "weekly" || mode === "biweekly") && (
+                          <label>
+                            Payout Day
+                            <select
+                              value={sch.weekday != null ? String(sch.weekday) : "5"}
+                              onChange={(e) =>
+                                patchActivePhasePayout(a.accountId, { weekday: Number(e.target.value) }, true)
+                              }
+                            >
+                              <option value="1">Monday</option>
+                              <option value="2">Tuesday</option>
+                              <option value="3">Wednesday</option>
+                              <option value="4">Thursday</option>
+                              <option value="5">Friday</option>
+                              <option value="6">Saturday</option>
+                              <option value="0">Sunday</option>
+                            </select>
+                          </label>
+                        )}
+                        {mode === "biweekly" && (
+                          <label>
+                            Anchor Date (YYYY-MM-DD)
+                            <input
+                              type="date"
+                              value={
+                                sch.anchorDate
+                                  ? new Date(sch.anchorDate * 1000).toISOString().slice(0, 10)
+                                  : ""
+                              }
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                if (!v) {
+                                  patchActivePhasePayout(a.accountId, { anchorDate: undefined, anchor: "fixed_date" }, true);
+                                  return;
+                                }
+                                const sec = Math.floor(new Date(v + "T00:00:00Z").getTime() / 1000);
+                                patchActivePhasePayout(a.accountId, { anchorDate: sec, anchor: "fixed_date" }, true);
+                              }}
+                            />
+                          </label>
+                        )}
+                        {mode === "monthly" && numField("monthDay", "Day of Month (1–31)")}
+                        {mode === "interval" && (
+                          <>
+                            {numField("intervalDays", "Interval Days")}
+                            <label>
+                              Count From
+                              <select
+                                value={sch.anchor || "funded_start"}
+                                onChange={(e) =>
+                                  patchActivePhasePayout(
+                                    a.accountId,
+                                    { anchor: e.target.value as PayoutSchedule["anchor"] },
+                                    false
+                                  )
+                                }
+                              >
+                                <option value="funded_start">Funded Start</option>
+                                <option value="first_funded_trade">First Funded Trade</option>
+                                <option value="last_payout">Last Payout</option>
+                                <option value="fixed_date">Fixed Date</option>
+                              </select>
+                            </label>
+                          </>
+                        )}
+                        {numField("firstPayoutDelayDays", "First Payout Delay (days)")}
+                        {numField("minimumTradingDays", "Min Trading Days (payout)")}
+                        {numField("minimumPayoutPct", "Minimum Payout %")}
+                        {numField("minimumPayoutAmount", "Minimum Payout Amount")}
+                        {numField("profitSplitPct", "Profit Split % (trader)")}
+                        {numField("processingDays", "Processing Days")}
+                        {numField("cooldownDays", "Cooldown Days")}
+                      </>
+                    );
+                  })()}
                   <label>
                     News Trading
                     <select
