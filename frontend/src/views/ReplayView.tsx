@@ -334,12 +334,14 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     });
     const sid = sessionIdRef.current;
     if (sid) {
+      const barT = baseBars[Math.max(0, cursor - 1)]?.time;
       void putRuntime({
         sessionId: sid,
         timeframeSeconds,
         customTfs,
         replayStepSeconds,
         cursor,
+        replayTimeUnix: barT != null && Number.isFinite(barT) ? barT : 0,
         speed,
         followPrice,
         orderType,

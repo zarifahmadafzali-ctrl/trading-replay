@@ -53,6 +53,10 @@ function uiStateLabel(state: LifecycleState): string {
   }
 }
 
+function toUnixSafe(t: number): number {
+  return t > 1e12 ? Math.floor(t / 1000) : Math.floor(t);
+}
+
 function fmtUsd(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "—";
   const sign = n < 0 ? "-" : "";
@@ -79,19 +83,25 @@ export function PropAccountStatus({
     () => deriveLifecycleFromEvents(account, account.lifecycleEvents, replayTime),
     [account, replayTime]
   );
+  const accountTrades = useMemo(
+    () =>
+      trades.filter((t) => {
+        if (t.accountId && t.accountId !== account.accountId) return false;
+        const ts = t.exitTime ?? t.entryTime ?? 0;
+        // Deterministic: only trades at or before replay clock
+        return replayTime <= 0 || ts <= replayTime;
+      }),
+    [trades, account.accountId, replayTime]
+  );
+
   const evaluation = useMemo(
     () =>
       evaluatePropRules({
         account,
-        trades: trades.filter((t) => !t.accountId || t.accountId === account.accountId),
+        trades: accountTrades,
         currentTime: replayTime,
       }),
-    [account, trades, replayTime]
-  );
-
-  const accountTrades = useMemo(
-    () => trades.filter((t) => !t.accountId || t.accountId === account.accountId),
-    [trades, account.accountId]
+    [account, accountTrades, replayTime]
   );
 
   const payoutUi = useMemo(() => {
@@ -120,10 +130,12 @@ export function PropAccountStatus({
 
     let payoutStatus = "NOT ELIGIBLE";
     if (derived.state === "PAYOUT_COOLDOWN") payoutStatus = "COOLDOWN";
-    else if (lastReq && (!lastPaid || lastReq.timestamp > lastPaid.timestamp)) {
+    else if (lastReq && (!lastPaid || toUnixSafe(lastReq.timestamp) > toUnixSafe(lastPaid.timestamp))) {
       const proc = sch.processingDays || 0;
-      const paidAt = lastReq.timestamp + proc * 86400;
-      payoutStatus = replayTime >= paidAt ? "PAID" : "PROCESSING";
+      const paidAt = toUnixSafe(lastReq.timestamp) + proc * 86400;
+      if (replayTime >= paidAt) payoutStatus = "PAID";
+      else if (replayTime >= toUnixSafe(lastReq.timestamp)) payoutStatus = "PROCESSING";
+      else payoutStatus = "REQUESTED";
     } else if (derived.state === "PAYOUT_ELIGIBLE" || elig.eligible) payoutStatus = "ELIGIBLE";
     else if (lastPaid) payoutStatus = "PAID";
 
@@ -153,6 +165,9 @@ export function PropAccountStatus({
 
   function requestPayout() {
     if (!onAccountChange || !payoutUi?.elig.eligible) return;
+    const seq = eventsUpTo(account.lifecycleEvents, replayTime);
+    const alreadyReq = seq.some((e) => e.type === "PAYOUT_REQUESTED" && toUnixSafe(e.timestamp) === toUnixSafe(replayTime));
+    if (alreadyReq) return;
     const amount = payoutUi.elig.traderPayout;
     const events = buildPayoutEvents({
       accountId: account.accountId,
@@ -219,10 +234,25 @@ export function PropAccountStatus({
                 <span className="risk-calc-v">{fmtUsd(maxOverall)}</span>
               </div>
             )}
-            {rules?.consistencyPct != null && (
+            <div>
+              <span className="risk-calc-k">Consistency Actual</span>
+              <span className="risk-calc-v">
+                {evaluation.actualConsistencyPct != null
+                  ? `${evaluation.actualConsistencyPct.toFixed(1)}%`
+                  : "—"}
+                {evaluation.requiredConsistencyPct != null
+                  ? ` / req ${evaluation.requiredConsistencyPct}%`
+                  : ""}
+                {" · "}
+                {evaluation.consistencyStatus}
+              </span>
+            </div>
+            {(evaluation.largestWinningTrade > 0 || evaluation.totalWinningProfit > 0) && (
               <div>
-                <span className="risk-calc-k">Consistency</span>
-                <span className="risk-calc-v">{rules.consistencyPct}%</span>
+                <span className="risk-calc-k">Largest Win / Total Wins</span>
+                <span className="risk-calc-v">
+                  {fmtUsd(evaluation.largestWinningTrade)} / {fmtUsd(evaluation.totalWinningProfit)}
+                </span>
               </div>
             )}
             {rules?.leverage != null && (

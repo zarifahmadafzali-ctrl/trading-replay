@@ -29,6 +29,8 @@ export type SessionMeta = {
 };
 
 export type SessionRuntime = {
+  /** Unix seconds of the bar at the current cursor (authoritative replay clock). */
+  replayTimeUnix?: number;
   sessionId: string;
   timeframeSeconds: number;
   customTfs: number[];
@@ -200,6 +202,7 @@ export function defaultRuntime(sessionId: string, partial?: Partial<SessionRunti
     customTfs: [],
     replayStepSeconds: 1,
     cursor: 800,
+    replayTimeUnix: 0,
     speed: 1,
     followPrice: false,
     orderType: "market",

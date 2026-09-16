@@ -269,3 +269,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - REQUEST PAYOUT via existing buildPayoutEvents (replay-time)
 - Payout history from lifecycle events
 - Session + Replay wiring; no risk calculator changes
+
+## v3.18.2 Prop Metrics Accuracy + Replay Clock
+
+- Real consistency metric (largest win / total wins)
+- SessionRuntime.replayTimeUnix from currentBase.time
+- Trades filtered by replay clock for Prop status
+- Payout request same-timestamp dedupe

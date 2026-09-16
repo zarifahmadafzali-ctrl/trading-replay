@@ -119,15 +119,13 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
           pnlPoints: tr.pnlPoints,
         }));
         setStatusTrades(trades);
-        // Prefer last trade exit / entry as status clock when no live replay cursor time stored
-        let t = 0;
-        for (const x of trades) {
-          const ts = x.exitTime ?? x.entryTime ?? 0;
-          if (ts > t) t = ts;
-        }
-        // Runtime has cursor index, not unix — keep trade-based clock for Session UI
-        setStatusReplayTime(t > 0 ? t : 0);
-        void rt;
+        // Authoritative clock: runtime.replayTimeUnix from Replay cursor (currentBase.time).
+        // Never Date.now(); never invent last-trade time when runtime has a value.
+        const fromRt =
+          rt && typeof rt.replayTimeUnix === "number" && rt.replayTimeUnix > 0
+            ? rt.replayTimeUnix
+            : 0;
+        setStatusReplayTime(fromRt);
       } catch {
         if (!cancelled) {
           setStatusTrades([]);

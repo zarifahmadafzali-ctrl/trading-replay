@@ -72,6 +72,12 @@ export type PropRuleEvaluation = {
   currentProfitCurrency: number;
   maxDailyLossCurrency: number | null;
   maxOverallLossCurrency: number | null;
+  largestWinningTrade: number;
+  totalWinningProfit: number;
+  actualConsistencyPct: number | null;
+  requiredConsistencyPct: number | null;
+  consistencyStatus: "PASS" | "FAIL" | "NOT_YET_QUALIFIED" | "NOT_CONFIGURED";
+  consistencyPassed: boolean;
 };
 
 function uid(prefix: string): string {
@@ -322,6 +328,77 @@ export function hasMinimumTradingDays(tradingDays: number, minimum?: number): bo
   return tradingDays >= minimum;
 }
 
+/**
+ * Consistency: largestWinningTrade / totalWinningProfit × 100.
+ * PASS when actual <= required consistencyPct.
+ */
+export function calculateConsistencyMetric(
+  trades: PropTradeLike[],
+  accountId: string | undefined,
+  requiredConsistencyPct?: number
+): {
+  largestWinningTrade: number;
+  totalWinningProfit: number;
+  actualConsistencyPct: number | null;
+  requiredConsistencyPct: number | null;
+  consistencyStatus: "PASS" | "FAIL" | "NOT_YET_QUALIFIED" | "NOT_CONFIGURED";
+  consistencyPassed: boolean;
+} {
+  let largest = 0;
+  let totalWin = 0;
+  for (const tr of trades) {
+    if (accountId && tr.accountId && tr.accountId !== accountId) continue;
+    let pnl = 0;
+    if (tr.currencyPnL != null && Number.isFinite(tr.currencyPnL)) pnl = tr.currencyPnL;
+    else if (
+      tr.rMultiple != null &&
+      Number.isFinite(tr.rMultiple) &&
+      tr.actualRiskAmount != null &&
+      Number.isFinite(tr.actualRiskAmount)
+    ) {
+      pnl = tr.rMultiple * tr.actualRiskAmount;
+    }
+    if (pnl > 0) {
+      totalWin += pnl;
+      if (pnl > largest) largest = pnl;
+    }
+  }
+  const required =
+    requiredConsistencyPct != null && Number.isFinite(requiredConsistencyPct)
+      ? requiredConsistencyPct
+      : null;
+  if (required == null) {
+    return {
+      largestWinningTrade: largest,
+      totalWinningProfit: totalWin,
+      actualConsistencyPct: totalWin > 0 ? (largest / totalWin) * 100 : null,
+      requiredConsistencyPct: null,
+      consistencyStatus: "NOT_CONFIGURED",
+      consistencyPassed: true,
+    };
+  }
+  if (!(totalWin > 0)) {
+    return {
+      largestWinningTrade: largest,
+      totalWinningProfit: totalWin,
+      actualConsistencyPct: null,
+      requiredConsistencyPct: required,
+      consistencyStatus: "NOT_YET_QUALIFIED",
+      consistencyPassed: false,
+    };
+  }
+  const actual = (largest / totalWin) * 100;
+  const pass = actual <= required + 1e-9;
+  return {
+    largestWinningTrade: largest,
+    totalWinningProfit: totalWin,
+    actualConsistencyPct: actual,
+    requiredConsistencyPct: required,
+    consistencyStatus: pass ? "PASS" : "FAIL",
+    consistencyPassed: pass,
+  };
+}
+
 /** Evaluation only — no mutations. */
 export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation {
   const progress = calculatePropProgress(state);
@@ -345,6 +422,12 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
       currentProfitCurrency: 0,
       maxDailyLossCurrency: null,
       maxOverallLossCurrency: null,
+      largestWinningTrade: 0,
+      totalWinningProfit: 0,
+      actualConsistencyPct: null,
+      requiredConsistencyPct: null,
+      consistencyStatus: "NOT_CONFIGURED",
+      consistencyPassed: true,
     };
   }
 
@@ -376,9 +459,28 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
     reasons.push(`Minimum trading days met (${progress.tradingDays})`);
   }
 
+  const consistency = calculateConsistencyMetric(
+    state.trades,
+    state.account.accountId,
+    rules.consistencyPct
+  );
+  if (consistency.consistencyStatus === "FAIL") {
+    reasons.push(
+      `Consistency failed (${consistency.actualConsistencyPct?.toFixed(1)}% > ${consistency.requiredConsistencyPct}%)`
+    );
+  }
+  if (consistency.consistencyStatus === "PASS") {
+    reasons.push(
+      `Consistency met (${consistency.actualConsistencyPct?.toFixed(1)}% ≤ ${consistency.requiredConsistencyPct}%)`
+    );
+  }
+
   const failed = dailyLossBreached || maxOverallLossBreached;
   const eligibleForPhasePass =
-    profitTargetReached && minimumTradingDaysReached && !failed;
+    profitTargetReached &&
+    minimumTradingDaysReached &&
+    !failed &&
+    consistency.consistencyPassed;
 
   return {
     profitTargetReached,
@@ -401,5 +503,11 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
       rules.maxOverallLossPct != null && ref > 0
         ? (ref * rules.maxOverallLossPct) / 100
         : null,
+    largestWinningTrade: consistency.largestWinningTrade,
+    totalWinningProfit: consistency.totalWinningProfit,
+    actualConsistencyPct: consistency.actualConsistencyPct,
+    requiredConsistencyPct: consistency.requiredConsistencyPct,
+    consistencyStatus: consistency.consistencyStatus,
+    consistencyPassed: consistency.consistencyPassed,
   };
 }
