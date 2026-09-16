@@ -476,6 +476,30 @@ footer {
 }
 
 
+
+/* ============================================================
+   Overlay / stacking layer map (v3.17.9 hardening)
+   Do NOT invent ad-hoc 9999 z-index values.
+
+   1  Chart canvas / .chartbox          z-index: 1
+   3  Chart drawing overlay             z-index: 3
+   5  OHLC box (non-interactive)        z-index: 5
+   6  Draw hint                         z-index: 6
+  20  .bar.replay-range (date inputs)   z-index: 20
+  30  Generic .bar / bottom replay bar  z-index: 30
+  35  Floating drawing toolbar          z-index: 35
+  40  .bar.replay-topbar                z-index: 40  (above date range)
+  50  Desktop dropdowns (.tools-panel)  z-index: 50  (inside topbar context)
+  60  Mobile fixed panels               z-index: 60
+  70  Drawing tools menu / critical popovers  z-index: 70
+
+   Rules:
+   - Dropdowns open from a .tools-wrap with position:relative.
+   - Desktop panels use position:absolute; never overflow-hidden on .bar.
+   - Mobile panels use position:fixed so they escape bar clipping.
+   - Risk panel / live calculator must NOT set transform, filter, opacity<1,
+     or isolation:isolate on ancestors of Order Type / Account selects.
+   ============================================================ */
 /* —— Mobile scroll bars & compact panels —— */
 /* v3.15.2.2: overflow-x/overflow-y moved into the mobile media query below.
    This class was applying overflow-x:auto unconditionally (all screen
@@ -509,6 +533,14 @@ footer {
 .tf-wrap, .tools-wrap {
   position: relative;
   flex-shrink: 0;
+  z-index: 0;
+}
+/* Raise only the wrap that owns an open panel so its absolute dropdown
+   paints above sibling wraps inside the same topbar — without elevating
+   the whole bar above modals or inventing z-index:9999. */
+.tf-wrap.is-open,
+.tools-wrap.is-open {
+  z-index: 5;
 }
 .tf-current {
   min-width: 72px;
@@ -867,6 +899,22 @@ footer {
 .risk-panel {
   min-width: 280px;
   max-width: min(360px, 92vw);
+  /* Positioning comes from .tools-panel + .panel-top (absolute desktop /
+     fixed mobile). Do NOT force position here — it would override mobile
+     fixed panels and reintroduce the date-range overlap bug.
+     Also avoid transform / filter / isolation on this panel. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  max-height: min(70vh, 520px);
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  pointer-events: auto;
+}
+.risk-panel select,
+.risk-panel input {
+  width: 100%;
+  max-width: 100%;
+  pointer-events: auto;
 }
 .risk-label {
   display: flex;
@@ -879,9 +927,11 @@ footer {
   width: 64px;
 }
 .risk-calc {
+  /* Live R:R block: normal flow only — no stacking isolation */
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid #293542;
+  pointer-events: auto;
 }
 .risk-calc .tools-note {
   margin: 2px 0;

@@ -969,7 +969,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           <button type="button" onClick={redoShapes} title="Redo drawing">Redo</button>
         </span>
 
-        <div className="tf-wrap" ref={tfPanelRef}>
+        <div className={`tf-wrap${tfOpen ? " is-open" : ""}`} ref={tfPanelRef}>
           <button type="button" className="tf-current on" onClick={() => setTfOpen((v) => !v)}>
             TF {formatTf(timeframeSeconds)} ▾
           </button>
@@ -1004,7 +1004,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           )}
         </div>
 
-        <div className="tools-wrap" ref={indPanelRef}>
+        <div className={`tools-wrap${indOpen ? " is-open" : ""}`} ref={indPanelRef}>
           <button type="button" className={indOpen ? "on" : ""} onClick={() => setIndOpen((v) => !v)}>
             Ind ▾
           </button>
@@ -1026,7 +1026,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           )}
         </div>
 
-        <div className="tools-wrap" ref={ordersPanelRef}>
+        <div className={`tools-wrap${ordersOpen ? " is-open" : ""}`} ref={ordersPanelRef}>
           <button type="button" className={ordersOpen ? "on" : ""} onClick={() => setOrdersOpen((v) => !v)}>
             Orders ▾
           </button>
@@ -1255,7 +1255,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         >
           Next
         </button>
-        <div className="tools-wrap" ref={stepPanelRef}>
+        <div className={`tools-wrap${stepOpen ? " is-open" : ""}`} ref={stepPanelRef}>
           <button type="button" className={stepOpen ? "on" : ""} onClick={() => setStepOpen((v) => !v)}>
             Step {formatTf(replayStepSeconds)} ▾
           </button>

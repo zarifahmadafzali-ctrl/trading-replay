@@ -247,3 +247,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Modes: on_demand, weekly, biweekly, monthly, interval
 - First delay, min payout, profit split, processing, cooldown
 - Pure helpers; lifecycle eligibility uses schedule at replay time
+
+## v3.17.9 Overlay / z-index hardening
+
+- Documented stacking layer map
+- tools-wrap.is-open elevates open dropdown without global z-index inflation
+- risk-panel scroll without position override (preserves mobile fixed panels)
+- No transform/isolation on calculator/risk ancestors
