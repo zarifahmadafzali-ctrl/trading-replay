@@ -80,6 +80,10 @@ export type PropRuleEvaluation = {
   requiredConsistencyPct: number | null;
   consistencyStatus: "PASS" | "FAIL" | "NOT_YET_QUALIFIED" | "NOT_CONFIGURED";
   consistencyPassed: boolean;
+  /** Required unique trading days (from rules); null if not configured. */
+  requiredTradingDays: number | null;
+  /** Alias: tradingDays >= required when required is set; true if unset. */
+  minimumTradingDaysPassed: boolean;
   /** Realized PnL for the UTC day of currentTime (same-day aggregate). */
   todayRealizedPnL: number;
   /** |today loss| as % of reference when todayRealizedPnL is negative; else 0. */
@@ -265,12 +269,16 @@ export function utcDayKey(unixSec: number): string {
   return `${y}-${m}-${day}`;
 }
 
+/**
+ * Unique UTC calendar days with at least one closed trade (exitTime).
+ * Trading Days ≠ trade count. Same-day multiple trades count as 1 day.
+ */
 export function countTradingDays(trades: PropTradeLike[], accountId?: string): number {
   const days = new Set<string>();
   for (const t of trades) {
     if (accountId && t.accountId && t.accountId !== accountId) continue;
-    // Count filled/closed trades only (must have exit or explicit fill time = entry)
-    const ts = t.exitTime ?? t.entryTime;
+    // Prefer exitTime — a trading day is a day a position was closed
+    const ts = t.exitTime != null && Number.isFinite(t.exitTime) ? t.exitTime : t.entryTime;
     if (ts == null || !Number.isFinite(ts)) continue;
     days.add(utcDayKey(ts));
   }
@@ -412,9 +420,13 @@ export function isOverallLossBreached(
   return equityDelta <= -limit + 1e-9;
 }
 
-export function hasMinimumTradingDays(tradingDays: number, minimum?: number): boolean {
-  if (minimum == null) return true;
-  return tradingDays >= minimum;
+/**
+ * Unique trading days (not trade count) must meet the configured minimum.
+ * Unset / null / NaN / <= 0 → requirement not imposed (passes).
+ */
+export function hasMinimumTradingDays(tradingDays: number, minimum?: number | null): boolean {
+  if (minimum == null || !Number.isFinite(Number(minimum)) || Number(minimum) <= 0) return true;
+  return tradingDays >= Number(minimum);
 }
 
 /**
@@ -566,6 +578,8 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
       requiredConsistencyPct: null,
       consistencyStatus: "NOT_CONFIGURED",
       consistencyPassed: true,
+      requiredTradingDays: null,
+      minimumTradingDaysPassed: true,
       todayRealizedPnL: 0,
       todayLossPct: 0,
       dailyLossLimitPct: null,
@@ -588,16 +602,28 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
     equityDelta,
     rules.maxOverallLossPct
   );
+  const requiredTradingDays =
+    rules.minimumTradingDays != null &&
+    Number.isFinite(Number(rules.minimumTradingDays)) &&
+    Number(rules.minimumTradingDays) > 0
+      ? Number(rules.minimumTradingDays)
+      : null;
   const minimumTradingDaysReached = hasMinimumTradingDays(
     progress.tradingDays,
-    rules.minimumTradingDays
+    requiredTradingDays
   );
 
   if (dailyLossBreached) reasons.push("Daily loss limit breached");
   if (maxOverallLossBreached) reasons.push("Max overall loss breached");
   if (profitTargetReached) reasons.push("Profit target reached");
-  if (minimumTradingDaysReached && rules.minimumTradingDays != null) {
-    reasons.push(`Minimum trading days met (${progress.tradingDays})`);
+  if (requiredTradingDays != null) {
+    if (minimumTradingDaysReached) {
+      reasons.push(`Minimum trading days met (${progress.tradingDays}/${requiredTradingDays})`);
+    } else {
+      reasons.push(
+        `Minimum trading days not met (${progress.tradingDays}/${requiredTradingDays} unique days)`
+      );
+    }
   }
 
   const consistency = calculateConsistencyMetric(
@@ -650,6 +676,8 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
     requiredConsistencyPct: consistency.requiredConsistencyPct,
     consistencyStatus: consistency.consistencyStatus,
     consistencyPassed: consistency.consistencyPassed,
+    requiredTradingDays,
+    minimumTradingDaysPassed: minimumTradingDaysReached,
     todayRealizedPnL: progress.todayRealizedPnL,
     todayLossPct:
       progress.todayRealizedPnL < 0 && ref > 0

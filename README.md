@@ -297,3 +297,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Professional Journal UI: filters, sort, desktop table, mobile cards, detail drawer
 - Screenshots at close when Chart provides PNG
 - Pending orders never journal until filled+closed
+
+## v3.19.1 Multi-Phase Trading Days + Analytics Account Size
+
+- Minimum trading days = unique UTC exit days (not trade count); required for phase pass
+- Phase-scoped day counts (Phase 1 days do not count for Phase 2)
+- accountId stable across Phase 1 → Phase 2 → FUNDED
+- Analytics starting balance prefers Prop phase accountSize; never invents \$10,000

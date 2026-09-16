@@ -1,6 +1,6 @@
 {
   "name": "trading-replay-pwa",
-  "version": "3.19.0",
+  "version": "3.19.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,7 +16,8 @@
     "test:consistency": "node scripts/test-consistency.mjs",
     "test:daily-loss": "node scripts/test-daily-loss-breach.mjs",
     "test:multi-phase": "node scripts/test-multi-phase-prop.mjs",
-    "test:journal": "node scripts/test-journal-v319.mjs"
+    "test:journal": "node scripts/test-journal-v319.mjs",
+    "test:min-days": "node scripts/test-min-trading-days.mjs"
   },
   "dependencies": {
     "react": "18.3.1",

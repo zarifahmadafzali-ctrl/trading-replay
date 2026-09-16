@@ -219,7 +219,14 @@ export function PropAccountStatus({
               <span className="risk-calc-k">Trading Days</span>
               <span className="risk-calc-v">
                 {evaluation.tradingDays}
-                {rules?.minimumTradingDays != null ? ` / ${rules.minimumTradingDays}` : ""}
+                {evaluation.requiredTradingDays != null
+                  ? ` / ${evaluation.requiredTradingDays}`
+                  : rules?.minimumTradingDays != null && Number(rules.minimumTradingDays) > 0
+                    ? ` / ${rules.minimumTradingDays}`
+                    : ""}
+                {evaluation.requiredTradingDays != null && !evaluation.minimumTradingDaysPassed
+                  ? " · NEED MORE DAYS"
+                  : ""}
               </span>
             </div>
             {maxDaily != null && (

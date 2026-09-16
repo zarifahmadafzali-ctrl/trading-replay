@@ -234,15 +234,44 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
   const filtered = useMemo(() => filterTrades(trades, filters), [trades, filters]);
 
   const startingBalance = useMemo((): number | null => {
-    if (accountFilter !== "all") {
-      const acc = sessionAccounts.find((a) => a.accountId === accountFilter);
-      if (acc) return acc.initialBalance ?? acc.balance;
+    const fromAccount = (acc: (typeof sessionAccounts)[0] | undefined): number | null => {
+      if (!acc) return null;
+      // Prop: prefer configured phase accountSize (challenge size), never invent 10000
+      if ((acc.accountType || "personal") === "prop" && acc.propProgram?.phases?.length) {
+        const phase =
+          acc.propProgram.phases.find((ph) => ph.id === acc.activePropPhaseId) ||
+          acc.propProgram.phases[0];
+        const size = phase?.rules?.accountSize;
+        if (size != null && Number.isFinite(size) && size > 0) return size;
+      }
+      if (acc.initialBalance != null && Number.isFinite(acc.initialBalance) && acc.initialBalance > 0) {
+        return acc.initialBalance;
+      }
+      if (acc.balance != null && Number.isFinite(acc.balance) && acc.balance > 0) {
+        return acc.balance;
+      }
       return null;
+    };
+    if (accountFilter !== "all") {
+      return fromAccount(sessionAccounts.find((a) => a.accountId === accountFilter));
     }
-    // All accounts: prefer first trade snapshot, else first profile, else null (never invent 10000)
-    const withBal = filtered.find((t) => t.balanceBefore != null);
-    if (withBal?.balanceBefore != null) return withBal.balanceBefore;
-    if (sessionAccounts[0]) return sessionAccounts[0].initialBalance ?? sessionAccounts[0].balance;
+    // All accounts: prefer account profile sizes; then trade snapshot; never invent 10000
+    if (sessionAccounts.length === 1) return fromAccount(sessionAccounts[0]);
+    if (sessionAccounts.length > 1) {
+      // Sum of configured sizes for multi-account view when all selected
+      let sum = 0;
+      let any = false;
+      for (const acc of sessionAccounts) {
+        const v = fromAccount(acc);
+        if (v != null) {
+          sum += v;
+          any = true;
+        }
+      }
+      if (any) return sum;
+    }
+    const withBal = filtered.find((t) => t.balanceBefore != null && Number(t.balanceBefore) > 0);
+    if (withBal?.balanceBefore != null) return Number(withBal.balanceBefore);
     return null;
   }, [accountFilter, sessionAccounts, filtered]);
 
