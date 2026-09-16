@@ -937,6 +937,48 @@ footer {
   margin: 2px 0;
   line-height: 1.35;
 }
+.risk-calc-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: #8b9bb0;
+  margin-bottom: 6px;
+}
+.risk-calc-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 8px;
+}
+.risk-calc-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.risk-calc-k {
+  font-size: 10px;
+  color: #8b9bb0;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.risk-calc-v {
+  font-size: 12.5px;
+  color: #e8eef7;
+  font-variant-numeric: tabular-nums;
+}
+.risk-calc-v.neg { color: #ef5350; }
+.risk-calc-v.pos { color: #26a69a; }
+.risk-calc-mobile {
+  display: none;
+  margin-top: 6px !important;
+}
+@media (max-width: 700px) {
+  .risk-calc-grid { display: none; }
+  .risk-calc-head { display: none; }
+  .risk-calc-mobile { display: block; }
+}
+.warn-text { color: #fbbf24 !important; }
 
 /* v3.16.3 drawing discoverability */
 .draw-menu-wrap { position: relative; display: inline-flex; align-items: center; gap: 6px; }

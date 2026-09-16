@@ -34,6 +34,7 @@ import {
 import {
   applyRealizedPnL,
   calculateRisk,
+  calculateLivePositionMetrics,
   currencyPnLFromTradeFields,
   defaultInstrument,
   normalizeAccount,
@@ -870,6 +871,11 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         marginRequired: result.marginRequired,
         actualRiskAmount: result.actualRiskAmount,
         actualRiskPercent: result.actualRiskPercent,
+        actualRewardPercent: result.actualRewardPercent,
+        potentialProfit: result.potentialProfit,
+        rr: result.rr,
+        marginConstrained: result.marginConstrained,
+        targetRiskPercent: result.targetRiskPercent,
         entryTime: pos.entry.time,
         ...(propSnap ? { propRuleSnapshot: propSnap } : {}),
       };
@@ -1144,21 +1150,97 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
               <button type="button" onClick={() => window.dispatchEvent(new Event("tr-cancel-draft"))}>Cancel draft</button>
               <button type="button" onClick={() => { setShapes([]); setSelectedShapeId(null); }}>Clear drawings</button>
               {liveRisk && (
-                <div className="risk-calc">
+                <div className="risk-calc" aria-live="polite">
                   {liveRisk.missingSpec ? (
                     <p className="tools-note warn-text">Instrument specification required: {liveRisk.missingSpec}</p>
                   ) : (
                     <>
-                      <p className="tools-note">
-                        Eq {liveRisk.equity.toFixed(0)} · Lev 1:{liveRisk.leverage} · SL {liveRisk.slDistance.toFixed(2)} pts
-                      </p>
-                      <p className="tools-note">
-                        Risk ${liveRisk.riskAmount.toFixed(2)} ({liveRisk.riskPercent.toFixed(2)}%) · RiskLot {liveRisk.riskBasedLot ?? "—"} · MaxMarg {liveRisk.marginMaxLot ?? "—"} · <b>Lot {liveRisk.finalLot ?? "—"}</b>
-                      </p>
-                      <p className="tools-note">
-                        Actual risk {liveRisk.actualRiskPercent != null ? liveRisk.actualRiskPercent.toFixed(2) + "%" : "—"}
-                        {liveRisk.rr != null ? ` · R:R 1:${liveRisk.rr.toFixed(2)}` : ""}
-                        {liveRisk.potentialProfit != null ? ` · TP $${liveRisk.potentialProfit.toFixed(2)}` : ""}
+                      <div className="risk-calc-row risk-calc-head">
+                        <span>Equity {liveRisk.equity.toFixed(2)}</span>
+                        <span>Lev 1:{liveRisk.leverage}</span>
+                      </div>
+                      <div className="risk-calc-grid">
+                        <div className="risk-calc-cell">
+                          <span className="risk-calc-k">Target Risk</span>
+                          <span className="risk-calc-v">{liveRisk.targetRiskPercent.toFixed(2)}%</span>
+                        </div>
+                        <div className="risk-calc-cell">
+                          <span className="risk-calc-k">Actual Risk $</span>
+                          <span className="risk-calc-v neg">
+                            {liveRisk.actualRiskAmount != null ? `-$${liveRisk.actualRiskAmount.toFixed(2)}` : "—"}
+                          </span>
+                        </div>
+                        <div className="risk-calc-cell">
+                          <span className="risk-calc-k">Actual Risk %</span>
+                          <span className="risk-calc-v neg">
+                            {liveRisk.actualRiskPercent != null ? `${liveRisk.actualRiskPercent.toFixed(2)}%` : "—"}
+                          </span>
+                        </div>
+                        <div className="risk-calc-cell">
+                          <span className="risk-calc-k">Difference</span>
+                          <span className={`risk-calc-v ${liveRisk.riskDifferencePp != null && liveRisk.riskDifferencePp < -0.001 ? "neg" : ""}`}>
+                            {liveRisk.riskDifferencePp != null
+                              ? `${liveRisk.riskDifferencePp >= 0 ? "+" : ""}${liveRisk.riskDifferencePp.toFixed(2)} pp`
+                              : "—"}
+                          </span>
+                        </div>
+                        <div className="risk-calc-cell">
+                          <span className="risk-calc-k">Lot</span>
+                          <span className="risk-calc-v"><b>{liveRisk.finalLot != null ? liveRisk.finalLot : "—"}</b></span>
+                        </div>
+                        <div className="risk-calc-cell">
+                          <span className="risk-calc-k">Margin</span>
+                          <span className="risk-calc-v">
+                            {liveRisk.marginRequired != null ? `$${liveRisk.marginRequired.toFixed(2)}` : "—"}
+                          </span>
+                        </div>
+                        <div className="risk-calc-cell">
+                          <span className="risk-calc-k">Free Margin</span>
+                          <span className="risk-calc-v">${liveRisk.freeMargin.toFixed(2)}</span>
+                        </div>
+                        <div className="risk-calc-cell">
+                          <span className="risk-calc-k">Margin limit</span>
+                          <span className="risk-calc-v">{liveRisk.marginConstrained ? "YES" : "NO"}</span>
+                        </div>
+                        <div className="risk-calc-cell">
+                          <span className="risk-calc-k">TP Profit $</span>
+                          <span className="risk-calc-v pos">
+                            {liveRisk.potentialProfit != null ? `+$${liveRisk.potentialProfit.toFixed(2)}` : "—"}
+                          </span>
+                        </div>
+                        <div className="risk-calc-cell">
+                          <span className="risk-calc-k">TP Impact %</span>
+                          <span className="risk-calc-v pos">
+                            {liveRisk.actualRewardPercent != null ? `+${liveRisk.actualRewardPercent.toFixed(2)}%` : "—"}
+                          </span>
+                        </div>
+                        <div className="risk-calc-cell">
+                          <span className="risk-calc-k">R:R</span>
+                          <span className="risk-calc-v">
+                            {liveRisk.rr != null ? `${liveRisk.rr.toFixed(2)}R` : "—"}
+                          </span>
+                        </div>
+                        <div className="risk-calc-cell">
+                          <span className="risk-calc-k">SL / TP pts</span>
+                          <span className="risk-calc-v">
+                            {liveRisk.slDistance.toFixed(1)}
+                            {liveRisk.tpDistance != null ? ` / ${liveRisk.tpDistance.toFixed(1)}` : ""}
+                          </span>
+                        </div>
+                      </div>
+                      {liveRisk.marginConstrained && (
+                        <p className="tools-note warn-text">Reason: Margin/Lot constraint (actual risk below target)</p>
+                      )}
+                      {liveRisk.insufficientVolume && liveRisk.volumeBlockReason && (
+                        <p className="tools-note warn-text">{liveRisk.volumeBlockReason}</p>
+                      )}
+                      <p className="tools-note risk-calc-mobile">
+                        Risk: {liveRisk.actualRiskAmount != null ? `-$${liveRisk.actualRiskAmount.toFixed(2)}` : "—"}
+                        {liveRisk.actualRiskPercent != null ? ` / -${liveRisk.actualRiskPercent.toFixed(2)}%` : ""}
+                        {" · "}TP: {liveRisk.potentialProfit != null ? `+$${liveRisk.potentialProfit.toFixed(2)}` : "—"}
+                        {liveRisk.actualRewardPercent != null ? ` / +${liveRisk.actualRewardPercent.toFixed(2)}%` : ""}
+                        {" · "}R:R {liveRisk.rr != null ? liveRisk.rr.toFixed(2) : "—"}
+                        {" · "}Lot {liveRisk.finalLot ?? "—"}
                       </p>
                     </>
                   )}

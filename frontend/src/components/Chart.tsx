@@ -855,9 +855,23 @@ export function Chart({
           ctx.fillRect(w - 28, E.y - 10, 20, 20);
         }
 
-        // Live R:R for draft / pending / open (preview before Confirm)
-        const rr = riskReward(s.entry.price, s.stop.price, s.takeProfit.price);
-        const rrText = rr != null ? `R:R 1:${rr.toFixed(2)}` : "R:R —";
+        // Live metrics from centralized risk model (draft / pending / open)
+        const liveSnap = captureRiskSnapshotRef.current?.(s) as
+          | {
+              actualRiskAmount?: number | null;
+              actualRiskPercent?: number | null;
+              potentialProfit?: number | null;
+              actualRewardPercent?: number | null;
+              rr?: number | null;
+              finalLot?: number | null;
+            }
+          | null
+          | undefined;
+        const rr =
+          liveSnap?.rr != null && Number.isFinite(liveSnap.rr)
+            ? liveSnap.rr
+            : riskReward(s.entry.price, s.stop.price, s.takeProfit.price);
+        const rrText = rr != null ? `R:R ${rr.toFixed(2)}` : "R:R —";
         const st =
           s.status === "draft" ? "DRAFT" : s.status === "pending" ? "PENDING" : "OPEN";
         let liveText = "";
@@ -866,6 +880,7 @@ export function Chart({
           const live = long ? px - s.entry.price : s.entry.price - px;
           liveText = ` · ${live >= 0 ? "+" : ""}${live.toFixed(2)}`;
         }
+        if (liveSnap?.finalLot != null) liveText += ` · L${liveSnap.finalLot}`;
 
         // Collision-aware label Y positions (left side of chart)
         const labels: { key: string; y: number; text: string; color: string; prio: number }[] = [];
@@ -877,25 +892,38 @@ export function Chart({
           prio: 1,
         });
         if (S && (s.status === "open" || draft || pending)) {
+          let slText = `SL ${s.stop.price.toFixed(2)}`;
+          if (liveSnap?.actualRiskAmount != null) {
+            slText += ` -$${Number(liveSnap.actualRiskAmount).toFixed(2)}`;
+          }
+          if (liveSnap?.actualRiskPercent != null) {
+            slText += ` -${Number(liveSnap.actualRiskPercent).toFixed(2)}%`;
+          }
           labels.push({
             key: "sl",
             y: S.y,
-            text: `SL ${s.stop.price.toFixed(2)}`,
+            text: slText,
             color: "#f59e0b",
             prio: 2,
           });
         }
         if (T && (s.status === "open" || draft || pending)) {
+          let tpText = `TP ${s.takeProfit.price.toFixed(2)}`;
+          if (liveSnap?.potentialProfit != null) {
+            tpText += ` +$${Number(liveSnap.potentialProfit).toFixed(2)}`;
+          }
+          if (liveSnap?.actualRewardPercent != null) {
+            tpText += ` +${Number(liveSnap.actualRewardPercent).toFixed(2)}%`;
+          }
           labels.push({
             key: "tp",
             y: T.y,
-            text: `TP ${s.takeProfit.price.toFixed(2)}`,
+            text: tpText,
             color: "#38bdf8",
             prio: 3,
           });
         }
         if (s.status === "open" || draft || pending) {
-          // Place R:R near midpoint of entry–TP when possible
           const rrY =
             T && E ? (E.y + T.y) / 2 : E.y - 18;
           labels.push({

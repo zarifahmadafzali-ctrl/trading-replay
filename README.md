@@ -254,3 +254,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - tools-wrap.is-open elevates open dropdown without global z-index inflation
 - risk-panel scroll without position override (preserves mobile fixed panels)
 - No transform/isolation on calculator/risk ancestors
+
+## v3.18.0 Live Position Risk / Reward Calculator
+
+- Target vs actual risk (% and $)
+- Live lot, margin, TP $ / %, R:R from centralized riskModel
+- Chart SL/TP labels show live $ and %
+- Updates on Entry/SL/TP drag via shapes → liveRisk memo
+- Preserves v3.17.9 overlay hierarchy

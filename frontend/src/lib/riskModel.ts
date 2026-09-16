@@ -139,7 +139,16 @@ export type RiskCalcResult = {
   actualRiskAmount: number | null;
   actualRiskPercent: number | null;
   potentialProfit: number | null;
+  /** potentialProfit / equity * 100 */
+  actualRewardPercent: number | null;
   rr: number | null;
+  /** Target risk % requested by user (same as riskPercent input). */
+  targetRiskPercent: number;
+  /** actualRiskPercent - targetRiskPercent (pp). Negative = under-risked. */
+  riskDifferencePp: number | null;
+  /** True when finalLot was limited by margin and/or account/instrument caps below pure risk lot. */
+  marginConstrained: boolean;
+  usedMargin: number;
   missingSpec: string | null;
   /** True when constraints leave no valid volume */
   insufficientVolume: boolean;
@@ -387,6 +396,16 @@ export function calculateRisk(input: RiskCalcInput): RiskCalcResult {
     }
   }
 
+  const actualRewardPercent =
+    potentialProfit != null && equity > 0 ? (potentialProfit / equity) * 100 : null;
+  const riskDifferencePp =
+    actualRiskPercent != null ? actualRiskPercent - riskPct : null;
+  const marginConstrained =
+    finalLot != null &&
+    riskBasedLot != null &&
+    Number.isFinite(riskBasedLot) &&
+    finalLot + 1e-12 < riskBasedLot;
+
   return {
     balance,
     equity,
@@ -408,11 +427,24 @@ export function calculateRisk(input: RiskCalcInput): RiskCalcResult {
     actualRiskAmount,
     actualRiskPercent,
     potentialProfit,
+    actualRewardPercent,
     rr,
+    targetRiskPercent: riskPct,
+    riskDifferencePp,
+    marginConstrained,
+    usedMargin,
     missingSpec: missing.length ? missing.join(", ") : null,
     insufficientVolume,
     volumeBlockReason,
   };
+}
+
+/**
+ * v3.18.0 — Single live metrics entry point (draft / open positions).
+ * Does not mutate accounts or journal.
+ */
+export function calculateLivePositionMetrics(input: RiskCalcInput): RiskCalcResult {
+  return calculateRisk(input);
 }
 
 /** Currency PnL from historical journal fields (never live account settings). */
