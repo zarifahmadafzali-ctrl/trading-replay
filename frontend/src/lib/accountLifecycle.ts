@@ -217,18 +217,30 @@ export function suggestLifecycleTransitions(opts: {
   const out: LifecycleEvent[] = [];
   const phase = getActivePropPhase(account);
 
-  // Failure (FAILED/DISABLED already returned above)
+  // Failure (FAILED/DISABLED already returned above via derived.state)
   if (evaluation.failed) {
-    out.push(
-      makeLifecycleEvent({
-        accountId: account.accountId,
-        type: "PHASE_FAILED",
-        timestamp: t,
-        phaseId: phase?.id,
-        phaseName: phase?.name,
-        note: evaluation.reasons.join("; ") || "Rule breach",
-      })
-    );
+    const alreadyFailed = eventsUpTo(events, t).some((e) => e.type === "PHASE_FAILED");
+    if (!alreadyFailed) {
+      const dailyNote =
+        evaluation.dailyLossBreached && evaluation.dailyLossLimitPct != null
+          ? `DAILY_LOSS_BREACH (day ${evaluation.todayLossPct.toFixed(2)}% > limit ${evaluation.dailyLossLimitPct}%)`
+          : null;
+      const overallNote = evaluation.maxOverallLossBreached ? "MAX_OVERALL_LOSS_BREACH" : null;
+      const note =
+        [dailyNote, overallNote].filter(Boolean).join("; ") ||
+        evaluation.reasons.join("; ") ||
+        "Rule breach";
+      out.push(
+        makeLifecycleEvent({
+          accountId: account.accountId,
+          type: "PHASE_FAILED",
+          timestamp: t,
+          phaseId: phase?.id,
+          phaseName: phase?.name,
+          note,
+        })
+      );
+    }
     return out;
   }
 

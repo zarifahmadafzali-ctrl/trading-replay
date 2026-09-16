@@ -78,6 +78,11 @@ export type PropRuleEvaluation = {
   requiredConsistencyPct: number | null;
   consistencyStatus: "PASS" | "FAIL" | "NOT_YET_QUALIFIED" | "NOT_CONFIGURED";
   consistencyPassed: boolean;
+  /** Realized PnL for the UTC day of currentTime (same-day aggregate). */
+  todayRealizedPnL: number;
+  /** |today loss| as % of reference when todayRealizedPnL is negative; else 0. */
+  todayLossPct: number;
+  dailyLossLimitPct: number | null;
 };
 
 function uid(prefix: string): string {
@@ -428,6 +433,9 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
       requiredConsistencyPct: null,
       consistencyStatus: "NOT_CONFIGURED",
       consistencyPassed: true,
+      todayRealizedPnL: 0,
+      todayLossPct: 0,
+      dailyLossLimitPct: null,
     };
   }
 
@@ -509,5 +517,11 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
     requiredConsistencyPct: consistency.requiredConsistencyPct,
     consistencyStatus: consistency.consistencyStatus,
     consistencyPassed: consistency.consistencyPassed,
+    todayRealizedPnL: progress.todayRealizedPnL,
+    todayLossPct:
+      progress.todayRealizedPnL < 0 && ref > 0
+        ? (Math.abs(progress.todayRealizedPnL) / ref) * 100
+        : 0,
+    dailyLossLimitPct: rules.dailyLossLimitPct ?? null,
   };
 }

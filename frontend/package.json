@@ -1,6 +1,6 @@
 {
   "name": "trading-replay-pwa",
-  "version": "3.18.2",
+  "version": "3.18.2.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,8 @@
     "test:payout-schedule": "node scripts/test-payout-schedule.mjs",
     "test:live-position-metrics": "node scripts/test-live-position-metrics.mjs",
     "test:payout-ui-lifecycle": "node scripts/test-payout-ui-lifecycle.mjs",
-    "test:consistency": "node scripts/test-consistency.mjs"
+    "test:consistency": "node scripts/test-consistency.mjs",
+    "test:daily-loss": "node scripts/test-daily-loss-breach.mjs"
   },
   "dependencies": {
     "react": "18.3.1",

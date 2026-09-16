@@ -672,26 +672,45 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       if (sessionMeta && ownerId) {
         const full = ensureSessionAccounts(sessionMeta);
         const replayTs = closed.exitTime || baseBars[Math.max(0, cursor - 1)]?.time || 0;
+        const tradeLike = {
+          accountId: ownerId,
+          entryTime: localTrade.entryTime,
+          exitTime: localTrade.exitTime,
+          currencyPnL: ccy,
+          rMultiple: localTrade.rMultiple,
+          actualRiskAmount: localTrade.actualRiskAmount,
+          riskAmount: localTrade.riskAmount,
+          pnlPoints: localTrade.pnlPoints,
+          finalLot: localTrade.finalLot,
+        };
+        // CRITICAL: daily loss is same-day AGGREGATE — load all prior session trades + this close.
+        const sid = sessionIdRef.current;
+        const priorRaw = sid ? await loadJournalForSession(sid) : [];
+        const priorLike = (priorRaw || []).map((tr: any) => ({
+          accountId: tr.accountId,
+          entryTime: tr.entryTime ?? tr.opened_at ?? 0,
+          exitTime: tr.exitTime ?? tr.closed_at,
+          currencyPnL:
+            tr.currencyPnL ??
+            (tr.rMultiple != null && tr.actualRiskAmount != null
+              ? tr.rMultiple * tr.actualRiskAmount
+              : undefined),
+          rMultiple: tr.rMultiple,
+          actualRiskAmount: tr.actualRiskAmount,
+          riskAmount: tr.riskAmount,
+          pnlPoints: tr.pnlPoints,
+          finalLot: tr.finalLot,
+        }));
+        // De-dupe by exitTime+accountId+entryTime if the just-closed trade was already appended async
+        const allTrades = [...priorLike, tradeLike];
+
         let nextAccounts = (full.accounts || []).map((a) => {
           if (a.accountId !== ownerId) return a;
           let updated = Number.isFinite(ccy) && ccy !== 0 ? applyRealizedPnL(a, ccy) : a;
-          // Lifecycle evaluation at exit time (replay clock)
-          const tradeLike = {
-            accountId: ownerId,
-            entryTime: localTrade.entryTime,
-            exitTime: localTrade.exitTime,
-            currencyPnL: ccy,
-            rMultiple: localTrade.rMultiple,
-            actualRiskAmount: localTrade.actualRiskAmount,
-            riskAmount: localTrade.riskAmount,
-            pnlPoints: localTrade.pnlPoints,
-            finalLot: localTrade.finalLot,
-          };
-          // Include this trade in evaluation
           const suggested = suggestLifecycleTransitions({
             account: updated,
             events: updated.lifecycleEvents,
-            trades: [tradeLike],
+            trades: allTrades,
             replayTime: replayTs,
           });
           if (suggested.length) {

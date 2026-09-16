@@ -276,3 +276,8 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - SessionRuntime.replayTimeUnix from currentBase.time
 - Trades filtered by replay clock for Prop status
 - Payout request same-timestamp dedupe
+
+## v3.18.2.1 Daily Loss Breach Fix
+
+- Lifecycle evaluation now aggregates ALL same-day trades (not only the last close).
+- PHASE_FAILED with DAILY_LOSS_BREACH note; orders blocked after fail.

@@ -224,8 +224,17 @@ export function PropAccountStatus({
             </div>
             {maxDaily != null && (
               <div>
-                <span className="risk-calc-k">Daily Loss Cap</span>
-                <span className="risk-calc-v">{fmtUsd(maxDaily)}</span>
+                <span className="risk-calc-k">Daily Loss</span>
+                <span className="risk-calc-v">
+                  {evaluation.todayLossPct > 0
+                    ? `${evaluation.todayLossPct.toFixed(2)}%`
+                    : "0%"}
+                  {" / "}
+                  {evaluation.dailyLossLimitPct != null
+                    ? `${evaluation.dailyLossLimitPct}%`
+                    : "—"}
+                  {evaluation.dailyLossBreached ? " · BREACH" : ""}
+                </span>
               </div>
             )}
             {maxOverall != null && (
