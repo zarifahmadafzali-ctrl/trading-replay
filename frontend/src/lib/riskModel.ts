@@ -29,6 +29,8 @@ export type AccountProfile = {
   activePropPhaseId?: string;
   /** Full program with phases — stored on the account for session isolation. */
   propProgram?: import("./propRules").PropProgramConfig;
+  /** v3.17.7 lifecycle event log (replay-time ordered). */
+  lifecycleEvents?: import("./accountLifecycle").LifecycleEvent[];
 };
 
 export type InstrumentSpec = {

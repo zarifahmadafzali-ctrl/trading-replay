@@ -40,6 +40,13 @@ import {
   type RiskCalcResult,
 } from "../lib/riskModel";
 import { buildPropRuleSnapshot, getEffectiveLeverage } from "../lib/propRules";
+import {
+  appendLifecycleEvents,
+  applyPhaseFromLifecycle,
+  canOpenNewTrades,
+  deriveLifecycleFromEvents,
+  suggestLifecycleTransitions,
+} from "../lib/accountLifecycle";
 import { SYMBOLS, TIMEFRAMES, formatTf } from "../lib/types";
 import type { Bar } from "../lib/types";
 
@@ -655,11 +662,37 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         pointValue: num("pointValue") ?? 1,
       });
       const ownerId = localTrade.accountId;
-      if (sessionMeta && ownerId && Number.isFinite(ccy) && ccy !== 0) {
+      if (sessionMeta && ownerId) {
         const full = ensureSessionAccounts(sessionMeta);
-        const nextAccounts = (full.accounts || []).map((a) =>
-          a.accountId === ownerId ? applyRealizedPnL(a, ccy) : a
-        );
+        const replayTs = closed.exitTime || baseBars[Math.max(0, cursor - 1)]?.time || 0;
+        let nextAccounts = (full.accounts || []).map((a) => {
+          if (a.accountId !== ownerId) return a;
+          let updated = Number.isFinite(ccy) && ccy !== 0 ? applyRealizedPnL(a, ccy) : a;
+          // Lifecycle evaluation at exit time (replay clock)
+          const tradeLike = {
+            accountId: ownerId,
+            entryTime: localTrade.entryTime,
+            exitTime: localTrade.exitTime,
+            currencyPnL: ccy,
+            rMultiple: localTrade.rMultiple,
+            actualRiskAmount: localTrade.actualRiskAmount,
+            riskAmount: localTrade.riskAmount,
+            pnlPoints: localTrade.pnlPoints,
+            finalLot: localTrade.finalLot,
+          };
+          // Include this trade in evaluation
+          const suggested = suggestLifecycleTransitions({
+            account: updated,
+            events: updated.lifecycleEvents,
+            trades: [tradeLike],
+            replayTime: replayTs,
+          });
+          if (suggested.length) {
+            updated = appendLifecycleEvents(updated, suggested);
+            updated = applyPhaseFromLifecycle(updated, updated.lifecycleEvents || [], replayTs);
+          }
+          return updated;
+        });
         const nextMeta = { ...full, accounts: nextAccounts, updatedAt: Date.now() };
         setSessionMeta(nextMeta);
         void upsertSession(nextMeta);
@@ -690,11 +723,33 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   }
 
   function pickTool(t: DrawTool) {
+    if ((t === "long" || t === "short") && sessionMeta) {
+      const full = ensureSessionAccounts(sessionMeta);
+      const acc = getActiveAccount(full);
+      const replayTs = currentBase?.time ?? 0;
+      if (acc && (acc.accountType || "personal") === "prop" && !canOpenNewTrades(acc, acc.lifecycleEvents, replayTs)) {
+        const d = deriveLifecycleFromEvents(acc, acc.lifecycleEvents, replayTs);
+        setMessage(`Orders blocked · ${d.state}${d.reasons.length ? " · " + d.reasons[0] : ""}`);
+        return;
+      }
+    }
     setDrawTool(t);
     if (t === "long" || t === "short") setOrdersOpen(true);
   }
 
   function confirmOrder() {
+    if (sessionMeta) {
+      const full = ensureSessionAccounts(sessionMeta);
+      const acc = getActiveAccount(full);
+      const replayTs = currentBase?.time ?? 0;
+      if (acc && (acc.accountType || "personal") === "prop") {
+        if (!canOpenNewTrades(acc, acc.lifecycleEvents, replayTs)) {
+          const d = deriveLifecycleFromEvents(acc, acc.lifecycleEvents, replayTs);
+          setMessage(`Orders blocked · ${d.state}${d.reasons.length ? " · " + d.reasons[0] : ""}`);
+          return;
+        }
+      }
+    }
     window.dispatchEvent(new Event("tr-confirm-position"));
     setOrdersOpen(false);
     setDrawTool("crosshair");

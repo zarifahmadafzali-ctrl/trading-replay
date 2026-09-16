@@ -64,6 +64,8 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
   const [editMaxLotDraft, setEditMaxLotDraft] = useState<Record<string, string>>({});
   const [editStepDraft, setEditStepDraft] = useState<Record<string, string>>({});
   const [propNumDraft, setPropNumDraft] = useState<Record<string, string>>({});
+  /** Session-level legacy PropFirmConfig editor drafts (string while typing). */
+  const [pfDraft, setPfDraft] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   const [sessionType, setSessionType] = useState<"backtest" | "prop">("backtest");
@@ -129,9 +131,23 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
     if (!a) return;
     const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.initialBalance || a.balance);
     const phaseId = a.activePropPhaseId || prog.phases[0]?.id;
-    const phases = prog.phases.map((ph) =>
-      ph.id === phaseId ? { ...ph, rules: { ...ph.rules, ...rulesPatch, accountSize: rulesPatch.accountSize ?? ph.rules.accountSize } } : ph
-    );
+    const phases = prog.phases.map((ph) => {
+      if (ph.id !== phaseId) return ph;
+      const nextRules = { ...ph.rules, ...rulesPatch };
+      // Explicit undefined means "clear optional field"; accountSize empty restores previous only if not in patch
+      for (const k of Object.keys(rulesPatch) as (keyof typeof rulesPatch)[]) {
+        if (rulesPatch[k] === undefined) {
+          delete (nextRules as any)[k];
+        }
+      }
+      // accountSize is required on PropRuleSet — if cleared, keep prior numeric size for storage stability
+      if (!("accountSize" in rulesPatch) || rulesPatch.accountSize == null || !Number.isFinite(Number(rulesPatch.accountSize))) {
+        if (!Number.isFinite(Number(nextRules.accountSize)) || Number(nextRules.accountSize) <= 0) {
+          nextRules.accountSize = ph.rules.accountSize || a.initialBalance || a.balance || 0;
+        }
+      }
+      return { ...ph, rules: nextRules };
+    });
     const nextProg: PropProgramConfig = { ...prog, phases };
     const patch: Partial<AccountProfile> = {
       propProgram: nextProg,
@@ -578,11 +594,16 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                           inputMode="decimal"
                           value={propNumDraft[key] ?? (val != null ? String(val) : "")}
                           onChange={(e) => setPropNumDraft((d) => ({ ...d, [key]: e.target.value }))}
-                          onBlur={() => {
-                            const raw = propNumDraft[key] ?? (val != null ? String(val) : "");
+                          onBlur={(e) => {
+                            const raw = e.currentTarget.value;
+                            setPropNumDraft((d) => ({ ...d, [key]: raw }));
                             if (raw.trim() === "") {
+                              // Keep draft empty while editing; optional fields clear; accountSize reverts on empty commit
+                              if (field === "accountSize") {
+                                setPropNumDraft((d) => ({ ...d, [key]: val != null ? String(val) : "" }));
+                                return;
+                              }
                               patchActivePhaseRules(a.accountId, { [field]: undefined }, false);
-                              setPropNumDraft((d) => ({ ...d, [key]: "" }));
                               return;
                             }
                             const n = Number(raw);
@@ -659,14 +680,31 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
 
         {sessionType === "prop" && (
           <div className="prop-block">
-            <h3>Prop Firm rules</h3>
+            <h3>Prop Firm rules (session defaults)</h3>
             <div className="session-form-grid">
               <label>
                 Account size
                 <input
-                  type="number"
-                  value={propFirm.accountSize}
-                  onChange={(e) => setPropFirm({ ...propFirm, accountSize: Number(e.target.value) || 0 })}
+                  type="text"
+                  inputMode="decimal"
+                  value={pfDraft["accountSize"] ?? String(propFirm.accountSize ?? "")}
+                  onChange={(e) => setPfDraft((d) => ({ ...d, accountSize: e.target.value }))}
+                  onBlur={(e) => {
+                    const raw = e.currentTarget.value;
+                    setPfDraft((d) => ({ ...d, accountSize: raw }));
+                    if (raw.trim() === "") {
+                      setPfDraft((d) => ({ ...d, accountSize: String(propFirm.accountSize ?? "") }));
+                      return;
+                    }
+                    const n = Number(raw);
+                    if (!Number.isFinite(n) || n < 0) {
+                      setPfDraft((d) => ({ ...d, accountSize: String(propFirm.accountSize ?? "") }));
+                      return;
+                    }
+                    setPropFirm({ ...propFirm, accountSize: n });
+                    setPfDraft((d) => ({ ...d, accountSize: String(n) }));
+                  }}
+                  onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                 />
               </label>
               <label>
@@ -678,64 +716,88 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                   <option>Custom</option>
                 </select>
               </label>
-              <label>
-                Profit target %
-                <input
-                  type="number"
-                  value={propFirm.profitTargetPercent}
-                  onChange={(e) => setPropFirm({ ...propFirm, profitTargetPercent: Number(e.target.value) || 0 })}
-                />
-              </label>
-              <label>
-                Daily DD %
-                <input
-                  type="number"
-                  value={propFirm.dailyDdPercent}
-                  onChange={(e) => setPropFirm({ ...propFirm, dailyDdPercent: Number(e.target.value) || 0 })}
-                />
-              </label>
-              <label>
-                Overall DD %
-                <input
-                  type="number"
-                  value={propFirm.overallDdPercent}
-                  onChange={(e) => setPropFirm({ ...propFirm, overallDdPercent: Number(e.target.value) || 0 })}
-                />
-              </label>
-              <label>
-                Min trading days
-                <input
-                  type="number"
-                  value={propFirm.minTradingDays}
-                  onChange={(e) => setPropFirm({ ...propFirm, minTradingDays: Number(e.target.value) || 0 })}
-                />
-              </label>
+              {([
+                ["profitTargetPercent", "Profit target %"],
+                ["dailyDdPercent", "Daily DD %"],
+                ["overallDdPercent", "Overall DD %"],
+                ["minTradingDays", "Min trading days"],
+              ] as const).map(([key, label]) => (
+                <label key={key}>
+                  {label}
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={pfDraft[key] ?? String((propFirm as any)[key] ?? "")}
+                    onChange={(e) => setPfDraft((d) => ({ ...d, [key]: e.target.value }))}
+                    onBlur={(e) => {
+                      const raw = e.currentTarget.value;
+                      setPfDraft((d) => ({ ...d, [key]: raw }));
+                      if (raw.trim() === "") {
+                        setPfDraft((d) => ({ ...d, [key]: String((propFirm as any)[key] ?? "") }));
+                        return;
+                      }
+                      const n = Number(raw);
+                      if (!Number.isFinite(n) || n < 0) {
+                        setPfDraft((d) => ({ ...d, [key]: String((propFirm as any)[key] ?? "") }));
+                        return;
+                      }
+                      setPropFirm({ ...propFirm, [key]: n });
+                      setPfDraft((d) => ({ ...d, [key]: String(n) }));
+                    }}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                  />
+                </label>
+              ))}
               <label>
                 Max trading days
                 <input
-                  type="number"
-                  value={propFirm.maxTradingDays ?? ""}
+                  type="text"
+                  inputMode="numeric"
+                  value={pfDraft["maxTradingDays"] ?? (propFirm.maxTradingDays != null ? String(propFirm.maxTradingDays) : "")}
                   placeholder="optional"
-                  onChange={(e) =>
-                    setPropFirm({
-                      ...propFirm,
-                      maxTradingDays: e.target.value === "" ? null : Number(e.target.value),
-                    })
-                  }
+                  onChange={(e) => setPfDraft((d) => ({ ...d, maxTradingDays: e.target.value }))}
+                  onBlur={(e) => {
+                    const raw = e.currentTarget.value;
+                    setPfDraft((d) => ({ ...d, maxTradingDays: raw }));
+                    if (raw.trim() === "") {
+                      setPropFirm({ ...propFirm, maxTradingDays: null });
+                      return;
+                    }
+                    const n = Number(raw);
+                    if (!Number.isFinite(n) || n < 0) {
+                      setPfDraft((d) => ({ ...d, maxTradingDays: propFirm.maxTradingDays != null ? String(propFirm.maxTradingDays) : "" }));
+                      return;
+                    }
+                    setPropFirm({ ...propFirm, maxTradingDays: n });
+                    setPfDraft((d) => ({ ...d, maxTradingDays: String(n) }));
+                  }}
+                  onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                 />
               </label>
               <label>
                 Consistency %
                 <input
-                  type="number"
-                  value={propFirm.consistencyRulePercent ?? ""}
+                  type="text"
+                  inputMode="decimal"
+                  value={pfDraft["consistencyRulePercent"] ?? (propFirm.consistencyRulePercent != null ? String(propFirm.consistencyRulePercent) : "")}
                   placeholder="optional"
-                  onChange={(e) =>
-                    setPropFirm({
-                      ...propFirm,
-                      consistencyRulePercent: e.target.value === "" ? null : Number(e.target.value),
-                    })
-                  }
+                  onChange={(e) => setPfDraft((d) => ({ ...d, consistencyRulePercent: e.target.value }))}
+                  onBlur={(e) => {
+                    const raw = e.currentTarget.value;
+                    setPfDraft((d) => ({ ...d, consistencyRulePercent: raw }));
+                    if (raw.trim() === "") {
+                      setPropFirm({ ...propFirm, consistencyRulePercent: null });
+                      return;
+                    }
+                    const n = Number(raw);
+                    if (!Number.isFinite(n) || n < 0) {
+                      setPfDraft((d) => ({ ...d, consistencyRulePercent: propFirm.consistencyRulePercent != null ? String(propFirm.consistencyRulePercent) : "" }));
+                      return;
+                    }
+                    setPropFirm({ ...propFirm, consistencyRulePercent: n });
+                    setPfDraft((d) => ({ ...d, consistencyRulePercent: String(n) }));
+                  }}
+                  onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                 />
               </label>
             </div>
@@ -996,11 +1058,15 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                           inputMode="decimal"
                           value={propNumDraft[key] ?? (val != null ? String(val) : "")}
                           onChange={(e) => setPropNumDraft((d) => ({ ...d, [key]: e.target.value }))}
-                          onBlur={() => {
-                            const raw = propNumDraft[key] ?? (val != null ? String(val) : "");
+                          onBlur={(e) => {
+                            const raw = e.currentTarget.value;
+                            setPropNumDraft((d) => ({ ...d, [key]: raw }));
                             if (raw.trim() === "") {
+                              if (field === "accountSize") {
+                                setPropNumDraft((d) => ({ ...d, [key]: val != null ? String(val) : "" }));
+                                return;
+                              }
                               patchActivePhaseRules(a.accountId, { [field]: undefined }, true);
-                              setPropNumDraft((d) => ({ ...d, [key]: "" }));
                               return;
                             }
                             const n = Number(raw);

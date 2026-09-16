@@ -235,3 +235,9 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Generic PropProgram / PropPhase / PropRuleSet
 - Evaluation helpers only (no auto lifecycle)
 - propRuleSnapshot frozen at fill
+
+## v3.17.7 Prop Lifecycle + Input Fix
+
+- Fix Prop numeric inputs (string drafts, no onChange Number coercion)
+- accountLifecycle: derive state from events at replay time
+- Phase pass/fail, funded, payout cooldown; block orders when failed/cooldown
