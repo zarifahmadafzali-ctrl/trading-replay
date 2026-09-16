@@ -281,3 +281,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 
 - Lifecycle evaluation now aggregates ALL same-day trades (not only the last close).
 - PHASE_FAILED with DAILY_LOSS_BREACH note; orders blocked after fail.
+
+## v3.18.2.2 Prop Phase Isolation + Funded Baseline
+
+- Deep-cloned independent phase RuleSets
+- Draft keys include phaseId
+- Phase-scoped trade evaluation (independent baselines)
+- Final phase → FUNDED resets working balance to account size
+- Legacy session PropFirm card is non-canonical metadata only

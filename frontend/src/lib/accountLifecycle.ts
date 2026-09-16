@@ -11,6 +11,7 @@ import {
   ensurePropProgram,
   toUnixSec,
   sumCurrencyPnL,
+  filterTradesForPhaseWindow,
   type PropTradeLike,
 } from "./propRules";
 import {
@@ -201,10 +202,23 @@ export function suggestLifecycleTransitions(opts: {
   const derived = deriveLifecycleFromEvents(account, events, t);
   if (derived.state === "FAILED" || derived.state === "DISABLED") return [];
 
-  const accountTrades = trades.filter(
+  const allAccountTrades = trades.filter(
     (tr) =>
       (!tr.accountId || tr.accountId === account.accountId) &&
       (tr.exitTime == null || toUnixSec(tr.exitTime) <= t)
+  );
+
+  const phase = getActivePropPhase(account);
+  const isFundedState = derived.state === "FUNDED" || derived.state === "PAYOUT_ELIGIBLE" || derived.state === "PAYOUT_COOLDOWN";
+  // Phase evaluation uses only trades in the active phase window (independent baselines).
+  // Funded evaluation uses only post-FUNDED trades.
+  const accountTrades = filterTradesForPhaseWindow(
+    allAccountTrades,
+    account.accountId,
+    phase?.id,
+    events,
+    t,
+    isFundedState ? "funded" : "phase"
   );
 
   const evaluation = evaluatePropRules({
@@ -215,8 +229,7 @@ export function suggestLifecycleTransitions(opts: {
   });
 
   const out: LifecycleEvent[] = [];
-  const phase = getActivePropPhase(account);
-
+  
   // Failure (FAILED/DISABLED already returned above via derived.state)
   if (evaluation.failed) {
     const alreadyFailed = eventsUpTo(events, t).some((e) => e.type === "PHASE_FAILED");
@@ -404,8 +417,33 @@ export function applyPhaseFromLifecycle(
   replayTime: number
 ): AccountProfile {
   const derived = deriveLifecycleFromEvents(account, events, replayTime);
+  let next: AccountProfile = account;
   if (derived.activePhaseId && derived.activePhaseId !== account.activePropPhaseId) {
-    return { ...account, activePropPhaseId: derived.activePhaseId };
+    next = { ...next, activePropPhaseId: derived.activePhaseId };
   }
-  return account;
+  // On FUNDED: reset working balance to configured account size (phase baseline).
+  // Challenge accumulated profit does NOT carry into funded starting equity.
+  if (derived.state === "FUNDED" || derived.state === "PAYOUT_ELIGIBLE" || derived.state === "PAYOUT_COOLDOWN") {
+    const prog = ensurePropProgram(next);
+    const fundedPhase = prog?.phases?.find((p) => p.type === "funded");
+    const active = fundedPhase || (prog?.phases || []).find((p) => p.id === derived.activePhaseId);
+    const size =
+      (active?.rules?.accountSize && active.rules.accountSize > 0
+        ? active.rules.accountSize
+        : next.initialBalance || next.balance || 0);
+    if (size > 0) {
+      // Only reset when transitioning into funded (no prior FUNDED in earlier view is handled by caller).
+      // Working balance tracks funded PnL from baseline size.
+      const seq = eventsUpTo(events, replayTime);
+      const fundedEv = [...seq].reverse().find((e) => e.type === "FUNDED");
+      if (fundedEv) {
+        // Reconstruct balance = baseline + sum of post-funded trade PnL is done by caller via applyRealizedPnL.
+        // Ensure baseline identity is the configured size.
+        if (next.initialBalance !== size) {
+          next = { ...next, initialBalance: size };
+        }
+      }
+    }
+  }
+  return next;
 }

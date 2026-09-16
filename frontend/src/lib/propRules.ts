@@ -45,6 +45,8 @@ export type PropRuleSnapshot = {
 
 export type PropTradeLike = {
   accountId?: string;
+  /** Phase id frozen at fill when available. */
+  phaseId?: string;
   entryTime: number;
   exitTime?: number;
   /** Currency PnL if known; otherwise optional */
@@ -90,6 +92,84 @@ function uid(prefix: string): string {
 }
 
 /** Default empty rules — no fabricated 8/5/10. Unset fields stay undefined. */
+
+/** Deep-clone a PropRuleSet (nested payout included). */
+export function clonePropRules(rules: PropRuleSet): PropRuleSet {
+  const next: PropRuleSet = { ...rules };
+  if (rules.payout) {
+    next.payout = { ...rules.payout };
+  }
+  return next;
+}
+
+/** Deep-clone a phase (independent rules object). */
+export function clonePropPhase(phase: PropPhaseConfig): PropPhaseConfig {
+  return {
+    ...phase,
+    rules: clonePropRules(phase.rules || emptyPropRules(0)),
+  };
+}
+
+/** Deep-clone full program so phases never share nested rule references. */
+export function clonePropProgram(prog: PropProgramConfig): PropProgramConfig {
+  return {
+    ...prog,
+    phases: (prog.phases || []).map((ph) => clonePropPhase(ph)),
+  };
+}
+
+/**
+ * Normalize program on load/edit: deep-clone every phase rules object.
+ * Ensures legacy sessions cannot share mutable nested references.
+ */
+export function normalizePropProgram(prog: PropProgramConfig | null | undefined, fallbackSize = 0): PropProgramConfig {
+  if (!prog || !prog.phases?.length) {
+    return defaultPropProgram(fallbackSize > 0 ? fallbackSize : 5000);
+  }
+  return clonePropProgram({
+    ...prog,
+    id: prog.id || uid("prog"),
+    firmName: prog.firmName || "",
+    programName: prog.programName || "",
+    phases: prog.phases.map((ph, i) => ({
+      id: ph.id || uid("phase"),
+      name: ph.name || `Phase ${i + 1}`,
+      type: ph.type || (i === 0 ? "challenge" : ph.type) || "challenge",
+      rules: clonePropRules({
+        accountSize:
+          ph.rules?.accountSize != null && Number.isFinite(ph.rules.accountSize) && ph.rules.accountSize > 0
+            ? ph.rules.accountSize
+            : fallbackSize > 0
+              ? fallbackSize
+              : 5000,
+        profitTargetPct: ph.rules?.profitTargetPct,
+        dailyLossLimitPct: ph.rules?.dailyLossLimitPct,
+        maxOverallLossPct: ph.rules?.maxOverallLossPct,
+        minimumTradingDays: ph.rules?.minimumTradingDays,
+        consistencyPct: ph.rules?.consistencyPct,
+        leverage: ph.rules?.leverage,
+        payout: ph.rules?.payout ? { ...ph.rules.payout } : undefined,
+      }),
+    })),
+  });
+}
+
+/** Create a new independent challenge/funded phase (never shares rules refs). */
+export function createIndependentPhase(
+  index: number,
+  accountSize: number,
+  type?: "challenge" | "funded" | "custom"
+): PropPhaseConfig {
+  const n = Math.max(1, index);
+  const phaseType = type || (n > 2 ? "funded" : "challenge");
+  return {
+    id: uid("phase"),
+    name: phaseType === "funded" ? "Funded" : `Phase ${n}`,
+    type: phaseType,
+    rules: emptyPropRules(accountSize > 0 ? accountSize : 5000),
+  };
+}
+
 export function emptyPropRules(accountSize = 0): PropRuleSet {
   return { accountSize: Math.max(0, accountSize) };
 }
@@ -105,7 +185,7 @@ export function defaultPropProgram(accountSize = 5000): PropProgramConfig {
         id: uid("phase"),
         name: "Phase 1",
         type: "challenge",
-        rules: { accountSize: size },
+        rules: emptyPropRules(size),
       },
     ],
   };
@@ -113,10 +193,14 @@ export function defaultPropProgram(accountSize = 5000): PropProgramConfig {
 
 export function ensurePropProgram(account: AccountProfile): PropProgramConfig | null {
   if ((account.accountType || "personal") !== "prop") return null;
-  if (account.propProgram && account.propProgram.phases?.length) {
-    return account.propProgram;
-  }
   const size = account.initialBalance || account.balance || 0;
+  if (account.propProgram && account.propProgram.phases?.length) {
+    // Always return a deep-cloned normalized copy so callers never mutate shared refs
+    const cloned = normalizePropProgram(account.propProgram, size);
+    if (account.propFirmName && !cloned.firmName) cloned.firmName = account.propFirmName;
+    if (account.propProgramName && !cloned.programName) cloned.programName = account.propProgramName;
+    return cloned;
+  }
   const prog = defaultPropProgram(size);
   if (account.propFirmName) prog.firmName = account.propFirmName;
   if (account.propProgramName) prog.programName = account.propProgramName;
@@ -402,6 +486,55 @@ export function calculateConsistencyMetric(
     consistencyStatus: pass ? "PASS" : "FAIL",
     consistencyPassed: pass,
   };
+}
+
+
+/**
+ * Phase-scoped trades for evaluation.
+ * Prefer explicit phaseId on trade; else use lifecycle event windows.
+ * Funded evaluation: only trades at/after FUNDED event.
+ */
+export function filterTradesForPhaseWindow(
+  trades: PropTradeLike[],
+  accountId: string | undefined,
+  phaseId: string | undefined,
+  events: { type: string; phaseId?: string; timestamp: number }[] | undefined,
+  replayTime: number,
+  mode: "phase" | "funded" = "phase"
+): PropTradeLike[] {
+  const t = toUnixSec(replayTime);
+  const seq = (events || [])
+    .filter((e) => toUnixSec(e.timestamp) <= t)
+    .sort((a, b) => toUnixSec(a.timestamp) - toUnixSec(b.timestamp));
+
+  let windowStart = 0;
+  let windowEnd = t;
+
+  if (mode === "funded") {
+    const fundedEv = [...seq].reverse().find((e) => e.type === "FUNDED");
+    if (!fundedEv) return [];
+    windowStart = toUnixSec(fundedEv.timestamp);
+    windowEnd = t;
+  } else if (phaseId) {
+    const started = [...seq].reverse().find((e) => e.type === "PHASE_STARTED" && e.phaseId === phaseId);
+    const passed = seq.find((e) => e.type === "PHASE_PASSED" && e.phaseId === phaseId);
+    // First phase may have no PHASE_STARTED — use 0
+    windowStart = started ? toUnixSec(started.timestamp) : 0;
+    windowEnd = passed ? toUnixSec(passed.timestamp) : t;
+  }
+
+  return trades.filter((tr) => {
+    if (accountId && tr.accountId && tr.accountId !== accountId) return false;
+    const exit = tr.exitTime != null ? toUnixSec(tr.exitTime) : null;
+    if (exit == null || !Number.isFinite(exit)) return false;
+    if (exit > windowEnd || exit < windowStart) return false;
+    // If trade carries phaseId, enforce match for phase mode
+    if (mode === "phase" && phaseId && tr.phaseId && tr.phaseId !== phaseId) return false;
+    if (mode === "funded" && tr.phaseId && tr.phaseId !== "funded") {
+      // still allow trades without phaseId if inside funded window
+    }
+    return true;
+  });
 }
 
 /** Evaluation only — no mutations. */

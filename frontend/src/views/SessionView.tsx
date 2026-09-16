@@ -27,13 +27,16 @@ import {
   defaultPropProgram,
   ensurePropProgram,
   emptyPropRules,
+  normalizePropProgram,
+  createIndependentPhase,
+  clonePropRules,
   type PropPhaseConfig,
   type PropProgramConfig,
   type PropRuleSet,
+  type PropTradeLike,
 } from "../lib/propRules";
 import { normalizePayoutSchedule, type PayoutSchedule, type PayoutScheduleMode } from "../lib/payoutSchedule";
 import { PropAccountStatus } from "../components/PropAccountStatus";
-import type { PropTradeLike } from "../lib/propRules";
 
 function isoDaysAgo(days: number) {
   const d = new Date();
@@ -182,18 +185,23 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
     const list = isEdit ? editAccounts : accounts;
     const a = list.find((x) => x.accountId === id);
     if (!a) return;
-    const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.initialBalance || a.balance);
+    const size = a.initialBalance || a.balance || 0;
+    const prog = normalizePropProgram(
+      ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(size),
+      size
+    );
     const phaseId = a.activePropPhaseId || prog.phases[0]?.id;
     const phases = prog.phases.map((ph) => {
-      if (ph.id !== phaseId) return ph;
-      const nextRules = { ...ph.rules, ...rulesPatch };
-      // Explicit undefined means "clear optional field"; accountSize empty restores previous only if not in patch
+      if (ph.id !== phaseId) {
+        // Deep-clone untouched phases so they never share rules with the edited one
+        return { ...ph, rules: clonePropRules(ph.rules) };
+      }
+      const nextRules = clonePropRules({ ...ph.rules, ...rulesPatch });
       for (const k of Object.keys(rulesPatch) as (keyof typeof rulesPatch)[]) {
         if (rulesPatch[k] === undefined) {
           delete (nextRules as any)[k];
         }
       }
-      // accountSize is required on PropRuleSet — if cleared, keep prior numeric size for storage stability
       if (!("accountSize" in rulesPatch) || rulesPatch.accountSize == null || !Number.isFinite(Number(rulesPatch.accountSize))) {
         if (!Number.isFinite(Number(nextRules.accountSize)) || Number(nextRules.accountSize) <= 0) {
           nextRules.accountSize = ph.rules.accountSize || a.initialBalance || a.balance || 0;
@@ -213,8 +221,8 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
     else updateAccount(id, patch);
   }
 
-  function propRulesDraftKey(accountId: string, field: string) {
-    return `${accountId}:${field}`;
+  function propRulesDraftKey(accountId: string, field: string, phaseId?: string) {
+    return `${accountId}:${phaseId || "none"}:${field}`;
   }
 
   function patchActivePhasePayout(id: string, payoutPatch: Partial<PayoutSchedule>, isEdit = false) {
@@ -641,15 +649,17 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                     type="button"
                     className="btn-ghost"
                     onClick={() => {
-                      const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.balance);
+                      const size = a.initialBalance || a.balance || 5000;
+                      const prog = normalizePropProgram(
+                        ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(size),
+                        size
+                      );
                       const n = prog.phases.length + 1;
-                      const ph = {
-                        id: `phase_${Math.random().toString(36).slice(2, 8)}`,
-                        name: `Phase ${n}`,
-                        type: (n > 2 ? "funded" : "challenge") as "challenge" | "funded" | "custom",
-                        rules: { accountSize: a.initialBalance || a.balance || 5000 },
-                      };
-                      updateAccount(a.accountId, { propProgram: { ...prog, phases: [...prog.phases, ph] }, activePropPhaseId: ph.id });
+                      const ph = createIndependentPhase(n, size);
+                      updateAccount(a.accountId, {
+                        propProgram: { ...prog, phases: [...prog.phases.map((p) => ({ ...p, rules: clonePropRules(p.rules) })), ph] },
+                        activePropPhaseId: ph.id,
+                      });
                     }}
                   >
                     + Phase
@@ -659,7 +669,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                     const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
                     const rules = phase?.rules || emptyPropRules(a.balance);
                     const val = rules[field];
-                    const key = propRulesDraftKey(a.accountId, field);
+                    const key = propRulesDraftKey(a.accountId, field, phase?.id);
                     const label = field === "accountSize" ? "Account Size" : field === "profitTargetPct" ? "Profit Target %" : field === "dailyLossLimitPct" ? "Daily Loss Limit %" : field === "maxOverallLossPct" ? "Max Overall Loss %" : field === "minimumTradingDays" ? "Minimum Trading Days" : field === "consistencyPct" ? "Consistency %" : "Leverage (phase)";
                     return (
                       <label key={field}>
@@ -701,7 +711,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                     const sch = normalizePayoutSchedule(phase?.rules?.payout || { mode: "on_demand" });
                     const mode = sch.mode || "on_demand";
                     const numField = (field: keyof PayoutSchedule, label: string) => {
-                      const key = propRulesDraftKey(a.accountId, `payout_${String(field)}`);
+                      const key = propRulesDraftKey(a.accountId, `payout_${String(field)}`, phase?.id);
                       const val = sch[field];
                       return (
                         <label key={String(field)}>
@@ -892,7 +902,8 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
 
         {sessionType === "prop" && (
           <div className="prop-block">
-            <h3>Prop Firm rules (session defaults)</h3>
+            <h3>Prop Firm rules (session defaults · optional)</h3>
+            <p className="muted" style={{ fontSize: 11 }}>Canonical Prop rules live on each Account → Prop Program → Phases below. This block is legacy session metadata only and does not override per-phase RuleSets.</p>
             <div className="session-form-grid">
               <label>
                 Account size
@@ -1233,15 +1244,17 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                     type="button"
                     className="btn-ghost"
                     onClick={() => {
-                      const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.balance);
+                      const size = a.initialBalance || a.balance || 5000;
+                      const prog = normalizePropProgram(
+                        ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(size),
+                        size
+                      );
                       const n = prog.phases.length + 1;
-                      const ph: PropPhaseConfig = {
-                        id: `phase_${Math.random().toString(36).slice(2, 8)}`,
-                        name: `Phase ${n}`,
-                        type: n > 2 ? "funded" : "challenge",
-                        rules: { accountSize: a.initialBalance || a.balance || 5000 },
+                      const ph = createIndependentPhase(n, size);
+                      const next = {
+                        ...prog,
+                        phases: [...prog.phases.map((p) => ({ ...p, rules: clonePropRules(p.rules) })), ph],
                       };
-                      const next = { ...prog, phases: [...prog.phases, ph] };
                       updateEditAccount(a.accountId, { propProgram: next, activePropPhaseId: ph.id });
                     }}
                   >
@@ -1253,7 +1266,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                       || a.propProgram?.phases?.[0];
                     const rules = phase?.rules || emptyPropRules(a.balance);
                     const val = rules[field];
-                    const key = propRulesDraftKey(a.accountId, field);
+                    const key = propRulesDraftKey(a.accountId, field, phase?.id);
                     const label =
                       field === "accountSize" ? "Account Size" :
                       field === "profitTargetPct" ? "Profit Target %" :
@@ -1303,7 +1316,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                     const sch = normalizePayoutSchedule(phase?.rules?.payout || { mode: "on_demand" });
                     const mode = sch.mode || "on_demand";
                     const numField = (field: keyof PayoutSchedule, label: string) => {
-                      const key = propRulesDraftKey(a.accountId, `payout_${String(field)}`);
+                      const key = propRulesDraftKey(a.accountId, `payout_${String(field)}`, phase?.id);
                       const val = sch[field];
                       return (
                         <label key={String(field)}>

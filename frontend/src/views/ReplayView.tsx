@@ -674,6 +674,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         const replayTs = closed.exitTime || baseBars[Math.max(0, cursor - 1)]?.time || 0;
         const tradeLike = {
           accountId: ownerId,
+          phaseId: (localTrade as any).snapshot?.propRuleSnapshot?.phaseId || (localTrade as any).phaseId,
           entryTime: localTrade.entryTime,
           exitTime: localTrade.exitTime,
           currencyPnL: ccy,
@@ -688,6 +689,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         const priorRaw = sid ? await loadJournalForSession(sid) : [];
         const priorLike = (priorRaw || []).map((tr: any) => ({
           accountId: tr.accountId,
+          phaseId: tr.phaseId || tr.snapshot?.propRuleSnapshot?.phaseId,
           entryTime: tr.entryTime ?? tr.opened_at ?? 0,
           exitTime: tr.exitTime ?? tr.closed_at,
           currencyPnL:
@@ -716,6 +718,18 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           if (suggested.length) {
             updated = appendLifecycleEvents(updated, suggested);
             updated = applyPhaseFromLifecycle(updated, updated.lifecycleEvents || [], replayTs);
+            // Final phase → FUNDED: start funded equity at configured account size (not challenge profit)
+            if (suggested.some((e) => e.type === "FUNDED")) {
+              const size =
+                updated.propProgram?.phases?.find((p) => p.type === "funded")?.rules?.accountSize ||
+                updated.propProgram?.phases?.find((p) => p.id === updated.activePropPhaseId)?.rules?.accountSize ||
+                updated.initialBalance ||
+                updated.balance ||
+                0;
+              if (size > 0) {
+                updated = { ...updated, balance: size, initialBalance: size };
+              }
+            }
           }
           return updated;
         });
