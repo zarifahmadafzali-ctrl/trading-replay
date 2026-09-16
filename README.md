@@ -262,3 +262,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Chart SL/TP labels show live $ and %
 - Updates on Entry/SL/TP drag via shapes → liveRisk memo
 - Preserves v3.17.9 overlay hierarchy
+
+## v3.18.1 Prop Lifecycle + Payout UI
+
+- PropAccountStatus: phase progress, lifecycle state, payout eligibility
+- REQUEST PAYOUT via existing buildPayoutEvents (replay-time)
+- Payout history from lifecycle events
+- Session + Replay wiring; no risk calculator changes

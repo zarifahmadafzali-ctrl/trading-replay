@@ -48,6 +48,9 @@ import {
   deriveLifecycleFromEvents,
   suggestLifecycleTransitions,
 } from "../lib/accountLifecycle";
+import { PropAccountStatus } from "../components/PropAccountStatus";
+import { loadJournalForSession } from "../lib/journal";
+import type { PropTradeLike } from "../lib/propRules";
 import { SYMBOLS, TIMEFRAMES, formatTf } from "../lib/types";
 import type { Bar } from "../lib/types";
 
@@ -178,6 +181,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     setShapes(next);
   }
   const [orderType, setOrderType] = useState<OrderType>(() => (saved?.orderType as OrderType) || "market");
+  const [propTrades, setPropTrades] = useState<PropTradeLike[]>([]);
   const [riskPercent, setRiskPercent] = useState(2);
   const [riskPercentInput, setRiskPercentInput] = useState("2");
   const [sessionMeta, setSessionMeta] = useState<SessionMeta | null>(null);
@@ -808,6 +812,32 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
 
 
   useEffect(() => {
+    const sid = sessionMeta?.id || getActiveSessionId();
+    let cancelled = false;
+    void loadJournalForSession(sid).then((rows) => {
+      if (cancelled) return;
+      setPropTrades(
+        (rows || []).map((tr) => ({
+          accountId: tr.accountId,
+          entryTime: tr.entryTime,
+          exitTime: tr.exitTime,
+          currencyPnL:
+            tr.actualRiskAmount != null && tr.rMultiple != null
+              ? tr.rMultiple * tr.actualRiskAmount
+              : undefined,
+          rMultiple: tr.rMultiple,
+          actualRiskAmount: tr.actualRiskAmount,
+          riskAmount: tr.riskAmount,
+          pnlPoints: tr.pnlPoints,
+        }))
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionMeta?.id, shapes]);
+
+  useEffect(() => {
     const onAcc = (ev: Event) => {
       const detail = (ev as CustomEvent).detail as SessionMeta | undefined;
       if (detail && detail.id === (sessionMeta?.id || getActiveSessionId())) {
@@ -1149,6 +1179,28 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
               <button type="button" className="on" onClick={confirmOrder}>Confirm</button>
               <button type="button" onClick={() => window.dispatchEvent(new Event("tr-cancel-draft"))}>Cancel draft</button>
               <button type="button" onClick={() => { setShapes([]); setSelectedShapeId(null); }}>Clear drawings</button>
+              {sessionMeta && (() => {
+                const full = ensureSessionAccounts(sessionMeta);
+                const acc = getActiveAccount(full);
+                if (!acc || (acc.accountType || "personal") !== "prop") return null;
+                const rt = currentBase?.time || 0;
+                return (
+                  <PropAccountStatus
+                    compact
+                    account={acc}
+                    trades={propTrades}
+                    replayTime={rt}
+                    onAccountChange={(next) => {
+                      const nextAccounts = (full.accounts || []).map((a) =>
+                        a.accountId === next.accountId ? next : a
+                      );
+                      const nextMeta = { ...full, accounts: nextAccounts, updatedAt: Date.now() };
+                      setSessionMeta(nextMeta);
+                      void upsertSession(nextMeta);
+                    }}
+                  />
+                );
+              })()}
               {liveRisk && (
                 <div className="risk-calc" aria-live="polite">
                   {liveRisk.missingSpec ? (

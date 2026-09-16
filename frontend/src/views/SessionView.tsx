@@ -11,6 +11,8 @@ import {
   setActiveSessionId,
   MAX_SESSION_ACCOUNTS,
   upsertSession,
+  getRuntime,
+  getSessionTrades,
   type SessionMeta,
 } from "../lib/sessionStore";
 import {
@@ -30,6 +32,8 @@ import {
   type PropRuleSet,
 } from "../lib/propRules";
 import { normalizePayoutSchedule, type PayoutSchedule, type PayoutScheduleMode } from "../lib/payoutSchedule";
+import { PropAccountStatus } from "../components/PropAccountStatus";
+import type { PropTradeLike } from "../lib/propRules";
 
 function isoDaysAgo(days: number) {
   const d = new Date();
@@ -68,6 +72,8 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
   /** Session-level legacy PropFirmConfig editor drafts (string while typing). */
   const [pfDraft, setPfDraft] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [statusTrades, setStatusTrades] = useState<PropTradeLike[]>([]);
+  const [statusReplayTime, setStatusReplayTime] = useState(0);
 
   const [sessionType, setSessionType] = useState<"backtest" | "prop">("backtest");
   const [name, setName] = useState("");
@@ -85,6 +91,54 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
   useEffect(() => {
     setInstrument((prev) => ({ ...defaultInstrument(symbol), ...prev, symbol }));
   }, [symbol]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadStatus() {
+      const sid = editingId || activeId || getActiveSessionId();
+      if (!sid) {
+        setStatusTrades([]);
+        setStatusReplayTime(0);
+        return;
+      }
+      try {
+        const [raw, rt] = await Promise.all([getSessionTrades(sid), getRuntime(sid)]);
+        if (cancelled) return;
+        const trades: PropTradeLike[] = (raw || []).map((tr: any) => ({
+          accountId: tr.accountId,
+          entryTime: tr.entryTime ?? tr.opened_at ?? 0,
+          exitTime: tr.exitTime ?? tr.closed_at,
+          currencyPnL:
+            tr.currencyPnL ??
+            (tr.rMultiple != null && tr.actualRiskAmount != null
+              ? tr.rMultiple * tr.actualRiskAmount
+              : undefined),
+          rMultiple: tr.rMultiple,
+          actualRiskAmount: tr.actualRiskAmount,
+          riskAmount: tr.riskAmount,
+          pnlPoints: tr.pnlPoints,
+        }));
+        setStatusTrades(trades);
+        // Prefer last trade exit / entry as status clock when no live replay cursor time stored
+        let t = 0;
+        for (const x of trades) {
+          const ts = x.exitTime ?? x.entryTime ?? 0;
+          if (ts > t) t = ts;
+        }
+        // Runtime has cursor index, not unix — keep trade-based clock for Session UI
+        setStatusReplayTime(t > 0 ? t : 0);
+        void rt;
+      } catch {
+        if (!cancelled) {
+          setStatusTrades([]);
+        }
+      }
+    }
+    void loadStatus();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId, editingId, sessions]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -773,6 +827,14 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                   })()}
                 </div>
               )}
+              {(a.accountType || "personal") === "prop" && (
+                <PropAccountStatus
+                  account={a}
+                  trades={statusTrades}
+                  replayTime={statusReplayTime}
+                  onAccountChange={(next) => updateAccount(next.accountId, next)}
+                />
+              )}
               <label>
                 Enabled
                 <select
@@ -1395,6 +1457,14 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                   </label>
                 </div>
               )}
+                          {(a.accountType || "personal") === "prop" && (
+                            <PropAccountStatus
+                              account={a}
+                              trades={statusTrades}
+                              replayTime={statusReplayTime}
+                              onAccountChange={(next) => updateEditAccount(next.accountId, next)}
+                            />
+                          )}
                           <label>
                             Enabled
                             <select

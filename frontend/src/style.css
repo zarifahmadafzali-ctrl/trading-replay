@@ -1124,3 +1124,66 @@ footer {
   background: rgba(15, 23, 42, 0.45);
 }
 .prop-rules-box label { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; font-size: 12px; }
+
+/* v3.18.1 Prop lifecycle / payout status */
+.prop-status-box {
+  grid-column: 1 / -1;
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 8px;
+  background: rgba(12, 18, 28, 0.55);
+  font-size: 12px;
+}
+.prop-status-compact { max-width: 100%; }
+.prop-status-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.prop-status-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: #8b9bb0;
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.prop-state-pill {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #1e293b;
+  color: #e2e8f0;
+}
+.prop-state-pill.state-failed { background: rgba(239, 83, 80, 0.2); color: #ef5350; }
+.prop-state-pill.state-funded,
+.prop-state-pill.state-payout_eligible { background: rgba(38, 166, 154, 0.2); color: #26a69a; }
+.prop-state-pill.state-payout_cooldown { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
+.prop-progress-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 10px;
+  margin: 4px 0 6px;
+}
+.prop-event { margin: 4px 0; font-size: 12px; }
+.prop-event.ok { color: #26a69a; }
+.prop-event.fail { color: #ef5350; }
+.prop-payout-btn { margin-top: 6px; width: 100%; }
+.prop-payout-history ul {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  max-height: 120px;
+  overflow-y: auto;
+  font-size: 11px;
+  color: #c5d0dc;
+}
+.prop-payout-history li {
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(42, 53, 68, 0.6);
+}
