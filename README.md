@@ -304,3 +304,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Phase-scoped day counts (Phase 1 days do not count for Phase 2)
 - accountId stable across Phase 1 → Phase 2 → FUNDED
 - Analytics starting balance prefers Prop phase accountSize; never invents \$10,000
+
+## v3.19.2 Legacy Prop Lifecycle Reconciliation
+
+- Pure reconcilePropLifecycle from Journal + current rules
+- Legacy PHASE_PASSED/FUNDED marked superseded (not deleted)
+- deriveLifecycleFromEvents ignores superseded events
+- Explicit UI: Preview / Apply reconciliation (no auto-rewrite on load)
+- accountId unchanged; Journal immutable; balance not auto-rewritten

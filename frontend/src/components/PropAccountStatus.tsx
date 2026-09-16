@@ -2,7 +2,7 @@
  * v3.18.1 — Prop lifecycle + payout status UI (derived view only).
  * Source of truth: accountLifecycle + propRules + payoutSchedule.
  */
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import type { AccountProfile } from "../lib/riskModel";
 import {
   evaluatePropRules,
@@ -23,6 +23,11 @@ import {
   calculatePayoutEligibility,
   normalizePayoutSchedule,
 } from "../lib/payoutSchedule";
+import {
+  reconcilePropLifecycle,
+  applyPropLifecycleReconciliation,
+  type ReconciliationReport,
+} from "../lib/propLifecycleReconcile";
 
 export type PropAccountStatusProps = {
   account: AccountProfile;
@@ -103,6 +108,36 @@ export function PropAccountStatus({
       }),
     [account, accountTrades, replayTime]
   );
+
+  const [reconReport, setReconReport] = useState<ReconciliationReport | null>(null);
+  const [reconMsg, setReconMsg] = useState<string | null>(null);
+
+  function runReconciliationPreview() {
+    const rt = replayTime > 0 ? replayTime : 1e12;
+    setReconReport(reconcilePropLifecycle(account, trades, rt));
+    setReconMsg(null);
+  }
+
+  function applyReconciliation() {
+    if (!reconReport || !onAccountChange) return;
+    if (
+      !window.confirm(
+        "Apply Prop lifecycle reconciliation?\n\n" +
+          (reconReport.differences.length
+            ? reconReport.differences.join("\n")
+            : "No differences detected.") +
+          "\n\nLegacy PHASE_PASSED/FUNDED events will be marked superseded. Journal is not modified. accountId is unchanged."
+      )
+    ) {
+      return;
+    }
+    const next = applyPropLifecycleReconciliation(account, reconReport);
+    onAccountChange(next);
+    setReconMsg(`Applied. ${reconReport.storedState} → ${reconReport.reconciledState}`);
+    const rt = replayTime > 0 ? replayTime : 1e12;
+    setReconReport(reconcilePropLifecycle(next, trades, rt));
+  }
+
 
   const payoutUi = useMemo(() => {
     if (!rules?.payout) return null;
@@ -348,6 +383,48 @@ export function PropAccountStatus({
           )}
         </div>
       ) : null}
+
+      <div className="prop-recon-block">
+        <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>LIFECYCLE RECONCILIATION</div>
+        <p className="muted" style={{ fontSize: 11, margin: "4px 0" }}>
+          Re-evaluate challenge phases under current rules (min trading days, targets). Does not change Journal or accountId.
+        </p>
+        <button type="button" className="btn-ghost" onClick={runReconciliationPreview}>
+          Preview reconciliation
+        </button>
+        {reconReport && (
+          <div className="prop-recon-report" style={{ marginTop: 8, fontSize: 12 }}>
+            <div>
+              Stored: <strong>{reconReport.storedState}</strong>
+              {" → "}
+              Reconciled: <strong>{reconReport.reconciledState}</strong>
+            </div>
+            {reconReport.phaseResults.map((pr) => (
+              <div key={pr.phaseId} className="muted">
+                {pr.phaseName}: days {pr.tradingDays}/{pr.requiredTradingDays ?? "—"} · profit{" "}
+                {pr.profitPct.toFixed(1)}%/{pr.targetPct ?? "—"}% ·{" "}
+                {pr.failed ? "FAILED" : pr.eligibleForPass ? "PASS" : "NOT PASSED"}
+              </div>
+            ))}
+            {reconReport.differences.length > 0 ? (
+              <ul style={{ margin: "6px 0", paddingLeft: 18 }}>
+                {reconReport.differences.map((d, i) => (
+                  <li key={i}>{d}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="muted">No differences vs stored challenge state.</p>
+            )}
+            <p className="muted" style={{ fontSize: 11 }}>{reconReport.balanceNote}</p>
+            {onAccountChange && reconReport.needsReconciliation && (
+              <button type="button" className="on prop-payout-btn" onClick={applyReconciliation}>
+                Apply reconciliation
+              </button>
+            )}
+          </div>
+        )}
+        {reconMsg && <p className="prop-event ok">{reconMsg}</p>}
+      </div>
     </div>
   );
 }

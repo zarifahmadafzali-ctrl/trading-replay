@@ -52,6 +52,9 @@ export type LifecycleEvent = {
   /** Cooldown ends at this unix time (for PAYOUT_COOLDOWN_STARTED) */
   reenableAt?: number;
   note?: string;
+  /** v3.19.2 — legacy event kept for audit but ignored by deriveLifecycleFromEvents */
+  superseded?: boolean;
+  supersedeReason?: string;
 };
 
 export type DerivedLifecycle = {
@@ -80,6 +83,8 @@ export function makeLifecycleEvent(
     amount: partial.amount,
     reenableAt: partial.reenableAt != null ? toUnixSec(partial.reenableAt) : undefined,
     note: partial.note,
+    superseded: partial.superseded,
+    supersedeReason: partial.supersedeReason,
   };
 }
 
@@ -87,7 +92,7 @@ export function makeLifecycleEvent(
 export function eventsUpTo(events: LifecycleEvent[] | undefined, replayTime: number): LifecycleEvent[] {
   const t = toUnixSec(replayTime);
   return (events || [])
-    .filter((e) => toUnixSec(e.timestamp) <= t)
+    .filter((e) => !e.superseded && toUnixSec(e.timestamp) <= t)
     .sort((a, b) => toUnixSec(a.timestamp) - toUnixSec(b.timestamp) || a.id.localeCompare(b.id));
 }
 

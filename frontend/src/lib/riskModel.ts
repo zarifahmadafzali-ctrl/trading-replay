@@ -31,6 +31,8 @@ export type AccountProfile = {
   propProgram?: import("./propRules").PropProgramConfig;
   /** v3.17.7 lifecycle event log (replay-time ordered). */
   lifecycleEvents?: import("./accountLifecycle").LifecycleEvent[];
+  /** v3.19.2 — Prop challenge rules engine version last reconciled under. */
+  propLifecycleRulesVersion?: number;
 };
 
 export type InstrumentSpec = {
