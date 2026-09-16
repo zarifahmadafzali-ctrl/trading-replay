@@ -289,3 +289,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Phase-scoped trade evaluation (independent baselines)
 - Final phase → FUNDED resets working balance to account size
 - Legacy session PropFirm card is non-canonical metadata only
+
+## v3.19.0 Professional Automated Trade Journal
+
+- Idempotent JournalTrade on position close (stable tradeId)
+- Extended schema: currencyPnL, balanceAfter, prop phase, reward, margin
+- Professional Journal UI: filters, sort, desktop table, mobile cards, detail drawer
+- Screenshots at close when Chart provides PNG
+- Pending orders never journal until filled+closed

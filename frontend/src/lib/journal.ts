@@ -3,6 +3,11 @@ import type { TradeRiskSnapshot } from "./riskModel";
 
 export type CloseReason = "sl" | "tp" | "manual";
 
+/**
+ * Professional automated Journal trade record (v3.19.0).
+ * Created only after a real position is filled and later closed.
+ * Historical fields are frozen at fill/close — never rewritten from current account settings.
+ */
 export type JournalTrade = {
   id: string;
   symbol: string;
@@ -19,7 +24,7 @@ export type JournalTrade = {
   rMultiple: number | null;
   note?: string;
   sessionId?: string;
-  /** v3.16.1 trade snapshot at fill */
+
   accountId?: string;
   balanceBefore?: number;
   equityBefore?: number;
@@ -36,11 +41,112 @@ export type JournalTrade = {
   tpDistance?: number | null;
   durationSeconds?: number;
   snapshot?: TradeRiskSnapshot;
-  /** Chart PNG at close only (SL/TP/manual). */
   closeScreenshot?: string;
+
+  /** v3.19.0 extensions (optional for legacy rows) */
+  tradeId?: string;
+  currencyPnL?: number | null;
+  balanceAfter?: number | null;
+  rewardAmount?: number | null;
+  rewardPercent?: number | null;
+  targetRiskPercent?: number | null;
+  marginUsed?: number | null;
+  pointValue?: number | null;
+  fillStatus?: "filled" | "closed";
+  entrySource?: string;
+  accountType?: "personal" | "prop";
+  propFirmName?: string;
+  propProgramName?: string;
+  propPhaseId?: string;
+  propPhaseName?: string;
+  createdAt?: number;
 };
 
 const LEGACY_KEY = "tr-trade-journal-v1";
+const JOURNAL_AUDIT_KEY = "tr-journal-audit-v1";
+
+/** Lightweight audit trail (dev / diagnostics). Caps size. */
+export function auditJournalEvent(event: string, detail?: Record<string, unknown>) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const raw = localStorage.getItem(JOURNAL_AUDIT_KEY);
+    const prev: unknown[] = raw ? JSON.parse(raw) : [];
+    const arr = Array.isArray(prev) ? prev : [];
+    arr.push({ t: Date.now(), event, ...detail });
+    localStorage.setItem(JOURNAL_AUDIT_KEY, JSON.stringify(arr.slice(-80)));
+  } catch {
+    /* */
+  }
+}
+
+export function normalizeJournalTrade(raw: Partial<JournalTrade> & Record<string, unknown>): JournalTrade {
+  const id = String(raw.id || raw.tradeId || `legacy-${Math.random().toString(36).slice(2, 9)}`);
+  const side = raw.side === "short" ? "short" : "long";
+  const reason: CloseReason =
+    raw.reason === "sl" || raw.reason === "tp" || raw.reason === "manual" ? raw.reason : "manual";
+  return {
+    id,
+    tradeId: (raw.tradeId as string) || id,
+    symbol: String(raw.symbol || ""),
+    side,
+    orderType: String(raw.orderType || "market"),
+    entryPrice: Number(raw.entryPrice) || 0,
+    exitPrice: Number(raw.exitPrice) || 0,
+    stopPrice: Number(raw.stopPrice) || 0,
+    takeProfitPrice: Number(raw.takeProfitPrice) || 0,
+    entryTime: Number(raw.entryTime) || 0,
+    exitTime: Number(raw.exitTime) || 0,
+    reason,
+    pnlPoints: Number(raw.pnlPoints) || 0,
+    rMultiple: raw.rMultiple != null && Number.isFinite(Number(raw.rMultiple)) ? Number(raw.rMultiple) : null,
+    note: raw.note as string | undefined,
+    sessionId: raw.sessionId as string | undefined,
+    accountId: raw.accountId as string | undefined,
+    balanceBefore: numOrUndef(raw.balanceBefore),
+    equityBefore: numOrUndef(raw.equityBefore),
+    freeMarginBefore: numOrUndef(raw.freeMarginBefore),
+    leverage: numOrUndef(raw.leverage),
+    riskPercent: numOrUndef(raw.riskPercent),
+    riskAmount: numOrUndef(raw.riskAmount),
+    riskBasedLot: numOrNull(raw.riskBasedLot),
+    marginMaxLot: numOrNull(raw.marginMaxLot),
+    finalLot: numOrNull(raw.finalLot),
+    actualRiskAmount: numOrNull(raw.actualRiskAmount),
+    actualRiskPercent: numOrNull(raw.actualRiskPercent),
+    slDistance: numOrUndef(raw.slDistance),
+    tpDistance: numOrNull(raw.tpDistance),
+    durationSeconds: numOrUndef(raw.durationSeconds),
+    snapshot: raw.snapshot as TradeRiskSnapshot | undefined,
+    closeScreenshot: raw.closeScreenshot as string | undefined,
+    currencyPnL: numOrNull(raw.currencyPnL),
+    balanceAfter: numOrNull(raw.balanceAfter),
+    rewardAmount: numOrNull(raw.rewardAmount),
+    rewardPercent: numOrNull(raw.rewardPercent),
+    targetRiskPercent: numOrNull(raw.targetRiskPercent),
+    marginUsed: numOrNull(raw.marginUsed),
+    pointValue: numOrNull(raw.pointValue),
+    fillStatus: raw.fillStatus === "filled" || raw.fillStatus === "closed" ? raw.fillStatus : "closed",
+    entrySource: raw.entrySource as string | undefined,
+    accountType: raw.accountType === "prop" || raw.accountType === "personal" ? raw.accountType : undefined,
+    propFirmName: raw.propFirmName as string | undefined,
+    propProgramName: raw.propProgramName as string | undefined,
+    propPhaseId: raw.propPhaseId as string | undefined,
+    propPhaseName: raw.propPhaseName as string | undefined,
+    createdAt: numOrUndef(raw.createdAt) ?? Date.now(),
+  };
+}
+
+function numOrUndef(v: unknown): number | undefined {
+  if (v == null || v === "") return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+function numOrNull(v: unknown): number | null | undefined {
+  if (v === undefined) return undefined;
+  if (v === null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 
 export async function loadJournalForSession(sessionId: string | null): Promise<JournalTrade[]> {
   if (!sessionId) {
@@ -48,12 +154,13 @@ export async function loadJournalForSession(sessionId: string | null): Promise<J
       const raw = localStorage.getItem(LEGACY_KEY);
       if (!raw) return [];
       const arr = JSON.parse(raw);
-      return Array.isArray(arr) ? arr : [];
+      return Array.isArray(arr) ? arr.map((t) => normalizeJournalTrade(t)) : [];
     } catch {
       return [];
     }
   }
-  return getSessionTrades(sessionId);
+  const rows = await getSessionTrades(sessionId);
+  return (rows || []).map((t: any) => normalizeJournalTrade(t));
 }
 
 export async function saveJournalForSession(sessionId: string | null, trades: JournalTrade[]) {
@@ -68,27 +175,46 @@ export async function saveJournalForSession(sessionId: string | null, trades: Jo
   await putSessionTrades(sessionId, trades);
 }
 
-export function appendTrade(trade: JournalTrade): JournalTrade[] {
-  const sessionId = trade.sessionId || getActiveSessionId();
-  void (async () => {
-    const prev = await loadJournalForSession(sessionId);
-    const next = [{ ...trade, sessionId: sessionId || undefined }, ...prev].slice(0, 500);
-    await saveJournalForSession(sessionId, next);
-  })();
-  return [trade];
-}
-
+/**
+ * Append a closed trade once. Idempotent on trade.id / tradeId.
+ * Pending orders that never fill never call this.
+ */
 export async function appendTradeAsync(trade: JournalTrade): Promise<JournalTrade[]> {
   const sessionId = trade.sessionId || getActiveSessionId();
+  const normalized = normalizeJournalTrade({
+    ...trade,
+    sessionId: sessionId || undefined,
+    tradeId: trade.tradeId || trade.id,
+    createdAt: trade.createdAt ?? Date.now(),
+    fillStatus: "closed",
+  });
   const prev = await loadJournalForSession(sessionId);
-  const next = [{ ...trade, sessionId: sessionId || undefined }, ...prev].slice(0, 500);
+  const key = normalized.tradeId || normalized.id;
+  if (prev.some((t) => t.id === key || t.tradeId === key || t.id === normalized.id)) {
+    auditJournalEvent("journal_skip_duplicate", { id: key, sessionId });
+    return prev;
+  }
+  const next = [normalized, ...prev].slice(0, 500);
   await saveJournalForSession(sessionId, next);
+  auditJournalEvent("journal_persisted", {
+    id: key,
+    sessionId,
+    reason: normalized.reason,
+    side: normalized.side,
+    currencyPnL: normalized.currencyPnL,
+  });
   return next;
+}
+
+export function appendTrade(trade: JournalTrade): JournalTrade[] {
+  void appendTradeAsync(trade);
+  return [normalizeJournalTrade(trade)];
 }
 
 export function clearJournal() {
   const sessionId = getActiveSessionId();
   void saveJournalForSession(sessionId, []);
+  auditJournalEvent("journal_cleared", { sessionId });
 }
 
 export function rMultiple(
@@ -108,8 +234,22 @@ export function loadJournal(): JournalTrade[] {
     const raw = localStorage.getItem(LEGACY_KEY);
     if (!raw) return [];
     const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
+    return Array.isArray(arr) ? arr.map((t) => normalizeJournalTrade(t)) : [];
   } catch {
     return [];
   }
+}
+
+/** Derive currency PnL preference: explicit → r*risk → null (never invent). */
+export function resolveCurrencyPnL(t: JournalTrade): number | null {
+  if (t.currencyPnL != null && Number.isFinite(t.currencyPnL)) return t.currencyPnL;
+  if (
+    t.rMultiple != null &&
+    Number.isFinite(t.rMultiple) &&
+    t.actualRiskAmount != null &&
+    Number.isFinite(t.actualRiskAmount)
+  ) {
+    return t.rMultiple * t.actualRiskAmount;
+  }
+  return null;
 }

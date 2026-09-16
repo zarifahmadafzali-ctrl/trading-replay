@@ -1,328 +1,428 @@
-import { useEffect, useMemo, useState } from "react";
-import { addTrade, deleteTrade, fetchTrades } from "../lib/api";
-import type { Trade, TradeStats } from "../lib/api";
-import { appendTrade, loadJournalForSession, saveJournalForSession, rMultiple, type JournalTrade } from "../lib/journal";
-import { getActiveSessionId, SESSION_CHANGED_EVENT } from "../lib/sessionStore";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  loadJournalForSession,
+  resolveCurrencyPnL,
+  type JournalTrade,
+  type CloseReason,
+} from "../lib/journal";
+import {
+  getActiveSessionId,
+  listSessions,
+  SESSION_CHANGED_EVENT,
+  type SessionMeta,
+} from "../lib/sessionStore";
 
-const emptyForm = {
-  symbol: "",
-  direction: "long" as "long" | "short",
-  entry_price: "",
-  exit_price: "",
-  stop_price: "",
-  take_profit_price: "",
-  size: "1",
-  notes: "",
-};
+type SortKey =
+  | "exitTime"
+  | "currencyPnL"
+  | "rMultiple"
+  | "durationSeconds"
+  | "riskPercent"
+  | "accountId";
 
-function tradeR(t: Trade): number | null {
-  const pnl = t.direction === "long" ? t.exit_price - t.entry_price : t.entry_price - t.exit_price;
-  if (!t.stop_price) return null;
-  const risk = t.direction === "long" ? t.entry_price - t.stop_price : t.stop_price - t.entry_price;
-  if (!risk || risk <= 0) return null;
-  return pnl / risk;
+function fmtTime(unix: number): string {
+  if (!unix) return "—";
+  const ms = unix > 1e12 ? unix : unix * 1000;
+  try {
+    return new Date(ms).toISOString().replace("T", " ").slice(0, 19);
+  } catch {
+    return "—";
+  }
 }
 
-/** Small dependency-free equity curve — cumulative R across trades in order. */
-function EquityCurve({ trades }: { trades: Trade[] }) {
-  const points = trades.reduce<number[]>((acc, t) => {
-    const r = tradeR(t) ?? 0;
-    acc.push((acc[acc.length - 1] ?? 0) + r);
-    return acc;
-  }, []);
-  if (points.length < 2) {
-    return <p className="empty-state">Log at least 2 trades with stop prices to see an equity curve.</p>;
-  }
-
-  const w = 600;
-  const h = 140;
-  const pad = 8;
-  const min = Math.min(0, ...points);
-  const max = Math.max(0, ...points);
-  const range = max - min || 1;
-  const stepX = (w - pad * 2) / (points.length - 1);
-  const toY = (v: number) => h - pad - ((v - min) / range) * (h - pad * 2);
-
-  const path = points.map((v, i) => `${i === 0 ? "M" : "L"} ${pad + i * stepX} ${toY(v)}`).join(" ");
-  const zeroY = toY(0);
-  const positive = points[points.length - 1] >= 0;
-
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: 140 }}>
-      <line x1={pad} y1={zeroY} x2={w - pad} y2={zeroY} stroke="#293542" strokeWidth={1} strokeDasharray="4 3" />
-      <path d={path} fill="none" stroke={positive ? "#26a69a" : "#ef5350"} strokeWidth={2} />
-    </svg>
-  );
+function fmtNum(n: number | null | undefined, d = 2): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  return n.toFixed(d);
 }
 
-export function JournalView({ backendOnline }: { backendOnline: boolean | null }) {
-  const [backendTrades, setBackendTrades] = useState<Trade[]>([]);
-  const [localTrades, setLocalTrades] = useState<JournalTrade[]>([]);
-  const [stats, setStats] = useState<TradeStats | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState(emptyForm);
+function fmtUsd(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(2)}`;
+}
 
-  const trades = useMemo<Trade[]>(() => {
-    const local: Trade[] = localTrades.map((t) => ({
-      id: t.id,
-      symbol: t.symbol,
-      direction: t.side,
-      entry_price: t.entryPrice,
-      exit_price: t.exitPrice,
-      size: 1,
-      stop_price: t.stopPrice,
-      take_profit_price: t.takeProfitPrice,
-      opened_at: t.entryTime,
-      closed_at: t.exitTime,
-      notes: t.note ?? `auto-${t.reason}`,
-    }));
-    const sameTrade = (a: Trade, b: Trade) =>
-      a.symbol === b.symbol &&
-      a.direction === b.direction &&
-      Math.abs(a.entry_price - b.entry_price) < 1e-9 &&
-      Math.abs(a.exit_price - b.exit_price) < 1e-9 &&
-      a.opened_at != null && b.opened_at != null && Math.abs(a.opened_at - b.opened_at) <= 1 &&
-      a.closed_at != null && b.closed_at != null && Math.abs(a.closed_at - b.closed_at) <= 1;
-    const merged = [...backendTrades];
-    for (const t of local) if (!merged.some((b) => sameTrade(b, t))) merged.push(t);
-    return merged.sort((a, b) => (b.closed_at ?? 0) - (a.closed_at ?? 0));
-  }, [backendTrades, localTrades]);
+function durationLabel(sec: number | undefined): string {
+  if (sec == null || !Number.isFinite(sec)) return "—";
+  const s = Math.max(0, Math.round(sec));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
 
-  function refreshLocal() {
-    void loadJournalForSession(getActiveSessionId()).then(setLocalTrades);
-  }
+export function JournalView(_props: { backendOnline?: boolean | null }) {
+  const [trades, setTrades] = useState<JournalTrade[]>([]);
+  const [sessions, setSessions] = useState<SessionMeta[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(() => getActiveSessionId());
+  const [selected, setSelected] = useState<JournalTrade | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("exitTime");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  useEffect(() => {
-    refreshLocal();
-    const onSess = () => refreshLocal();
-    window.addEventListener(SESSION_CHANGED_EVENT, onSess);
-    return () => window.removeEventListener(SESSION_CHANGED_EVENT, onSess);
+  const [fAccount, setFAccount] = useState("all");
+  const [fSymbol, setFSymbol] = useState("all");
+  const [fSide, setFSide] = useState("all");
+  const [fOrder, setFOrder] = useState("all");
+  const [fReason, setFReason] = useState("all");
+  const [fPhase, setFPhase] = useState("all");
+
+  const reload = useCallback(async () => {
+    const sid = getActiveSessionId();
+    setSessionId(sid);
+    const [rows, sess] = await Promise.all([loadJournalForSession(sid), listSessions()]);
+    setTrades(rows);
+    setSessions(sess);
   }, []);
 
-  function load() {
-    refreshLocal();
-    if (!backendOnline) {
-      setLoading(false);
-      return;
-    }
-    fetchTrades()
-      .then((t) => setBackendTrades(t.trades))
-      .catch(() => setError("Backend unavailable · local journal is still active"))
-      .finally(() => setLoading(false));
-  }
-
-  useEffect(load, [backendOnline]);
-
   useEffect(() => {
-    const next: TradeStats = {
-      total: trades.length,
-      wins: trades.filter((t) => (tradeR(t) ?? 0) > 0).length,
-      losses: trades.filter((t) => (tradeR(t) ?? 0) < 0).length,
-      win_rate: trades.length ? Number(((trades.filter((t) => (tradeR(t) ?? 0) > 0).length / trades.length) * 100).toFixed(2)) : 0,
-      avg_r: trades.length ? Number((trades.map((t) => tradeR(t)).filter((r): r is number => r != null).reduce((a, r) => a + r, 0) / Math.max(1, trades.map((t) => tradeR(t)).filter((r): r is number => r != null).length)).toFixed(2)) : null,
-      total_r: Number(trades.reduce((a, t) => a + (tradeR(t) ?? 0), 0).toFixed(2)),
-      best_r: trades.length ? Math.max(...trades.map((t) => tradeR(t) ?? 0)) : null,
-      worst_r: trades.length ? Math.min(...trades.map((t) => tradeR(t) ?? 0)) : null,
-    };
-    setStats(next);
+    void reload();
+    const onChange = () => void reload();
+    window.addEventListener(SESSION_CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(SESSION_CHANGED_EVENT, onChange);
+  }, [reload]);
+
+  const accounts = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of trades) if (t.accountId) s.add(t.accountId);
+    return [...s];
+  }, [trades]);
+  const symbols = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of trades) if (t.symbol) s.add(t.symbol);
+    return [...s];
+  }, [trades]);
+  const phases = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of trades) if (t.propPhaseName || t.propPhaseId) s.add(t.propPhaseName || t.propPhaseId || "");
+    return [...s].filter(Boolean);
   }, [trades]);
 
-  async function handleAdd() {
-    if (!form.symbol.trim() || !form.entry_price || !form.exit_price) {
-      setError("Symbol, entry price, and exit price are required");
-      return;
-    }
-    const entry = Number(form.entry_price);
-    const exit = Number(form.exit_price);
-    const stop = form.stop_price ? Number(form.stop_price) : 0;
-    const takeProfit = form.take_profit_price ? Number(form.take_profit_price) : 0;
-    const exitTime = Date.now() / 1000;
-    const local: JournalTrade = {
-      id: `manual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      symbol: form.symbol.trim().toUpperCase(),
-      side: form.direction,
-      orderType: "manual",
-      entryPrice: entry,
-      exitPrice: exit,
-      stopPrice: stop,
-      takeProfitPrice: takeProfit,
-      entryTime: exitTime,
-      exitTime,
-      reason: "manual",
-      pnlPoints: form.direction === "long" ? exit - entry : entry - exit,
-      rMultiple: stop ? rMultiple(form.direction, entry, stop, exit) : null,
-      note: form.notes,
-    };
-    appendTrade(local);
-    refreshLocal();
-    setForm(emptyForm);
-    setError(null);
+  const filtered = useMemo(() => {
+    let rows = trades.slice();
+    if (fAccount !== "all") rows = rows.filter((t) => t.accountId === fAccount);
+    if (fSymbol !== "all") rows = rows.filter((t) => t.symbol === fSymbol);
+    if (fSide !== "all") rows = rows.filter((t) => t.side === fSide);
+    if (fOrder !== "all") rows = rows.filter((t) => t.orderType === fOrder);
+    if (fReason !== "all") rows = rows.filter((t) => t.reason === fReason);
+    if (fPhase !== "all")
+      rows = rows.filter((t) => (t.propPhaseName || t.propPhaseId) === fPhase);
 
-    if (backendOnline) {
-      try {
-        await addTrade({
-          symbol: local.symbol, direction: local.side, entry_price: entry, exit_price: exit,
-          stop_price: form.stop_price ? stop : null, take_profit_price: form.take_profit_price ? takeProfit : null,
-          size: Number(form.size) || 1, notes: form.notes, opened_at: null, closed_at: exitTime,
-        });
-        load();
-      } catch {
-        setError("Saved locally · backend sync failed");
+    rows.sort((a, b) => {
+      const av =
+        sortKey === "currencyPnL"
+          ? resolveCurrencyPnL(a) ?? -Infinity
+          : sortKey === "rMultiple"
+            ? a.rMultiple ?? -Infinity
+            : sortKey === "durationSeconds"
+              ? a.durationSeconds ?? 0
+              : sortKey === "riskPercent"
+                ? a.riskPercent ?? 0
+                : sortKey === "accountId"
+                  ? a.accountId || ""
+                  : a.exitTime || 0;
+      const bv =
+        sortKey === "currencyPnL"
+          ? resolveCurrencyPnL(b) ?? -Infinity
+          : sortKey === "rMultiple"
+            ? b.rMultiple ?? -Infinity
+            : sortKey === "durationSeconds"
+              ? b.durationSeconds ?? 0
+              : sortKey === "riskPercent"
+                ? b.riskPercent ?? 0
+                : sortKey === "accountId"
+                  ? b.accountId || ""
+                  : b.exitTime || 0;
+      if (typeof av === "string" && typeof bv === "string") {
+        return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
       }
+      const an = Number(av);
+      const bn = Number(bv);
+      return sortDir === "asc" ? an - bn : bn - an;
+    });
+    return rows;
+  }, [trades, fAccount, fSymbol, fSide, fOrder, fReason, fPhase, sortKey, sortDir]);
+
+  function toggleSort(k: SortKey) {
+    if (sortKey === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setSortKey(k);
+      setSortDir(k === "exitTime" ? "desc" : "desc");
     }
   }
 
-  async function handleDelete(id: string) {
-    const local = localTrades.filter((t) => t.id !== id);
-    if (local.length !== localTrades.length) {
-      void saveJournalForSession(getActiveSessionId(), local);
-      setLocalTrades(local);
-    }
-    if (backendOnline && !id.startsWith("replay-") && !id.startsWith("manual-")) {
-      try {
-        await deleteTrade(id);
-        load();
-      } catch {
-        setError("Could not delete backend trade");
-      }
-    }
-  }
+  const sessionName =
+    sessions.find((s) => s.id === sessionId)?.name || sessionId || "—";
 
   return (
-    <section className="journal-view">
-      <h2>Trade Journal</h2>
-
-      {!backendOnline && (
-        <p className="notice warn-text">
-          Backend offline · local Journal is active. Replay auto-closes and manual entries are saved on this device.
-        </p>
-      )}
-      {error && <p className="notice warn-text">{error}</p>}
-
-      {stats && stats.total > 0 && (
-        <div className="journal-stats">
-          <div className="stat-card">
-            <span className="stat-label">Trades</span>
-            <span className="stat-value">{stats.total}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Win rate</span>
-            <span className="stat-value">{stats.win_rate}%</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Avg R</span>
-            <span className={`stat-value ${stats.avg_r != null && stats.avg_r >= 0 ? "up" : "down"}`}>
-              {stats.avg_r ?? "—"}
-            </span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Total R</span>
-            <span className={`stat-value ${stats.total_r != null && stats.total_r >= 0 ? "up" : "down"}`}>
-              {stats.total_r ?? "—"}
-            </span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Best / Worst</span>
-            <span className="stat-value">
-              {stats.best_r ?? "—"} / {stats.worst_r ?? "—"}
-            </span>
-          </div>
+    <section className="journal-view journal-pro">
+      <header className="journal-pro-head">
+        <div>
+          <h2>Trade Journal</h2>
+          <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+            Automated from closed positions · Session: <b>{sessionName}</b> · {filtered.length} trade
+            {filtered.length === 1 ? "" : "s"}
+          </p>
         </div>
-      )}
+      </header>
 
-      <div className="card">
-        <b>Equity curve (cumulative R)</b>
-        <EquityCurve trades={trades} />
-      </div>
-
-      <div className="journal-form card">
-        <b>Log a closed trade</b>
-        <div className="journal-form-grid">
-          <input
-            type="text"
-            placeholder="Symbol (e.g. EURUSD)"
-            value={form.symbol}
-            onChange={(e) => setForm({ ...form, symbol: e.target.value })}
-          />
-          <select
-            value={form.direction}
-            onChange={(e) => setForm({ ...form, direction: e.target.value as "long" | "short" })}
-          >
+      <div className="journal-filters card">
+        <label>
+          Account
+          <select value={fAccount} onChange={(e) => setFAccount(e.target.value)}>
+            <option value="all">All</option>
+            {accounts.map((a) => (
+              <option key={a} value={a}>
+                {a.slice(0, 12)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Symbol
+          <select value={fSymbol} onChange={(e) => setFSymbol(e.target.value)}>
+            <option value="all">All</option>
+            {symbols.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Side
+          <select value={fSide} onChange={(e) => setFSide(e.target.value)}>
+            <option value="all">All</option>
             <option value="long">Long</option>
             <option value="short">Short</option>
           </select>
-          <input
-            type="number"
-            placeholder="Entry price"
-            value={form.entry_price}
-            onChange={(e) => setForm({ ...form, entry_price: e.target.value })}
-          />
-          <input
-            type="number"
-            placeholder="Exit price"
-            value={form.exit_price}
-            onChange={(e) => setForm({ ...form, exit_price: e.target.value })}
-          />
-          <input
-            type="number"
-            placeholder="Stop price (for R calc)"
-            value={form.stop_price}
-            onChange={(e) => setForm({ ...form, stop_price: e.target.value })}
-          />
-          <input
-            type="number"
-            placeholder="Take profit (optional)"
-            value={form.take_profit_price}
-            onChange={(e) => setForm({ ...form, take_profit_price: e.target.value })}
-          />
-          <input
-            type="text"
-            placeholder="Notes (setup, mistake, lesson…)"
-            value={form.notes}
-            onChange={(e) => setForm({ ...form, notes: e.target.value })}
-            className="notes-input"
-          />
-        </div>
-        <button onClick={handleAdd}>Log trade</button>
+        </label>
+        <label>
+          Order
+          <select value={fOrder} onChange={(e) => setFOrder(e.target.value)}>
+            <option value="all">All</option>
+            <option value="market">Market</option>
+            <option value="buy_limit">Buy Limit</option>
+            <option value="sell_limit">Sell Limit</option>
+            <option value="buy_stop">Buy Stop</option>
+            <option value="sell_stop">Sell Stop</option>
+            <option value="buy_stop_limit">Buy Stop Limit</option>
+            <option value="sell_stop_limit">Sell Stop Limit</option>
+          </select>
+        </label>
+        <label>
+          Exit
+          <select value={fReason} onChange={(e) => setFReason(e.target.value)}>
+            <option value="all">All</option>
+            <option value="sl">SL</option>
+            <option value="tp">TP</option>
+            <option value="manual">Manual</option>
+          </select>
+        </label>
+        <label>
+          Phase
+          <select value={fPhase} onChange={(e) => setFPhase(e.target.value)}>
+            <option value="all">All</option>
+            {phases.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
-      {loading ? (
-        <p>Loading…</p>
-      ) : trades.length === 0 ? (
-        <p className="empty-state">No trades logged yet.</p>
-      ) : (
+      {/* Desktop table */}
+      <div className="journal-table-wrap card journal-desktop-only">
         <table className="journal-table">
           <thead>
             <tr>
+              <th onClick={() => toggleSort("exitTime")}>Date</th>
               <th>Symbol</th>
-              <th>Dir</th>
+              <th>Side</th>
+              <th>Type</th>
               <th>Entry</th>
               <th>Exit</th>
-              <th>R</th>
-              <th>Notes</th>
-              <th></th>
+              <th>SL</th>
+              <th>TP</th>
+              <th>Lot</th>
+              <th onClick={() => toggleSort("riskPercent")}>Risk %</th>
+              <th>Risk $</th>
+              <th>Reward $</th>
+              <th onClick={() => toggleSort("rMultiple")}>R</th>
+              <th onClick={() => toggleSort("currencyPnL")}>P&amp;L</th>
+              <th onClick={() => toggleSort("durationSeconds")}>Dur</th>
+              <th>Exit</th>
+              <th>Phase</th>
             </tr>
           </thead>
           <tbody>
-            {[...trades].reverse().map((t) => {
-              const r = tradeR(t);
+            {filtered.length === 0 && (
+              <tr>
+                <td colSpan={17} className="empty-state">
+                  No closed trades in this session yet. Close a position on the chart to auto-journal.
+                </td>
+              </tr>
+            )}
+            {filtered.map((t) => {
+              const pnl = resolveCurrencyPnL(t);
               return (
-                <tr key={t.id}>
-                  <td>{t.symbol}</td>
-                  <td className={t.direction === "long" ? "up" : "down"}>{t.direction}</td>
-                  <td>{t.entry_price}</td>
-                  <td>{t.exit_price}</td>
-                  <td className={r != null ? (r >= 0 ? "up" : "down") : ""}>{r != null ? r.toFixed(2) : "—"}</td>
-                  <td className="notes-cell">{t.notes}</td>
-                  <td>
-                    <button onClick={() => handleDelete(t.id)}>Delete</button>
-                  </td>
+                <tr key={t.id} onClick={() => setSelected(t)} className="journal-row">
+                  <td>{fmtTime(t.exitTime)}</td>
+                  <td>{t.symbol || "—"}</td>
+                  <td className={t.side === "long" ? "up" : "down"}>{t.side.toUpperCase()}</td>
+                  <td>{t.orderType}</td>
+                  <td>{fmtNum(t.entryPrice)}</td>
+                  <td>{fmtNum(t.exitPrice)}</td>
+                  <td>{fmtNum(t.stopPrice)}</td>
+                  <td>{fmtNum(t.takeProfitPrice)}</td>
+                  <td>{fmtNum(t.finalLot, 2)}</td>
+                  <td>{fmtNum(t.riskPercent, 2)}</td>
+                  <td>{fmtUsd(t.actualRiskAmount ?? t.riskAmount)}</td>
+                  <td>{fmtUsd(t.rewardAmount)}</td>
+                  <td className={(t.rMultiple ?? 0) >= 0 ? "up" : "down"}>{fmtNum(t.rMultiple, 2)}</td>
+                  <td className={(pnl ?? 0) >= 0 ? "up" : "down"}>{fmtUsd(pnl)}</td>
+                  <td>{durationLabel(t.durationSeconds)}</td>
+                  <td>{(t.reason as CloseReason).toUpperCase()}</td>
+                  <td>{t.propPhaseName || t.propPhaseId || "—"}</td>
                 </tr>
               );
             })}
           </tbody>
         </table>
+      </div>
+
+      {/* Mobile cards */}
+      <div className="journal-mobile-only">
+        {filtered.length === 0 && (
+          <p className="empty-state card">No closed trades yet. Close a position to auto-journal.</p>
+        )}
+        {filtered.map((t) => {
+          const pnl = resolveCurrencyPnL(t);
+          return (
+            <button
+              type="button"
+              key={t.id}
+              className="journal-card card"
+              onClick={() => setSelected(t)}
+            >
+              <div className="journal-card-top">
+                <strong>
+                  {t.symbol} · <span className={t.side === "long" ? "up" : "down"}>{t.side.toUpperCase()}</span>
+                </strong>
+                <span className={(pnl ?? 0) >= 0 ? "up" : "down"}>{fmtUsd(pnl)}</span>
+              </div>
+              <div className="muted" style={{ fontSize: 11 }}>
+                {fmtTime(t.exitTime)} · {t.reason.toUpperCase()} · R {fmtNum(t.rMultiple, 2)}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {selected && (
+        <div className="journal-drawer-backdrop" onClick={() => setSelected(null)}>
+          <aside className="journal-drawer card" onClick={(e) => e.stopPropagation()}>
+            <header className="journal-drawer-head">
+              <h3>
+                {selected.symbol} {selected.side.toUpperCase()}
+              </h3>
+              <button type="button" className="btn-ghost" onClick={() => setSelected(null)}>
+                Close
+              </button>
+            </header>
+
+            <section>
+              <h4>Trade summary</h4>
+              <div className="journal-detail-grid">
+                <span>Order</span>
+                <span>{selected.orderType}</span>
+                <span>Entry</span>
+                <span>
+                  {fmtNum(selected.entryPrice)} @ {fmtTime(selected.entryTime)}
+                </span>
+                <span>Exit</span>
+                <span>
+                  {fmtNum(selected.exitPrice)} @ {fmtTime(selected.exitTime)}
+                </span>
+                <span>Duration</span>
+                <span>{durationLabel(selected.durationSeconds)}</span>
+                <span>Exit reason</span>
+                <span>{selected.reason.toUpperCase()}</span>
+              </div>
+            </section>
+
+            <section>
+              <h4>Risk</h4>
+              <div className="journal-detail-grid">
+                <span>Account</span>
+                <span>{selected.accountId || "—"}</span>
+                <span>Balance before</span>
+                <span>{fmtUsd(selected.balanceBefore)}</span>
+                <span>Risk %</span>
+                <span>{fmtNum(selected.riskPercent, 2)}</span>
+                <span>Actual risk $</span>
+                <span>{fmtUsd(selected.actualRiskAmount ?? selected.riskAmount)}</span>
+                <span>Actual risk %</span>
+                <span>{fmtNum(selected.actualRiskPercent, 2)}</span>
+                <span>Lot</span>
+                <span>{fmtNum(selected.finalLot, 2)}</span>
+                <span>Margin</span>
+                <span>{fmtUsd(selected.marginUsed)}</span>
+              </div>
+            </section>
+
+            <section>
+              <h4>Reward</h4>
+              <div className="journal-detail-grid">
+                <span>SL</span>
+                <span>{fmtNum(selected.stopPrice)}</span>
+                <span>TP</span>
+                <span>{fmtNum(selected.takeProfitPrice)}</span>
+                <span>Reward $</span>
+                <span>{fmtUsd(selected.rewardAmount)}</span>
+                <span>R multiple</span>
+                <span>{fmtNum(selected.rMultiple, 2)}</span>
+              </div>
+            </section>
+
+            <section>
+              <h4>Result</h4>
+              <div className="journal-detail-grid">
+                <span>Points</span>
+                <span>{fmtNum(selected.pnlPoints, 2)}</span>
+                <span>Currency P&amp;L</span>
+                <span className={(resolveCurrencyPnL(selected) ?? 0) >= 0 ? "up" : "down"}>
+                  {fmtUsd(resolveCurrencyPnL(selected))}
+                </span>
+                <span>Balance after</span>
+                <span>{fmtUsd(selected.balanceAfter)}</span>
+              </div>
+            </section>
+
+            {(selected.accountType === "prop" || selected.propPhaseId) && (
+              <section>
+                <h4>Prop</h4>
+                <div className="journal-detail-grid">
+                  <span>Firm</span>
+                  <span>{selected.propFirmName || "—"}</span>
+                  <span>Program</span>
+                  <span>{selected.propProgramName || "—"}</span>
+                  <span>Phase</span>
+                  <span>{selected.propPhaseName || selected.propPhaseId || "—"}</span>
+                </div>
+              </section>
+            )}
+
+            {selected.closeScreenshot && (
+              <section>
+                <h4>Chart at close</h4>
+                <img
+                  src={selected.closeScreenshot}
+                  alt="Trade close chart"
+                  className="journal-screenshot"
+                />
+              </section>
+            )}
+          </aside>
+        </div>
       )}
     </section>
   );

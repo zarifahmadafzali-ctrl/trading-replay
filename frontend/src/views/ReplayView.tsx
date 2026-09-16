@@ -9,7 +9,7 @@ import {
   type ToolGroup,
 } from "../lib/drawingTools";
 import { fetchBars, addTrade } from "../lib/api";
-import { appendTradeAsync, rMultiple } from "../lib/journal";
+import { appendTradeAsync, rMultiple, auditJournalEvent } from "../lib/journal";
 import { cacheGetRange, cachePutBars } from "../lib/barCache";
 import { generateDemoBars, readCsvFile } from "../lib/demoData";
 import { aggregateVisible } from "../lib/replay";
@@ -619,8 +619,24 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       const v = snap?.[k];
       return typeof v === "number" ? v : undefined;
     };
+    const rMultEarly = rMultiple(closed.side, closed.entry.price, closed.stop.price, closed.exitPrice);
+    const actualRiskEarly = num("actualRiskAmount") ?? num("riskAmount") ?? null;
+    const ccyEarly =
+      rMultEarly != null && actualRiskEarly != null && Number.isFinite(actualRiskEarly)
+        ? rMultEarly * actualRiskEarly
+        : null;
+    const balBefore = num("balanceBefore") ?? num("balance") ?? acc?.balance;
+    const balAfter =
+      balBefore != null && ccyEarly != null && Number.isFinite(ccyEarly) ? balBefore + ccyEarly : null;
+    const rewardAmt =
+      rMultEarly != null && actualRiskEarly != null && rMultEarly > 0
+        ? rMultEarly * actualRiskEarly
+        : null;
+    const propSnap = (snap as any)?.propRuleSnapshot;
+
     const localTrade = {
       id: `replay-${closed.id}-${closed.exitTime}`,
+      tradeId: `replay-${closed.id}-${closed.exitTime}`,
       symbol,
       side: closed.side,
       orderType: closed.orderType,
@@ -630,12 +646,12 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       takeProfitPrice: closed.takeProfit.price,
       entryTime: closed.entry.time,
       exitTime: closed.exitTime,
-      reason: closed.reason,
+      reason: (closed.reason === "sl" || closed.reason === "tp" ? closed.reason : "manual") as "sl" | "tp" | "manual",
       pnlPoints: closed.pnlPoints,
-      rMultiple: rMultiple(closed.side, closed.entry.price, closed.stop.price, closed.exitPrice),
+      rMultiple: rMultEarly,
       note,
       accountId: (snap?.accountId as string) || acc?.accountId,
-      balanceBefore: num("balance") ?? num("balanceBefore"),
+      balanceBefore: balBefore,
       equityBefore: num("equity") ?? num("equityBefore"),
       freeMarginBefore: num("freeMargin") ?? num("freeMarginBefore"),
       leverage: num("leverage") ?? acc?.leverage,
@@ -646,15 +662,35 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       finalLot: num("finalLot") ?? null,
       actualRiskAmount: num("actualRiskAmount") ?? null,
       actualRiskPercent: num("actualRiskPercent") ?? null,
+      targetRiskPercent: num("riskPercent") ?? riskPercent ?? null,
+      rewardAmount: rewardAmt,
+      rewardPercent:
+        balBefore && rewardAmt != null && balBefore > 0 ? (rewardAmt / balBefore) * 100 : null,
+      currencyPnL: ccyEarly,
+      balanceAfter: balAfter,
+      marginUsed: num("marginRequired") ?? null,
+      pointValue: num("pointValue") ?? null,
       slDistance: num("slDistance") ?? Math.abs(closed.entry.price - closed.stop.price),
       tpDistance: num("tpDistance") ?? Math.abs(closed.takeProfit.price - closed.entry.price),
       durationSeconds: Math.max(0, closed.exitTime - closed.entry.time),
       snapshot: snap as any,
       closeScreenshot: closed.screenshot,
+      fillStatus: "closed" as const,
+      entrySource: closed.orderType === "market" ? "market" : "pending_fill",
+      accountType: (acc?.accountType as "personal" | "prop") || "personal",
+      propFirmName: propSnap?.propFirmName || acc?.propFirmName,
+      propProgramName: propSnap?.propProgramName || acc?.propProgramName,
+      propPhaseId: propSnap?.phaseId || acc?.activePropPhaseId,
+      propPhaseName: propSnap?.phaseName,
+      createdAt: Date.now(),
     };
-    // Local storage is the immediate source of truth, so an auto-closed replay
-    // trade is never lost just because the backend is sleeping/offline.
-    void appendTradeAsync({ ...localTrade, sessionId: sessionIdRef.current || undefined });
+    auditJournalEvent("position_closed", {
+      id: localTrade.id,
+      reason: localTrade.reason,
+      side: localTrade.side,
+    });
+    // Session IndexedDB is source of truth; idempotent on tradeId
+    await appendTradeAsync({ ...localTrade, sessionId: sessionIdRef.current || undefined });
 
     // Realized currency PnL → owning account.balance (initialBalance stays immutable)
     try {
