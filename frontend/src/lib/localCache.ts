@@ -7,6 +7,8 @@ import {
   cacheGetDayRow,
   cachePutDay,
   summarizeLocalCache,
+  getDayFetchInflight,
+  setDayFetchInflight,
   type LocalCacheSummary,
 } from "./barCache";
 
@@ -55,18 +57,38 @@ export async function pullDaysToLocalCache(
     while (attempt < 3 && !done) {
       attempt += 1;
       try {
-        const res = await fetchBarsDay(symbol, day);
-        const cls = res.classification || (res.bars?.length ? "SUCCESS" : "EXPECTED_EMPTY");
-        await cachePutDay(symbol, day, res.bars || [], {
-          classification: cls,
-          complete: true,
-        });
+        // Concurrent requests for the same symbol|day share one fetch (v3.22.0).
+        let bars: Awaited<ReturnType<typeof fetchBarsDay>>["bars"] = [];
+        let cls = "SUCCESS";
+        const inflight = getDayFetchInflight(symbol, day);
+        if (inflight) {
+          bars = await inflight;
+          const row = await cacheGetDayRow(symbol, day);
+          cls = row?.classification || (bars.length ? "SUCCESS" : "EXPECTED_EMPTY");
+        } else {
+          const res = await setDayFetchInflight(
+            symbol,
+            day,
+            (async () => {
+              const r = await fetchBarsDay(symbol, day);
+              const c = r.classification || (r.bars?.length ? "SUCCESS" : "EXPECTED_EMPTY");
+              await cachePutDay(symbol, day, r.bars || [], {
+                classification: c,
+                complete: true,
+              });
+              return r.bars || [];
+            })()
+          );
+          bars = res;
+          const row = await cacheGetDayRow(symbol, day);
+          cls = row?.classification || (bars.length ? "SUCCESS" : "EXPECTED_EMPTY");
+        }
         const summary = await summarizeLocalCache(symbol, rangeStart, rangeEnd);
         opts?.onProgress?.(
           {
             day,
             status: cls === "EXPECTED_EMPTY" ? "empty" : "fetched",
-            bars: res.count ?? res.bars?.length ?? 0,
+            bars: bars.length,
           },
           summary
         );

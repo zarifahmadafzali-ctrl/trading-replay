@@ -9,7 +9,15 @@ import {
   type DataStatus,
   type SyncReport,
 } from "../lib/api";
-import { summarizeLocalCache, type LocalCacheSummary } from "../lib/barCache";
+import {
+  summarizeLocalCache,
+  listMarketDays,
+  cacheDeleteDay,
+  cacheDeleteSymbol,
+  cacheDeleteAll,
+  type LocalCacheSummary,
+  type MarketDayInfo,
+} from "../lib/barCache";
 import { reconcileLocalFromBackendStatus } from "../lib/localCache";
 import { SYMBOLS } from "../lib/types";
 
@@ -59,6 +67,8 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
   const [deviceVerified, setDeviceVerified] = useState(false);
   const [localSummary, setLocalSummary] = useState<LocalCacheSummary | null>(null);
   const [localCaching, setLocalCaching] = useState(false);
+  const [marketDays, setMarketDays] = useState<MarketDayInfo[]>([]);
+  const [marketBusy, setMarketBusy] = useState(false);
   const [capability, setCapability] = useState<{
     base_resolution: string;
     derived: string[];
@@ -73,6 +83,20 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
       .then(setCapability)
       .catch(() => {});
   }, [backendOnline]);
+
+  const refreshMarketDays = async () => {
+    try {
+      const rows = await listMarketDays();
+      setMarketDays(rows);
+    } catch {
+      setMarketDays([]);
+    }
+  };
+
+  useEffect(() => {
+    void refreshMarketDays();
+  }, [localSummary, deviceVerified, phase]);
+
 
   function pushLog(line: string) {
     setLog((prev) => [...prev.slice(-80), line]);
@@ -529,7 +553,110 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
           ) : null}
         </div>
 
+
+        <div className="card market-data-mgmt">
+          <h3>Market Data Management</h3>
+          <p className="hint">
+            Global 1-second cache (symbol|day). Independent of Sessions. Size is estimated (bars × 40 bytes), not exact IndexedDB usage.
+          </p>
+          <div className="sync-row" style={{ flexWrap: "wrap", gap: 8 }}>
+            <button type="button" disabled={marketBusy} onClick={() => void refreshMarketDays()}>
+              Refresh list
+            </button>
+            <button
+              type="button"
+              disabled={marketBusy || !marketDays.some((d) => d.symbol === symbol)}
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    `Delete ALL cached days for ${symbol}?\n\nThis deletes market data only. Sessions, Journal, Accounts, Prop data, and drawings are not deleted.`
+                  )
+                )
+                  return;
+                setMarketBusy(true);
+                void cacheDeleteSymbol(symbol)
+                  .then((n) => {
+                    pushLog(`Deleted ${n} day(s) for ${symbol}`);
+                    return refreshMarketDays();
+                  })
+                  .finally(() => setMarketBusy(false));
+              }}
+            >
+              Delete symbol cache
+            </button>
+            <button
+              type="button"
+              className="journal-delete-btn"
+              disabled={marketBusy || marketDays.length === 0}
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    "Delete ALL market data for every symbol?\n\nThis deletes market data only. Sessions, Journal, Accounts, Prop data, and drawings are not deleted."
+                  )
+                )
+                  return;
+                setMarketBusy(true);
+                void cacheDeleteAll()
+                  .then((n) => {
+                    pushLog(`Deleted ${n} market-data day(s) total`);
+                    setLocalSummary(null);
+                    setDeviceVerified(false);
+                    return refreshMarketDays();
+                  })
+                  .finally(() => setMarketBusy(false));
+              }}
+            >
+              Delete all market data
+            </button>
+          </div>
+          {marketDays.length === 0 ? (
+            <p className="hint">No local market-data days cached.</p>
+          ) : (
+            <div className="market-day-list">
+              {marketDays.slice(0, 60).map((d) => (
+                <div key={d.id} className="market-day-row">
+                  <span className="market-day-sym">{d.symbol}</span>
+                  <span>{d.day}</span>
+                  <span className={`market-day-status st-${d.status.toLowerCase()}`}>{d.status}</span>
+                  <span>{d.barCount.toLocaleString()} bars</span>
+                  <span>~{(d.estimatedBytes / 1024).toFixed(1)} KB est.</span>
+                  <span className="muted">
+                    {d.savedAt ? new Date(d.savedAt).toISOString().slice(0, 16).replace("T", " ") : "—"}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={marketBusy}
+                    onClick={() => {
+                      if (
+                        !window.confirm(
+                          `Delete ${d.symbol} ${d.day}?\n\nThis deletes market data only. Sessions, Journal, Accounts, Prop data, and drawings are not deleted.`
+                        )
+                      )
+                        return;
+                      setMarketBusy(true);
+                      void cacheDeleteDay(d.symbol, d.day)
+                        .then(() => {
+                          pushLog(`Deleted cache ${d.symbol}|${d.day}`);
+                          return refreshMarketDays();
+                        })
+                        .finally(() => setMarketBusy(false));
+                    }}
+                  >
+                    Delete day
+                  </button>
+                </div>
+              ))}
+              {marketDays.length > 60 ? (
+                <p className="hint">
+                  Showing 60 of {marketDays.length} days…
+                </p>
+              ) : null}
+            </div>
+          )}
+        </div>
+
         {log.length > 0 && <pre className="sync-log">{log.join("\n")}</pre>}
+
 
         <p className="hint">
           Abort/timeout and HTTP 409 never start a second Sync POST. Trailing MISSING days keep

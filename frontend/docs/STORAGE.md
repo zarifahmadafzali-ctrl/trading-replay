@@ -50,3 +50,10 @@ barCache.ts (IndexedDB, symbol|day)
 - Global bar cache is never session-owned.
 - Zero sessions must not block Data Engine / Load 1s (v3.20.2).
 - Journal delete does not reverse account balance (v3.20.3).
+
+## Market data (v3.22.0)
+
+- Canonical day status: MISSING | PARTIAL | COMPLETE | EMPTY | FAILED | LOADING
+- Delete day / symbol / all (market data only)
+- Concurrent same-day fetch dedup
+- Management UI in Data Engine

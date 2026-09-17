@@ -248,3 +248,135 @@ export async function cacheListDays(): Promise<
     return [];
   }
 }
+
+
+/** Canonical day-level market-data status (v3.22.0). */
+export type MarketDayStatus =
+  | "MISSING"
+  | "PARTIAL"
+  | "COMPLETE"
+  | "EMPTY"
+  | "FAILED"
+  | "LOADING";
+
+/**
+ * Classify a local day row. LOADING is supplied by the caller when an
+ * acquisition is in progress for that symbol|day.
+ */
+export function classifyDayStatus(
+  row: DayCacheRow | null | undefined,
+  opts?: { loading?: boolean; failed?: boolean }
+): MarketDayStatus {
+  if (opts?.loading) return "LOADING";
+  if (opts?.failed) return "FAILED";
+  if (!row) return "MISSING";
+  if (row.complete && row.classification === "EXPECTED_EMPTY") return "EMPTY";
+  if (row.complete && (row.classification === "SUCCESS" || (row.barCount ?? row.bars?.length ?? 0) > 0)) {
+    return "COMPLETE";
+  }
+  if (row.complete && row.classification === "FAILED") return "FAILED";
+  if ((row.bars?.length ?? 0) > 0 || (row.barCount ?? 0) > 0) return "PARTIAL";
+  return "MISSING";
+}
+
+/** ~bytes estimate: barCount * ~40 bytes (OHLCV + time). Marked as estimate only. */
+export function estimateDayBytes(barCount: number): number {
+  return Math.max(0, Math.floor(barCount) * 40);
+}
+
+export type MarketDayInfo = {
+  id: string;
+  symbol: string;
+  day: string;
+  status: MarketDayStatus;
+  barCount: number;
+  savedAt: number;
+  classification?: string;
+  complete?: boolean;
+  /** Approximate size in bytes; not exact IndexedDB usage. */
+  estimatedBytes: number;
+};
+
+export async function listMarketDays(symbolFilter?: string): Promise<MarketDayInfo[]> {
+  try {
+    const db = await openDb();
+    const rows: DayCacheRow[] = await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, "readonly");
+      const req = tx.objectStore(STORE).getAll();
+      req.onsuccess = () => resolve((req.result || []) as DayCacheRow[]);
+      req.onerror = () => reject(req.error);
+    });
+    const filt = symbolFilter ? symbolFilter.toUpperCase() : null;
+    return rows
+      .filter((r) => !filt || r.symbol === filt)
+      .map((r) => {
+        const barCount = r.barCount ?? (Array.isArray(r.bars) ? r.bars.length : 0);
+        return {
+          id: r.id,
+          symbol: r.symbol,
+          day: r.day,
+          status: classifyDayStatus(r),
+          barCount,
+          savedAt: r.savedAt ?? 0,
+          classification: r.classification,
+          complete: r.complete,
+          estimatedBytes: estimateDayBytes(barCount),
+        };
+      })
+      .sort((a, b) => (a.symbol === b.symbol ? (a.day < b.day ? 1 : -1) : a.symbol.localeCompare(b.symbol)));
+  } catch {
+    return [];
+  }
+}
+
+/** Delete one symbol|day. Does not touch Sessions/Journal/Accounts. */
+export async function cacheDeleteDay(symbol: string, day: string): Promise<boolean> {
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).delete(dayId(symbol, day));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Delete all cached days for one symbol. */
+export async function cacheDeleteSymbol(symbol: string): Promise<number> {
+  const rows = await listMarketDays(symbol);
+  let n = 0;
+  for (const r of rows) {
+    if (await cacheDeleteDay(r.symbol, r.day)) n += 1;
+  }
+  return n;
+}
+
+/** Delete entire market-data object store contents. Sessions untouched. */
+export async function cacheDeleteAll(): Promise<number> {
+  const rows = await listMarketDays();
+  let n = 0;
+  for (const r of rows) {
+    if (await cacheDeleteDay(r.symbol, r.day)) n += 1;
+  }
+  return n;
+}
+
+/** In-flight day fetch dedup (same symbol|day shares one promise). */
+const inflightDayFetches = new Map<string, Promise<Bar[]>>();
+
+export function getDayFetchInflight(symbol: string, day: string): Promise<Bar[]> | undefined {
+  return inflightDayFetches.get(dayId(symbol, day));
+}
+
+export function setDayFetchInflight(symbol: string, day: string, p: Promise<Bar[]>): Promise<Bar[]> {
+  const id = dayId(symbol, day);
+  inflightDayFetches.set(id, p);
+  p.finally(() => {
+    if (inflightDayFetches.get(id) === p) inflightDayFetches.delete(id);
+  });
+  return p;
+}

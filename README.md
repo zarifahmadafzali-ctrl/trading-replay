@@ -360,3 +360,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Canonical ownership documented in `frontend/docs/STORAGE.md`
 - Market-data remains barCache (global); schema versions unchanged
 - No Tauri/Electron/SQLite
+
+## v3.22.0 Market data management
+
+- Day-level status model + safe cache deletion
+- Cache-first complete-day skip preserved
+- Concurrent day-fetch deduplication
+- Data Engine management panel
