@@ -754,16 +754,34 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           if (suggested.length) {
             updated = appendLifecycleEvents(updated, suggested);
             updated = applyPhaseFromLifecycle(updated, updated.lifecycleEvents || [], replayTs);
-            // Final phase → FUNDED: start funded equity at configured account size (not challenge profit)
-            if (suggested.some((e) => e.type === "FUNDED")) {
+            // Phase pass / FUNDED: working equity resets to the *next* phase baseline (accountSize).
+            // Phase 1 profit must NOT carry into Phase 2 or FUNDED (v3.19.3).
+            const fundedEv = suggested.find((e) => e.type === "FUNDED");
+            const passedEv = suggested.filter((e) => e.type === "PHASE_PASSED").pop();
+            const startedEv = suggested.filter((e) => e.type === "PHASE_STARTED").pop();
+            if (fundedEv) {
               const size =
                 updated.propProgram?.phases?.find((p) => p.type === "funded")?.rules?.accountSize ||
                 updated.propProgram?.phases?.find((p) => p.id === updated.activePropPhaseId)?.rules?.accountSize ||
+                updated.propProgram?.phases?.find((p) => p.id === fundedEv.phaseId)?.rules?.accountSize ||
                 updated.initialBalance ||
-                updated.balance ||
                 0;
               if (size > 0) {
                 updated = { ...updated, balance: size, initialBalance: size };
+              }
+            } else if (passedEv || startedEv) {
+              // Next challenge phase baseline = that phase accountSize
+              const nextId =
+                startedEv?.phaseId ||
+                updated.activePropPhaseId ||
+                passedEv?.phaseId;
+              const nextPhase = updated.propProgram?.phases?.find((p) => p.id === nextId);
+              const size =
+                nextPhase?.rules?.accountSize ||
+                updated.initialBalance ||
+                0;
+              if (size > 0) {
+                updated = { ...updated, balance: size };
               }
             }
           }

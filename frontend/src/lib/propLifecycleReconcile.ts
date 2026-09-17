@@ -1,8 +1,15 @@
 /**
- * v3.19.2 — Legacy Prop lifecycle reconciliation.
- * Current Prop rules are authoritative for challenge evaluation.
- * Old PHASE_PASSED / FUNDED events are evidence only; they may be superseded.
- * Journal trades remain immutable. accountId never changes.
+ * v3.19.3 — Prop lifecycle + balance consistency.
+ *
+ * Authoritative model:
+ * - Journal trades = historical trading record (immutable)
+ * - Current Prop RuleSets = evaluation of challenge/funded progression
+ * - Lifecycle events = derived history (may be superseded; never override Journal + rules)
+ * - AccountProfile.balance = simulated working equity for the *current* lifecycle state
+ *   = phase/funded baseline (accountSize) + realized PnL of trades in that window only
+ *
+ * Phase 1 profit does NOT become Phase 2 or FUNDED starting equity.
+ * Same accountId across Phase 1 → Phase 2 → FUNDED.
  */
 
 import type { AccountProfile } from "./riskModel";
@@ -11,18 +18,18 @@ import {
   ensurePropProgram,
   toUnixSec,
   filterTradesForPhaseWindow,
+  sumCurrencyPnL,
   type PropTradeLike,
 } from "./propRules";
 import {
   deriveLifecycleFromEvents,
   makeLifecycleEvent,
-  eventsUpTo,
   type LifecycleEvent,
   type LifecycleState,
 } from "./accountLifecycle";
 
-/** Bump when challenge evaluation semantics change (min days, phase isolation, etc.). */
-export const PROP_LIFECYCLE_RULES_VERSION = 2;
+/** Bump when challenge evaluation / balance semantics change. */
+export const PROP_LIFECYCLE_RULES_VERSION = 3;
 
 export type PhaseEvalSummary = {
   phaseId: string;
@@ -38,6 +45,21 @@ export type PhaseEvalSummary = {
   eligibleForPass: boolean;
   failed: boolean;
   reasons: string[];
+  tradeCount: number;
+};
+
+export type BalanceCalcResult = {
+  /** Fully determined expected working balance, or null if insufficient trade PnL data. */
+  expectedBalance: number | null;
+  baseline: number;
+  windowPnL: number | null;
+  includedTradeCount: number;
+  excludedTradeCount: number;
+  excludedReasons: string[];
+  state: LifecycleState;
+  activePhaseId?: string;
+  calculable: boolean;
+  note: string;
 };
 
 export type ReconciliationReport = {
@@ -49,20 +71,180 @@ export type ReconciliationReport = {
   shouldBeFunded: boolean;
   phaseResults: PhaseEvalSummary[];
   differences: string[];
-  /** Events to keep (old, marked superseded where needed) + new authoritative challenge events. */
   nextLifecycleEvents: LifecycleEvent[];
   supersededCount: number;
   needsReconciliation: boolean;
   balanceNote: string;
   rulesVersion: number;
+  /** v3.19.3 */
+  storedBalance: number;
+  expectedBalance: number | null;
+  balanceDifference: number | null;
+  balanceCalculable: boolean;
+  balanceCalc: BalanceCalcResult;
 };
 
 function challengePhases(account: AccountProfile) {
   const prog = ensurePropProgram(account);
   const phases = prog?.phases || [];
-  // Challenge phases in order; exclude pure funded-type phases from challenge ladder
   const challenge = phases.filter((p) => p.type !== "funded");
   return challenge.length ? challenge : phases;
+}
+
+function phaseAccountSize(account: AccountProfile, phaseId?: string): number {
+  const prog = ensurePropProgram(account);
+  const phases = prog?.phases || [];
+  const ph = phaseId ? phases.find((p) => p.id === phaseId) : null;
+  const size = ph?.rules?.accountSize;
+  if (size != null && Number.isFinite(size) && size > 0) return size;
+  if (account.initialBalance != null && account.initialBalance > 0) return account.initialBalance;
+  if (account.balance != null && Number.isFinite(account.balance) && account.balance > 0) {
+    return account.balance;
+  }
+  return 0;
+}
+
+function tradeHasUsablePnL(tr: PropTradeLike): boolean {
+  if (tr.currencyPnL != null && Number.isFinite(tr.currencyPnL)) return true;
+  if (
+    tr.rMultiple != null &&
+    Number.isFinite(tr.rMultiple) &&
+    tr.actualRiskAmount != null &&
+    Number.isFinite(tr.actualRiskAmount)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Expected working equity for the *reconciled* lifecycle state at replayTime.
+ * PHASE 1/2: baseline = that phase accountSize + PnL of trades in that phase window only.
+ * FUNDED: baseline = final challenge/funded accountSize + PnL of post-FUNDED trades only.
+ * Does not invent PnL; returns calculable=false if any included trade lacks currency data.
+ */
+export function calculatePropLifecycleBalance(opts: {
+  account: AccountProfile;
+  journalTrades: PropTradeLike[];
+  lifecycleEvents: LifecycleEvent[];
+  lifecycleState: LifecycleState;
+  activePhaseId?: string;
+  replayTime: number;
+}): BalanceCalcResult {
+  const { account, journalTrades, lifecycleEvents, lifecycleState, activePhaseId, replayTime } =
+    opts;
+  const t = toUnixSec(replayTime);
+  const accountId = account.accountId;
+
+  const all = (journalTrades || []).filter(
+    (tr) =>
+      (!tr.accountId || tr.accountId === accountId) &&
+      (tr.exitTime == null || toUnixSec(tr.exitTime) <= t)
+  );
+
+  const excludedReasons: string[] = [];
+  let excludedTradeCount = 0;
+
+  if (lifecycleState === "FAILED" || lifecycleState === "DISABLED") {
+    // Working equity still = last active phase baseline + that window's PnL (frozen at fail)
+    const phaseId = activePhaseId || challengePhases(account)[0]?.id;
+    const baseline = phaseAccountSize(account, phaseId);
+    const window = filterTradesForPhaseWindow(
+      all,
+      accountId,
+      phaseId,
+      lifecycleEvents,
+      t,
+      "phase"
+    );
+    return balanceFromWindow(window, baseline, lifecycleState, phaseId, excludedReasons);
+  }
+
+  if (
+    lifecycleState === "FUNDED" ||
+    lifecycleState === "PAYOUT_ELIGIBLE" ||
+    lifecycleState === "PAYOUT_COOLDOWN"
+  ) {
+    const phases = challengePhases(account);
+    const last = phases[phases.length - 1];
+    const baseline = phaseAccountSize(account, last?.id) || phaseAccountSize(account);
+    const window = filterTradesForPhaseWindow(all, accountId, last?.id, lifecycleEvents, t, "funded");
+    // Trades before FUNDED are intentionally excluded from funded equity
+    const tradeKey = (tr: PropTradeLike) =>
+      `${tr.entryTime}|${tr.exitTime ?? ""}|${tr.currencyPnL ?? ""}|${tr.phaseId ?? ""}`;
+    const fundedIds = new Set(window.map(tradeKey));
+    for (const tr of all) {
+      if (!fundedIds.has(tradeKey(tr))) {
+        excludedTradeCount++;
+      }
+    }
+    if (excludedTradeCount > 0) {
+      excludedReasons.push(
+        `${excludedTradeCount} challenge-period trade(s) excluded from FUNDED balance`
+      );
+    }
+    return balanceFromWindow(window, baseline, lifecycleState, last?.id, excludedReasons);
+  }
+
+  // ACTIVE / trading challenge phase
+  const phaseId = activePhaseId || challengePhases(account)[0]?.id;
+  const baseline = phaseAccountSize(account, phaseId);
+  const window = filterTradesForPhaseWindow(all, accountId, phaseId, lifecycleEvents, t, "phase");
+  const tradeKey = (tr: PropTradeLike) =>
+    `${tr.entryTime}|${tr.exitTime ?? ""}|${tr.currencyPnL ?? ""}|${tr.phaseId ?? ""}`;
+  const winIds = new Set(window.map(tradeKey));
+  for (const tr of all) {
+    if (!winIds.has(tradeKey(tr))) {
+      excludedTradeCount++;
+    }
+  }
+  if (excludedTradeCount > 0) {
+    excludedReasons.push(
+      `${excludedTradeCount} trade(s) outside active phase window (prior phase PnL excluded)`
+    );
+  }
+  return balanceFromWindow(window, baseline, lifecycleState, phaseId, excludedReasons);
+}
+
+function balanceFromWindow(
+  window: PropTradeLike[],
+  baseline: number,
+  state: LifecycleState,
+  activePhaseId: string | undefined,
+  excludedReasons: string[]
+): BalanceCalcResult {
+  const missing = window.filter((tr) => !tradeHasUsablePnL(tr));
+  if (missing.length > 0) {
+    return {
+      expectedBalance: null,
+      baseline,
+      windowPnL: null,
+      includedTradeCount: window.length,
+      excludedTradeCount: missing.length,
+      excludedReasons: [
+        ...excludedReasons,
+        `${missing.length} trade(s) lack currencyPnL / (rMultiple×actualRiskAmount) — cannot compute balance`,
+      ],
+      state,
+      activePhaseId,
+      calculable: false,
+      note: "Insufficient trade PnL data — balance not auto-updated.",
+    };
+  }
+  const pnl = sumCurrencyPnL(window);
+  const expected = baseline + pnl;
+  return {
+    expectedBalance: expected,
+    baseline,
+    windowPnL: pnl,
+    includedTradeCount: window.length,
+    excludedTradeCount: 0,
+    excludedReasons,
+    state,
+    activePhaseId,
+    calculable: true,
+    note: `baseline ${baseline} + window PnL ${pnl.toFixed(2)} = ${expected.toFixed(2)}`,
+  };
 }
 
 /**
@@ -77,8 +259,22 @@ export function reconcilePropLifecycle(
   const t = toUnixSec(replayTime);
   const accountId = account.accountId;
   const stored = deriveLifecycleFromEvents(account, account.lifecycleEvents, t);
+  const storedBalance = Number.isFinite(account.balance)
+    ? account.balance
+    : account.initialBalance || 0;
 
   if ((account.accountType || "personal") !== "prop") {
+    const emptyBal: BalanceCalcResult = {
+      expectedBalance: storedBalance,
+      baseline: storedBalance,
+      windowPnL: 0,
+      includedTradeCount: 0,
+      excludedTradeCount: 0,
+      excludedReasons: [],
+      state: "ACTIVE",
+      calculable: true,
+      note: "Personal account — no Prop reconciliation.",
+    };
     return {
       accountId,
       storedState: stored.state,
@@ -90,8 +286,13 @@ export function reconcilePropLifecycle(
       nextLifecycleEvents: account.lifecycleEvents || [],
       supersededCount: 0,
       needsReconciliation: false,
-      balanceNote: "Personal account — no Prop reconciliation.",
+      balanceNote: emptyBal.note,
       rulesVersion: PROP_LIFECYCLE_RULES_VERSION,
+      storedBalance,
+      expectedBalance: storedBalance,
+      balanceDifference: 0,
+      balanceCalculable: true,
+      balanceCalc: emptyBal,
     };
   }
 
@@ -115,22 +316,26 @@ export function reconcilePropLifecycle(
     const phase = phases[i];
     activePhaseId = phase.id;
 
-    // Synthetic PHASE_STARTED at first trade after previous phase end, or 0
-    const startTs = cursorTs;
+    const startTs =
+      cursorTs ||
+      (trades[0]?.exitTime != null
+        ? toUnixSec(trades[0].exitTime)
+        : trades[0]?.entryTime != null
+          ? toUnixSec(trades[0].entryTime)
+          : 0);
+
     rebuilt.push(
       makeLifecycleEvent({
         accountId,
         type: "PHASE_STARTED",
-        timestamp: startTs || (trades[0]?.exitTime ?? trades[0]?.entryTime ?? 0) || 0,
+        timestamp: startTs,
         phaseId: phase.id,
         phaseName: phase.name,
         note: "Reconciled under current Prop rules",
       })
     );
 
-    // Build temporary event list so filterTradesForPhaseWindow can window correctly
     const windowEvents: LifecycleEvent[] = [...rebuilt];
-    // Evaluate as if this phase is active and not yet passed
     const phaseTrades = filterTradesForPhaseWindow(
       trades,
       accountId,
@@ -139,9 +344,6 @@ export function reconcilePropLifecycle(
       t,
       "phase"
     );
-
-    // For first phase with no prior PHASE_PASSED, include trades without phaseId in full window
-    // filterTradesForPhaseWindow already uses start from PHASE_STARTED
 
     const accountForEval: AccountProfile = {
       ...account,
@@ -155,7 +357,7 @@ export function reconcilePropLifecycle(
       unrealizedPnL: 0,
     });
 
-    const summary: PhaseEvalSummary = {
+    phaseResults.push({
       phaseId: phase.id,
       phaseName: phase.name,
       phaseType: phase.type || "challenge",
@@ -172,8 +374,8 @@ export function reconcilePropLifecycle(
       eligibleForPass: evaluation.eligibleForPhasePass,
       failed: evaluation.failed,
       reasons: evaluation.reasons || [],
-    };
-    phaseResults.push(summary);
+      tradeCount: phaseTrades.length,
+    });
 
     if (evaluation.failed) {
       failed = true;
@@ -193,20 +395,10 @@ export function reconcilePropLifecycle(
     }
 
     if (evaluation.eligibleForPhasePass) {
-      // Pass timestamp = last trade exit in phase window, or t
-      let passTs = t;
-      for (const tr of phaseTrades) {
-        if (tr.exitTime != null && toUnixSec(tr.exitTime) > 0) {
-          const et = toUnixSec(tr.exitTime);
-          if (et <= t && (passTs === t || et > passTs || passTs === t)) {
-            // use max exit in window
-          }
-        }
-      }
       const exits = phaseTrades
         .map((tr) => (tr.exitTime != null ? toUnixSec(tr.exitTime) : 0))
         .filter((x) => x > 0 && x <= t);
-      passTs = exits.length ? Math.max(...exits) : t;
+      const passTs = exits.length ? Math.max(...exits) : t;
 
       rebuilt.push(
         makeLifecycleEvent({
@@ -245,7 +437,6 @@ export function reconcilePropLifecycle(
     activePhaseId = phases[phases.length - 1]?.id;
   }
 
-  // Supersede legacy challenge / funded transition events; keep for audit
   const CHALLENGE_TYPES = new Set([
     "PHASE_STARTED",
     "PHASE_PASSED",
@@ -264,25 +455,30 @@ export function reconcilePropLifecycle(
       supersededCount++;
     } else if (e.superseded) {
       preserved.push(e);
-    } else {
-      // Keep payout / other events as-is
-      if (
-        e.type === "PAYOUT_ELIGIBLE" ||
-        e.type === "PAYOUT_REQUESTED" ||
-        e.type === "PAYOUT_PAID" ||
-        e.type === "PAYOUT_COOLDOWN_STARTED" ||
-        e.type === "ACCOUNT_REENABLED" ||
-        e.type === "ACCOUNT_DISABLED" ||
-        e.type === "ACCOUNT_CREATED"
-      ) {
-        preserved.push(e);
-      } else if (!CHALLENGE_TYPES.has(e.type)) {
-        preserved.push(e);
-      }
+    } else if (
+      e.type === "PAYOUT_ELIGIBLE" ||
+      e.type === "PAYOUT_REQUESTED" ||
+      e.type === "PAYOUT_PAID" ||
+      e.type === "PAYOUT_COOLDOWN_STARTED" ||
+      e.type === "ACCOUNT_REENABLED" ||
+      e.type === "ACCOUNT_DISABLED" ||
+      e.type === "ACCOUNT_CREATED" ||
+      !CHALLENGE_TYPES.has(e.type)
+    ) {
+      preserved.push(e);
     }
   }
 
   const nextLifecycleEvents = [...preserved, ...rebuilt];
+
+  const balanceCalc = calculatePropLifecycleBalance({
+    account,
+    journalTrades: trades,
+    lifecycleEvents: nextLifecycleEvents,
+    lifecycleState: reconciledState,
+    activePhaseId,
+    replayTime: t,
+  });
 
   const differences: string[] = [];
   if (stored.state !== reconciledState) {
@@ -310,32 +506,31 @@ export function reconcilePropLifecycle(
     differences.push("Current rules grant FUNDED (was not stored as FUNDED).");
   }
 
-  const needsReconciliation =
-    differences.length > 0 ||
-    (account.propLifecycleRulesVersion != null &&
-      account.propLifecycleRulesVersion < PROP_LIFECYCLE_RULES_VERSION &&
-      (account.lifecycleEvents || []).some((e) => CHALLENGE_TYPES.has(e.type) && !e.superseded));
-
-  // Also need recon if version missing and any challenge events exist while rules would differ
-  const needs =
-    needsReconciliation ||
-    (stored.state === "FUNDED" && !shouldBeFunded) ||
-    (stored.state !== reconciledState);
-
-  let balanceNote =
-    "AccountProfile.balance is not auto-rewritten. Journal PnL stays immutable. " +
-    "If FUNDED is valid under reconciliation, working balance should be treated as accountSize baseline + post-funded PnL only after explicit migration.";
-  if (stored.state === "FUNDED" && !shouldBeFunded) {
-    balanceNote +=
-      " Legacy FUNDED is invalid — balance is left unchanged (unsafe to auto-reset).";
+  const expectedBalance = balanceCalc.expectedBalance;
+  const balanceDifference =
+    expectedBalance != null && Number.isFinite(storedBalance)
+      ? expectedBalance - storedBalance
+      : null;
+  if (balanceDifference != null && Math.abs(balanceDifference) > 0.005) {
+    differences.push(
+      `Balance: stored ${storedBalance.toFixed(2)} → expected ${expectedBalance!.toFixed(2)} (Δ ${balanceDifference >= 0 ? "+" : ""}${balanceDifference.toFixed(2)})`
+    );
   }
-  if (shouldBeFunded) {
-    const size =
-      phases[phases.length - 1]?.rules?.accountSize ||
-      account.initialBalance ||
-      account.balance ||
-      0;
-    balanceNote += ` Valid FUNDED baseline under rules: ${size}.`;
+  if (!balanceCalc.calculable) {
+    differences.push(`Balance not calculable: ${balanceCalc.note}`);
+  }
+
+  const needs =
+    differences.length > 0 ||
+    stored.state !== reconciledState ||
+    (stored.state === "FUNDED" && !shouldBeFunded) ||
+    (balanceDifference != null && Math.abs(balanceDifference) > 0.005);
+
+  let balanceNote = balanceCalc.note;
+  if (!balanceCalc.calculable) {
+    balanceNote += " Existing AccountProfile.balance will be preserved on apply.";
+  } else if (balanceDifference != null && Math.abs(balanceDifference) > 0.005) {
+    balanceNote += " Apply will set AccountProfile.balance to expected value.";
   }
 
   return {
@@ -352,34 +547,47 @@ export function reconcilePropLifecycle(
     needsReconciliation: needs,
     balanceNote,
     rulesVersion: PROP_LIFECYCLE_RULES_VERSION,
+    storedBalance,
+    expectedBalance,
+    balanceDifference,
+    balanceCalculable: balanceCalc.calculable,
+    balanceCalc,
   };
 }
 
-/** Apply a confirmed reconciliation report to an account (immutable). Does not change accountId. */
+/** Apply confirmed reconciliation. Updates lifecycle events; balance only if fully calculable. */
 export function applyPropLifecycleReconciliation(
   account: AccountProfile,
   report: ReconciliationReport
 ): AccountProfile {
   if ((account.accountType || "personal") !== "prop") return account;
-  return {
+  const next: AccountProfile = {
     ...account,
     lifecycleEvents: report.nextLifecycleEvents,
     activePropPhaseId: report.reconciledActivePhaseId || account.activePropPhaseId,
     propLifecycleRulesVersion: PROP_LIFECYCLE_RULES_VERSION,
-    // Balance NOT auto-mutated — caller may optionally adjust if product policy allows
   };
+  if (report.balanceCalculable && report.expectedBalance != null && Number.isFinite(report.expectedBalance)) {
+    next.balance = report.expectedBalance;
+    // On valid FUNDED, also align initialBalance to baseline for analytics starting point
+    if (report.shouldBeFunded && report.balanceCalc.baseline > 0) {
+      next.initialBalance = report.balanceCalc.baseline;
+    }
+  }
+  return next;
 }
 
-/** Preview helpers for UI */
 export function formatReconciliationSummary(report: ReconciliationReport): string {
   const lines = [
     `Stored: ${report.storedState}`,
     `Reconciled: ${report.reconciledState}`,
+    `Stored balance: ${report.storedBalance}`,
+    `Expected balance: ${report.expectedBalance ?? "—"}`,
     ...report.differences,
   ];
   for (const p of report.phaseResults) {
     lines.push(
-      `${p.phaseName}: days ${p.tradingDays}/${p.requiredTradingDays ?? "—"} · profit ${p.profitPct.toFixed(2)}% / ${p.targetPct ?? "—"}% · ${p.eligibleForPass ? "PASS" : p.failed ? "FAILED" : "NOT PASSED"}`
+      `${p.phaseName}: days ${p.tradingDays}/${p.requiredTradingDays ?? "—"} · profit ${p.profitPct.toFixed(2)}% / ${p.targetPct ?? "—"}% · trades ${p.tradeCount} · ${p.eligibleForPass ? "PASS" : p.failed ? "FAILED" : "NOT PASSED"}`
     );
   }
   return lines.join("\n");

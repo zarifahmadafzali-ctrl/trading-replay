@@ -399,6 +399,24 @@ export function PropAccountStatus({
               {" → "}
               Reconciled: <strong>{reconReport.reconciledState}</strong>
             </div>
+            <div className="muted">
+              Balance stored: {reconReport.storedBalance.toFixed(2)}
+              {" → expected: "}
+              {reconReport.expectedBalance != null
+                ? reconReport.expectedBalance.toFixed(2)
+                : "— (not calculable)"}
+              {reconReport.balanceDifference != null && Math.abs(reconReport.balanceDifference) > 0.005
+                ? ` (Δ ${reconReport.balanceDifference >= 0 ? "+" : ""}${reconReport.balanceDifference.toFixed(2)})`
+                : ""}
+            </div>
+            <div className="muted">
+              Trades in window: {reconReport.balanceCalc.includedTradeCount}
+              {reconReport.balanceCalc.excludedTradeCount
+                ? ` · excluded: ${reconReport.balanceCalc.excludedTradeCount}`
+                : ""}
+              {" · baseline: "}
+              {reconReport.balanceCalc.baseline.toFixed(2)}
+            </div>
             {reconReport.phaseResults.map((pr) => (
               <div key={pr.phaseId} className="muted">
                 {pr.phaseName}: days {pr.tradingDays}/{pr.requiredTradingDays ?? "—"} · profit{" "}

@@ -312,3 +312,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - deriveLifecycleFromEvents ignores superseded events
 - Explicit UI: Preview / Apply reconciliation (no auto-rewrite on load)
 - accountId unchanged; Journal immutable; balance not auto-rewritten
+
+## v3.19.3 Prop balance & lifecycle consistency
+
+- Working equity = phase/funded **accountSize baseline** + PnL of trades in that window only
+- Phase 1 profit does not enter Phase 2 or FUNDED starting balance
+- On PHASE_PASSED / FUNDED, balance resets to next baseline
+- Reconciliation reports stored vs expected balance; apply only when fully calculable
+- Journal remains immutable; accountId unchanged
