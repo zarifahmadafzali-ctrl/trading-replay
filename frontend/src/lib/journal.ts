@@ -211,6 +211,35 @@ export function appendTrade(trade: JournalTrade): JournalTrade[] {
   return [normalizeJournalTrade(trade)];
 }
 
+
+/**
+ * Remove one historical Journal trade by id/tradeId.
+ * Does NOT reverse AccountProfile.balance or Prop lifecycle events
+ * (those are independent working state; use Prop reconciliation if needed).
+ * Analytics is derived from remaining Journal rows after delete.
+ */
+export async function deleteJournalTrade(
+  tradeIdOrId: string,
+  sessionId?: string | null
+): Promise<JournalTrade[]> {
+  const sid = sessionId !== undefined ? sessionId : getActiveSessionId();
+  const prev = await loadJournalForSession(sid);
+  const next = prev.filter(
+    (t) => t.id !== tradeIdOrId && t.tradeId !== tradeIdOrId
+  );
+  if (next.length === prev.length) {
+    auditJournalEvent("journal_delete_miss", { id: tradeIdOrId, sessionId: sid });
+    return prev;
+  }
+  await saveJournalForSession(sid, next);
+  auditJournalEvent("journal_deleted", {
+    id: tradeIdOrId,
+    sessionId: sid,
+    remaining: next.length,
+  });
+  return next;
+}
+
 export function clearJournal() {
   const sessionId = getActiveSessionId();
   void saveJournalForSession(sessionId, []);

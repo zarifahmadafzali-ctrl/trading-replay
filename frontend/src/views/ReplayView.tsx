@@ -161,6 +161,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const shapesUndoRef = useRef<Shape[][]>([]);
   const shapesRedoRef = useRef<Shape[][]>([]);
   const [goToValue, setGoToValue] = useState("");
+  /** When true, do not overwrite goToValue from cursor (desktop time edit). */
+  const [goToEditing, setGoToEditing] = useState(false);
   const [shapes, setShapes] = useState<Shape[]>(() => loadShapesFor(saved?.symbol ?? SYMBOLS[0]));
   const shapesRefForUndo = useRef(shapes);
   shapesRefForUndo.current = shapes;
@@ -413,9 +415,11 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   }, [playing, speed, baseBars.length, replayStepSeconds]);
 
   useEffect(() => {
+    if (goToEditing) return; // preserve user datetime edits on desktop
     const b = baseBars[Math.max(0, cursor - 1)];
     if (b) setGoToValue(toLocalInputValue(b.time));
-  }, [cursor, baseBars]);
+  }, [cursor, baseBars, goToEditing]);
+
 
   // close panels on outside tap
   // v3.15.2.2: pointerdown (not mousedown) unifies mouse/touch/pen into one
@@ -519,6 +523,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   function handleGoTo() {
     if (!goToValue || !baseBars.length) return;
     setPlaying(false);
+    setGoToEditing(false);
     const target = Math.floor(new Date(goToValue).getTime() / 1000);
     if (!Number.isFinite(target)) return;
     let lo = 0;
@@ -1413,9 +1418,36 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         <button type="button" onClick={() => jumpSession("ny")}>NY</button>
         <label className="goto-label">
           Go To
-          <input type="datetime-local" step="1" value={goToValue} onChange={(e) => setGoToValue(e.target.value)} />
+          <input
+            type="datetime-local"
+            step="1"
+            value={goToValue}
+            onFocus={() => setGoToEditing(true)}
+            onChange={(e) => {
+              setGoToEditing(true);
+              setGoToValue(e.target.value);
+            }}
+            onBlur={() => {
+              /* keep goToEditing until Jump so cursor ticks do not wipe time edits */
+            }}
+          />
         </label>
-        <button type="button" className="on" onClick={handleGoTo}>Jump</button>
+        <button
+          type="button"
+          className="on"
+          onClick={handleGoTo}
+        >
+          Jump
+        </button>
+        {goToEditing && (
+          <button type="button" className="btn-ghost" onClick={() => {
+            setGoToEditing(false);
+            const b = baseBars[Math.max(0, cursor - 1)];
+            if (b) setGoToValue(toLocalInputValue(b.time));
+          }}>
+            Reset
+          </button>
+        )}
         <label className="import-btn">CSV<input type="file" accept=".csv,.txt" onChange={(e) => e.target.files?.[0] && handleImport(e.target.files[0])} /></label>
       </div>
 

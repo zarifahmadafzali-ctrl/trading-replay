@@ -347,3 +347,9 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Deleting the last Session no longer leaves Replay stuck on "Restoring previous session…"
 - Market data remains global: Load 1s / Data Engine work with zero Sessions
 - sessionReady=true and loading=false when activeSessionId is null
+
+## v3.20.3 Journal UX + Jump To + screenshots
+
+- Desktop Jump To: time edits no longer overwritten by cursor ticks
+- Journal: delete trade with confirmation (row only; balance/lifecycle not auto-reversed)
+- Close screenshots fit price scale to show ENTRY + SL + TP

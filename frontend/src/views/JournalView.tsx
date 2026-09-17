@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   loadJournalForSession,
+  deleteJournalTrade,
   resolveCurrencyPnL,
   type JournalTrade,
   type CloseReason,
@@ -71,6 +72,21 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
     setTrades(rows);
     setSessions(sess);
   }, []);
+
+  async function handleDeleteTrade(trade: JournalTrade) {
+    const label = `${trade.side.toUpperCase()} ${trade.symbol} · ${(trade.reason || "?").toUpperCase()} · R ${trade.rMultiple ?? "—"}`;
+    if (
+      !window.confirm(
+        `Delete this Journal trade?\n\n${label}\n\nThis removes the historical record only.\nAccount balance and Prop lifecycle events are NOT automatically reversed.\nAnalytics will recalculate from remaining trades.`
+      )
+    ) {
+      return;
+    }
+    const sid = trade.sessionId || sessionId || getActiveSessionId();
+    await deleteJournalTrade(trade.tradeId || trade.id, sid);
+    setSelected(null);
+    await reload();
+  }
 
   useEffect(() => {
     void reload();
@@ -421,6 +437,19 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
                 />
               </section>
             )}
+
+            <section className="journal-delete-section">
+              <button
+                type="button"
+                className="journal-delete-btn"
+                onClick={() => void handleDeleteTrade(selected)}
+              >
+                Delete trade
+              </button>
+              <p className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+                Removes this Journal row only. Does not reverse account balance or Prop lifecycle events.
+              </p>
+            </section>
           </aside>
         </div>
       )}

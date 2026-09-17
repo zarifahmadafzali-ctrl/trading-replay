@@ -1327,3 +1327,26 @@ footer {
     width: 100%;
   }
 }
+
+/* v3.20.3 Journal delete */
+.journal-delete-section {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #1e293b;
+}
+.journal-delete-btn {
+  background: #7f1d1d;
+  color: #fecaca;
+  border: 1px solid #991b1b;
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  width: 100%;
+}
+.journal-delete-btn:hover {
+  background: #991b1b;
+}
+.goto-label input[type="datetime-local"] {
+  min-width: 11.5rem;
+  color-scheme: dark;
+}

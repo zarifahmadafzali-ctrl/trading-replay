@@ -1797,9 +1797,41 @@ export function Chart({
         const pnlPoints = long ? exitPrice - s.entry.price : s.entry.price - exitPrice;
         let screenshot: string | undefined;
         try {
-          const shot = handlesRef.current?.chart?.takeScreenshot?.();
-          if (shot && typeof (shot as HTMLCanvasElement).toDataURL === "function") {
-            screenshot = (shot as HTMLCanvasElement).toDataURL("image/png");
+          const handles = handlesRef.current;
+          if (handles?.chart && handles.candles) {
+            // Fit price scale so ENTRY, SL, and TP are all visible (not just exit)
+            const prices = [s.entry.price, s.stop.price, s.takeProfit.price, exitPrice].filter(
+              (x) => Number.isFinite(x)
+            );
+            const minP = Math.min(...prices);
+            const maxP = Math.max(...prices);
+            const span = maxP - minP || Math.max(Math.abs(maxP) * 0.002, 1);
+            const pad = span * 0.25;
+            const ps = handles.candles.priceScale();
+            let prevRange: { from: number; to: number } | null = null;
+            try {
+              prevRange = (ps as { getVisibleRange?: () => { from: number; to: number } | null }).getVisibleRange?.() ?? null;
+              (ps as { applyOptions?: (o: object) => void }).applyOptions?.({ autoScale: false });
+              (ps as { setVisibleRange?: (r: { from: number; to: number }) => void }).setVisibleRange?.({
+                from: minP - pad,
+                to: maxP + pad,
+              });
+            } catch {
+              /* scale optional */
+            }
+            const shot = handles.chart.takeScreenshot?.();
+            if (shot && typeof (shot as HTMLCanvasElement).toDataURL === "function") {
+              screenshot = (shot as HTMLCanvasElement).toDataURL("image/png");
+            }
+            try {
+              if (prevRange) {
+                (ps as { setVisibleRange?: (r: { from: number; to: number }) => void }).setVisibleRange?.(prevRange);
+              } else {
+                (ps as { applyOptions?: (o: object) => void }).applyOptions?.({ autoScale: true });
+              }
+            } catch {
+              /* */
+            }
           }
         } catch {
           /* screenshot optional */

@@ -1,6 +1,6 @@
 {
   "name": "trading-replay-pwa",
-  "version": "3.20.2",
+  "version": "3.20.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -23,7 +23,8 @@
     "test:prop-full": "node scripts/test-prop-full-lifecycle.mjs",
     "test:backup": "node scripts/test-backup-format.mjs",
     "test:backup-journal": "node scripts/test-backup-journal-restore.mjs",
-    "test:no-session": "node scripts/test-no-session-data-ready.mjs"
+    "test:no-session": "node scripts/test-no-session-data-ready.mjs",
+    "test:journal-delete": "node scripts/test-journal-delete.mjs"
   },
   "dependencies": {
     "react": "18.3.1",
