@@ -320,3 +320,8 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - On PHASE_PASSED / FUNDED, balance resets to next baseline
 - Reconciliation reports stored vs expected balance; apply only when fully calculable
 - Journal remains immutable; accountId unchanged
+
+## v3.19.4 Full Prop lifecycle audit
+
+- Added `test-prop-full-lifecycle.mjs` covering Phase1→2→FUNDED→payout→cooldown, daily/max loss, min days, consistency, legacy reconciliation, multi-account isolation, and backward/forward replay determinism
+- No product-logic bugs requiring code changes; audit confirmed v3.19.3 balance/lifecycle model
