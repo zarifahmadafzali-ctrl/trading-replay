@@ -284,6 +284,12 @@ export function Chart({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
   const handlesRef = useRef<ChartHandles | null>(null);
+  /** Track last setData fingerprint for incremental candle updates (v3.23.0). */
+  const chartDataMetaRef = useRef<{ len: number; firstTime: number; lastTime: number }>({
+    len: 0,
+    firstTime: 0,
+    lastTime: 0,
+  });
   const indicatorSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
   const shapesRef = useRef(shapes);
   const barsRef = useRef(bars);
@@ -1597,20 +1603,61 @@ export function Chart({
   useEffect(() => {
     const handles = handlesRef.current;
     if (!handles) return;
-    const visible = bars.slice(0, cursor).map((b) => ({
-      ...b,
-      time: b.time as UTCTimestamp,
-    }));
-    handles.candles.setData(visible);
-    handles.volume.setData(
-      visible.map((b) => ({
-        time: b.time,
-        value: b.volume ?? 0,
-        color: b.close >= b.open ? "rgba(38,166,154,0.45)" : "rgba(239,83,80,0.45)",
-      }))
-    );
+    // ReplayView already passes windowed/aggregated bars; cursor is typically bars.length.
+    const end = Math.min(bars.length, Math.max(0, cursor));
+    const visible = bars.slice(0, end);
+    const meta = chartDataMetaRef.current;
+    const firstTime = visible[0]?.time ?? 0;
+    const last = visible[visible.length - 1];
+    const lastTime = last?.time ?? 0;
+    const canIncremental =
+      meta.len > 0 &&
+      visible.length >= meta.len &&
+      visible.length <= meta.len + 2 &&
+      firstTime === meta.firstTime &&
+      last != null;
+
+    if (canIncremental) {
+      // Forming candle or +1/+2 new candles: update() instead of full setData.
+      for (let i = Math.max(0, meta.len - 1); i < visible.length; i++) {
+        const b = visible[i];
+        handles.candles.update({
+          time: b.time as UTCTimestamp,
+          open: b.open,
+          high: b.high,
+          low: b.low,
+          close: b.close,
+        });
+        handles.volume.update({
+          time: b.time as UTCTimestamp,
+          value: b.volume ?? 0,
+          color: b.close >= b.open ? "rgba(38,166,154,0.45)" : "rgba(239,83,80,0.45)",
+        });
+      }
+    } else {
+      handles.candles.setData(
+        visible.map((b) => ({
+          time: b.time as UTCTimestamp,
+          open: b.open,
+          high: b.high,
+          low: b.low,
+          close: b.close,
+        }))
+      );
+      handles.volume.setData(
+        visible.map((b) => ({
+          time: b.time as UTCTimestamp,
+          value: b.volume ?? 0,
+          color: b.close >= b.open ? "rgba(38,166,154,0.45)" : "rgba(239,83,80,0.45)",
+        }))
+      );
+    }
+    chartDataMetaRef.current = {
+      len: visible.length,
+      firstTime,
+      lastTime,
+    };
     // Do NOT glue candles to the right every tick (TradingView-like free pan).
-    // Only follow when user enables Follow mode.
     if (visible.length && followRef.current) {
       handles.chart.timeScale().scrollToRealTime();
     }

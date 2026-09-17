@@ -208,6 +208,10 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const ordersPanelRef = useRef<HTMLDivElement | null>(null);
   const indPanelRef = useRef<HTMLDivElement | null>(null);
   const sessionIdRef = useRef<string | null>(getActiveSessionId());
+  /** Stale async Load 1s / cache reads must not overwrite newer requests (v3.23.0). */
+  const loadGenRef = useRef(0);
+  const playLenRef = useRef(0);
+  const playStepRef = useRef(1);
   const loadedSessionRef = useRef<string | null>(null);
   const [sessionLabel, setSessionLabel] = useState<string>("");
 
@@ -399,20 +403,26 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     activeIndicatorIds,
   ]);
 
+  // Keep playback loop deps minimal: length/step read from refs so
+  // dataset growth or step changes do not thrash setInterval (v3.23.0).
+  playLenRef.current = baseBars.length;
+  playStepRef.current = Math.max(1, replayStepSeconds);
+
   useEffect(() => {
     if (!playing) return;
-    const step = Math.max(1, replayStepSeconds);
     const id = window.setInterval(() => {
+      const len = playLenRef.current;
+      const step = playStepRef.current;
       setCursor((c) => {
-        if (c >= baseBars.length) {
+        if (c >= len) {
           setPlaying(false);
           return c;
         }
-        return Math.min(baseBars.length, c + step);
+        return Math.min(len, c + step);
       });
     }, Math.max(15, 250 / speed));
     return () => window.clearInterval(id);
-  }, [playing, speed, baseBars.length, replayStepSeconds]);
+  }, [playing, speed]);
 
   useEffect(() => {
     if (goToEditing) return; // preserve user datetime edits on desktop
@@ -454,10 +464,12 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   });
 
   async function loadRange() {
+    const gen = ++loadGenRef.current;
     setLoading(true);
     setPlaying(false);
     try {
       const local = await cacheGetRange(symbol, start, end);
+      if (gen !== loadGenRef.current) return;
       if (local.missingDays.length === 0 && local.bars.length) {
         setBaseBars(local.bars);
         setCursor(Math.min(800, local.bars.length));
@@ -473,6 +485,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         );
       }
       if (!backendOnline) {
+        if (gen !== loadGenRef.current) return;
         if (local.bars.length) {
           setBaseBars(local.bars);
           setCursor(Math.min(800, local.bars.length));
@@ -482,6 +495,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         return;
       }
       const res = await fetchBars(symbol, 1, start, end);
+      if (gen !== loadGenRef.current) return;
       if (!res.bars.length && !local.bars.length) {
         setMessage(`No data · Sync in Data Engine first`);
         return;
@@ -490,15 +504,18 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       for (const b of local.bars) byT.set(b.time, b);
       for (const b of res.bars) byT.set(b.time, b);
       const merged = Array.from(byT.values()).sort((a, b) => a.time - b.time);
+      if (gen !== loadGenRef.current) return;
       setBaseBars(merged);
       setCursor(Math.min(800, merged.length));
       setDataSource("loaded");
       const daysSaved = await cachePutBars(symbol, merged);
+      if (gen !== loadGenRef.current) return;
       setMessage(`Loaded ${merged.length.toLocaleString()} · saved ${daysSaved} day(s) on device`);
     } catch (e) {
+      if (gen !== loadGenRef.current) return;
       setMessage(e instanceof Error ? e.message : "Load failed");
     } finally {
-      setLoading(false);
+      if (gen === loadGenRef.current) setLoading(false);
     }
   }
 

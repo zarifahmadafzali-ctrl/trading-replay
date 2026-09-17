@@ -22,8 +22,12 @@ export function aggregateBars(rows: Bar[], seconds: number): Bar[] {
 export function aggregateVisible(rows: Bar[], cursorSeconds: number, timeframeSeconds: number): Bar[] {
   // Keep the chart light even when the replay dataset spans months. The
   // replay cursor still advances through every stored second; only the
-  // rendered history is windowed.
+  // rendered history is windowed (v3.23.0: fast path for 1s display).
+  if (cursorSeconds <= 0 || !rows.length) return [];
   const maxCandles = 1200;
-  const start = Math.max(0, cursorSeconds - Math.max(1, timeframeSeconds) * maxCandles);
-  return aggregateBars(rows.slice(start, cursorSeconds), timeframeSeconds);
+  const tf = Math.max(1, timeframeSeconds);
+  const start = Math.max(0, cursorSeconds - tf * maxCandles);
+  const slice = rows.slice(start, cursorSeconds);
+  if (tf <= 1) return slice;
+  return aggregateBars(slice, tf);
 }

@@ -367,3 +367,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Cache-first complete-day skip preserved
 - Concurrent day-fetch deduplication
 - Data Engine management panel
+
+## v3.23.0 Replay performance & UX
+
+- Playback interval uses refs (less restart thrash)
+- Load 1s race guard (stale async discarded)
+- Chart incremental candle update during play
+- 1s display path skips full aggregation
+- Trading/execution semantics unchanged

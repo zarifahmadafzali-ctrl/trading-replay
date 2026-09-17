@@ -1,6 +1,6 @@
 {
   "name": "trading-replay-pwa",
-  "version": "3.22.0",
+  "version": "3.23.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -26,7 +26,8 @@
     "test:no-session": "node scripts/test-no-session-data-ready.mjs",
     "test:journal-delete": "node scripts/test-journal-delete.mjs",
     "test:storage": "node scripts/test-storage-architecture.mjs",
-    "test:market-data": "node scripts/test-market-data-mgmt.mjs"
+    "test:market-data": "node scripts/test-market-data-mgmt.mjs",
+    "test:replay-perf": "node scripts/test-replay-perf.mjs"
   },
   "dependencies": {
     "react": "18.3.1",
