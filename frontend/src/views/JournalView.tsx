@@ -3,6 +3,8 @@ import {
   loadJournalForSession,
   deleteJournalTrade,
   resolveCurrencyPnL,
+  downloadJournalCsv,
+  JOURNAL_CHANGED_EVENT,
   type JournalTrade,
   type CloseReason,
 } from "../lib/journal";
@@ -92,7 +94,11 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
     void reload();
     const onChange = () => void reload();
     window.addEventListener(SESSION_CHANGED_EVENT, onChange);
-    return () => window.removeEventListener(SESSION_CHANGED_EVENT, onChange);
+    window.addEventListener(JOURNAL_CHANGED_EVENT, onChange);
+    return () => {
+      window.removeEventListener(SESSION_CHANGED_EVENT, onChange);
+      window.removeEventListener(JOURNAL_CHANGED_EVENT, onChange);
+    };
   }, [reload]);
 
   const accounts = useMemo(() => {
@@ -243,6 +249,10 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
             ))}
           </select>
         </label>
+        <button type="button" onClick={() => downloadJournalCsv(filtered, "journal-export.csv")}>
+          Export CSV
+        </button>
+
       </div>
 
       {/* Desktop table */}

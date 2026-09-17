@@ -66,6 +66,16 @@ export type JournalTrade = {
 const LEGACY_KEY = "tr-trade-journal-v1";
 const JOURNAL_AUDIT_KEY = "tr-journal-audit-v1";
 
+/** Fired after journal mutate so Analytics/Journal can reload (v3.24.0). */
+export const JOURNAL_CHANGED_EVENT = "tr-journal-changed";
+
+export function emitJournalChanged(sessionId?: string | null): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent(JOURNAL_CHANGED_EVENT, { detail: { sessionId: sessionId ?? null } })
+  );
+}
+
 /** Lightweight audit trail (dev / diagnostics). Caps size. */
 export function auditJournalEvent(event: string, detail?: Record<string, unknown>) {
   try {
@@ -169,12 +179,14 @@ export async function saveJournalForSession(sessionId: string | null, trades: Jo
   if (!sessionId) {
     try {
       localStorage.setItem(LEGACY_KEY, JSON.stringify(trades.slice(0, 500)));
+      emitJournalChanged(null);
     } catch {
       /* */
     }
     return;
   }
   await getSessionStorageAdapter().putTrades(sessionId, trades);
+  emitJournalChanged(sessionId);
 }
 
 /**
@@ -283,4 +295,84 @@ export function resolveCurrencyPnL(t: JournalTrade): number | null {
     return t.rMultiple * t.actualRiskAmount;
   }
   return null;
+}
+
+
+/** CSV export of canonical Journal rows (no market data). */
+export function exportJournalCsv(trades: JournalTrade[]): string {
+  const headers = [
+    "id",
+    "tradeId",
+    "sessionId",
+    "accountId",
+    "symbol",
+    "side",
+    "orderType",
+    "entryTime",
+    "entryPrice",
+    "exitTime",
+    "exitPrice",
+    "reason",
+    "stopLoss",
+    "takeProfit",
+    "pnlPoints",
+    "currencyPnL",
+    "rMultiple",
+    "riskPercent",
+    "actualRiskAmount",
+    "finalLot",
+    "durationSeconds",
+    "balanceBefore",
+    "balanceAfter",
+  ];
+  const esc = (v: unknown) => {
+    if (v == null) return "";
+    const s = String(v);
+    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const lines = [headers.join(",")];
+  for (const t of trades) {
+    lines.push(
+      [
+        t.id,
+        t.tradeId || t.id,
+        t.sessionId || "",
+        t.accountId || "",
+        t.symbol,
+        t.side,
+        t.orderType,
+        t.entryTime,
+        t.entryPrice,
+        t.exitTime,
+        t.exitPrice,
+        t.reason,
+        t.stopPrice,
+        t.takeProfitPrice,
+        t.pnlPoints,
+        t.currencyPnL ?? "",
+        t.rMultiple ?? "",
+        t.riskPercent ?? "",
+        t.actualRiskAmount ?? t.riskAmount ?? "",
+        t.finalLot ?? "",
+        t.durationSeconds ?? "",
+        t.balanceBefore ?? "",
+        t.balanceAfter ?? "",
+      ]
+        .map(esc)
+        .join(",")
+    );
+  }
+  return lines.join("\n");
+}
+
+export function downloadJournalCsv(trades: JournalTrade[], filename = "journal-export.csv"): void {
+  const csv = exportJournalCsv(trades);
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }

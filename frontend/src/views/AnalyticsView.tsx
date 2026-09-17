@@ -16,7 +16,12 @@ import {
   timeAnalysis,
   type AnalyticsFilters,
 } from "../lib/analytics";
-import { loadJournalForSession, type JournalTrade } from "../lib/journal";
+import {
+  loadJournalForSession,
+  JOURNAL_CHANGED_EVENT,
+  downloadJournalCsv,
+  type JournalTrade,
+} from "../lib/journal";
 import {
   ensureSessionAccounts,
   getActiveSessionId,
@@ -150,6 +155,10 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
   const [sessionFilter, setSessionFilter] = useState<string>("active");
   const [accountFilter, setAccountFilter] = useState<string>("all");
   const [symbolFilter, setSymbolFilter] = useState<string>("all");
+  const [sideFilter, setSideFilter] = useState<"all" | "long" | "short">("all");
+  const [orderFilter, setOrderFilter] = useState("all");
+  const [reasonFilter, setReasonFilter] = useState("all");
+  const [resultFilter, setResultFilter] = useState<"all" | "win" | "loss" | "breakeven">("all");
   const [rangePreset, setRangePreset] = useState<"all" | "today" | "week" | "month" | "custom">(
     "all"
   );
@@ -199,6 +208,34 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
     };
   }, [sessionFilter]);
 
+  // v3.24.0: refresh when Journal mutates (delete/append) without changing session filter
+  useEffect(() => {
+    const onJournal = () => setSessionFilter((s) => s); // force? better reload trades
+    // Soft bump: re-run load by toggling a nonce
+    const handler = () => {
+      setSessionFilter((prev) => prev); // no-op state
+      // explicit reload
+      void (async () => {
+        const sess = await listSessions();
+        setSessions(sess);
+        const active = getActiveSessionId();
+        let all: JournalTrade[] = [];
+        if (sessionFilter === "all") {
+          for (const s of sess) {
+            all = all.concat(await loadJournalForSession(s.id));
+          }
+          all = all.concat(await loadJournalForSession(null));
+        } else {
+          const sid = sessionFilter === "active" ? active : sessionFilter;
+          all = await loadJournalForSession(sid);
+        }
+        setTrades(all);
+      })();
+    };
+    window.addEventListener(JOURNAL_CHANGED_EVENT, handler);
+    return () => window.removeEventListener(JOURNAL_CHANGED_EVENT, handler);
+  }, [sessionFilter]);
+
   const symbols = useMemo(() => {
     const ids = new Set<string>();
     for (const t of trades) if (t.symbol) ids.add(t.symbol);
@@ -227,8 +264,12 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
       symbol: symbolFilter,
       fromTime: timeBounds.from,
       toTime: timeBounds.to,
+      side: sideFilter,
+      orderType: orderFilter,
+      reason: reasonFilter,
+      result: resultFilter,
     }),
-    [sessionFilter, accountFilter, symbolFilter, timeBounds]
+    [sessionFilter, accountFilter, symbolFilter, timeBounds, sideFilter, orderFilter, reasonFilter, resultFilter]
   );
 
   const filtered = useMemo(() => filterTrades(trades, filters), [trades, filters]);
@@ -359,6 +400,38 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
           </select>
         </label>
         <label>
+          Side
+          <select value={sideFilter} onChange={(e) => setSideFilter(e.target.value as "all" | "long" | "short")}>
+            <option value="all">All</option>
+            <option value="long">Long</option>
+            <option value="short">Short</option>
+          </select>
+        </label>
+        <label>
+          Result
+          <select
+            value={resultFilter}
+            onChange={(e) => setResultFilter(e.target.value as "all" | "win" | "loss" | "breakeven")}
+          >
+            <option value="all">All</option>
+            <option value="win">Win</option>
+            <option value="loss">Loss</option>
+            <option value="breakeven">Breakeven</option>
+          </select>
+        </label>
+        <label>
+          Exit
+          <select value={reasonFilter} onChange={(e) => setReasonFilter(e.target.value)}>
+            <option value="all">All</option>
+            <option value="sl">SL</option>
+            <option value="tp">TP</option>
+            <option value="manual">Manual</option>
+          </select>
+        </label>
+        <button type="button" onClick={() => downloadJournalCsv(filtered, "analytics-trades.csv")}>
+          Export CSV
+        </button>
+        <label>
           Range
           <select
             value={rangePreset}
@@ -436,6 +509,8 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
             <Card label="Min R" value={formatNum(summary.minR)} />
             <Card label="Avg win R" value={formatNum(summary.avgWinR)} />
             <Card label="Avg loss R" value={formatNum(summary.avgLossR)} />
+            <Card label="Avg win $" value={formatNum(summary.avgWinCurrency)} tone="pos" />
+            <Card label="Avg loss $" value={formatNum(summary.avgLossCurrency)} tone="neg" />
             <Card label="Win streak max" value={String(summary.maxWinStreak)} />
             <Card label="Loss streak max" value={String(summary.maxLossStreak)} />
           </div>

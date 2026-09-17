@@ -12,6 +12,12 @@ export type AnalyticsFilters = {
   /** inclusive unix seconds or ms — normalized internally */
   fromTime?: number | null;
   toTime?: number | null;
+  /** v3.24.0 — same dimensions as Journal list filters */
+  side?: "long" | "short" | "all" | null;
+  orderType?: string | "all" | null;
+  reason?: string | "all" | null;
+  /** win | loss | breakeven based on tradeOutcome */
+  result?: "win" | "loss" | "breakeven" | "all" | null;
 };
 
 export type EquityPoint = {
@@ -56,6 +62,9 @@ export type AnalyticsSummary = {
   medianDurationSec: number | null;
   minDurationSec: number | null;
   maxDurationSec: number | null;
+  /** v3.24.0 currency averages (null when no samples) */
+  avgWinCurrency: number | null;
+  avgLossCurrency: number | null;
 };
 
 export type BreakdownRow = {
@@ -118,6 +127,18 @@ export function filterTrades(
     const xt = toSec(t.exitTime);
     if (filters.fromTime != null && xt < toSec(filters.fromTime)) return false;
     if (filters.toTime != null && xt > toSec(filters.toTime)) return false;
+    if (filters.side && filters.side !== "all") {
+      if (t.side !== filters.side) return false;
+    }
+    if (filters.orderType && filters.orderType !== "all") {
+      if ((t.orderType || "") !== filters.orderType) return false;
+    }
+    if (filters.reason && filters.reason !== "all") {
+      if ((t.reason || "") !== filters.reason) return false;
+    }
+    if (filters.result && filters.result !== "all") {
+      if (tradeOutcome(t) !== filters.result) return false;
+    }
     return true;
   });
 }
@@ -313,10 +334,26 @@ export function computeSummary(
   const avgLossR = lossRs.length ? lossRs.reduce((a, b) => a + b, 0) / lossRs.length : null;
   const winRate = total > 0 ? wins / total : null;
   const lossRate = total > 0 ? losses / total : null;
+  // R expectancy only when at least one trade has finite R (do not invent 0R).
   const expectancyR =
-    winRate != null && lossRate != null
+    rs.length > 0 && winRate != null && lossRate != null
       ? (winRate * (avgWinR ?? 0)) + (lossRate * (avgLossR ?? 0))
       : null;
+
+  const winPnls: number[] = [];
+  const lossPnls: number[] = [];
+  for (const t of sorted) {
+    const o = tradeOutcome(t);
+    const pnl = tradePnLCurrency(t);
+    if (o === "win") winPnls.push(pnl);
+    else if (o === "loss") lossPnls.push(pnl);
+  }
+  const avgWinCurrency = winPnls.length
+    ? winPnls.reduce((a, b) => a + b, 0) / winPnls.length
+    : null;
+  const avgLossCurrency = lossPnls.length
+    ? lossPnls.reduce((a, b) => a + b, 0) / lossPnls.length
+    : null;
 
   const curve = buildEquityCurve(sorted, startingBalance);
   const ending = curve.length ? curve[curve.length - 1].equity : startingBalance;
@@ -367,6 +404,8 @@ export function computeSummary(
     medianDurationSec: median(durs),
     minDurationSec: durs.length ? Math.min(...durs) : null,
     maxDurationSec: durs.length ? Math.max(...durs) : null,
+    avgWinCurrency,
+    avgLossCurrency,
   };
 }
 

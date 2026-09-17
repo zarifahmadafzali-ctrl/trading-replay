@@ -375,3 +375,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Chart incremental candle update during play
 - 1s display path skips full aggregation
 - Trading/execution semantics unchanged
+
+## v3.24.0 Professional Journal & Analytics hardening
+
+- Analytics filters: side / result / exit reason (shared filtered set)
+- Journal CSV export; Analytics CSV of filtered trades
+- JOURNAL_CHANGED event keeps Analytics in sync after delete
+- Avg win/loss $ KPIs; R expectancy requires real R samples
+- No balance/Prop mutation from Analytics

@@ -1,6 +1,6 @@
 {
   "name": "trading-replay-pwa",
-  "version": "3.23.0",
+  "version": "3.24.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -27,7 +27,8 @@
     "test:journal-delete": "node scripts/test-journal-delete.mjs",
     "test:storage": "node scripts/test-storage-architecture.mjs",
     "test:market-data": "node scripts/test-market-data-mgmt.mjs",
-    "test:replay-perf": "node scripts/test-replay-perf.mjs"
+    "test:replay-perf": "node scripts/test-replay-perf.mjs",
+    "test:journal-analytics": "node scripts/test-journal-analytics-v324.mjs"
   },
   "dependencies": {
     "react": "18.3.1",
