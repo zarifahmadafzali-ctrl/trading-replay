@@ -37,6 +37,8 @@ import {
 } from "../lib/propRules";
 import { normalizePayoutSchedule, type PayoutSchedule, type PayoutScheduleMode } from "../lib/payoutSchedule";
 import { PropAccountStatus } from "../components/PropAccountStatus";
+import { exportBackup, importBackup, downloadBackupJson, validateBackup } from "../lib/backup";
+import { APP_VERSION, BACKUP_FORMAT_VERSION, STORAGE_SCHEMA_VERSION } from "../lib/storageVersions";
 
 function isoDaysAgo(days: number) {
   const d = new Date();
@@ -433,6 +435,52 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
     }
   }
 
+
+  async function handleExportBackup() {
+    try {
+      setError(null);
+      const backup = await exportBackup();
+      downloadBackupJson(backup);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Export failed");
+    }
+  }
+
+  async function handleImportBackupFile(file: File) {
+    try {
+      setError(null);
+      const text = await file.text();
+      let raw: unknown;
+      try {
+        raw = JSON.parse(text);
+      } catch {
+        setError("Invalid JSON backup file");
+        return;
+      }
+      const v = validateBackup(raw);
+      if (!v.ok) {
+        setError("Backup validation failed: " + v.errors.join("; "));
+        return;
+      }
+      const mode = window.confirm(
+        "Merge import?\n\nOK = skip sessions that already exist (safe merge)\nCancel = overwrite matching session IDs"
+      )
+        ? "merge"
+        : "replace-matching-ids";
+      const result = await importBackup(raw, mode);
+      if (result.errors.length) {
+        setError("Import partial: " + result.errors.join("; "));
+      }
+      await refresh();
+      setError(
+        (result.errors.length ? "Import warnings. " : "") +
+          `Imported ${result.imported}, skipped ${result.skipped}. Market-data bars are never imported.`
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Import failed");
+    }
+  }
+
   return (
     <section className="session-view">
       <h2>Backtest Sessions</h2>
@@ -442,6 +490,29 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
         {backendOnline === false ? " Backend offline — sessions still work offline." : null}
       </p>
       {error && <p className="notice warn-text">{error}</p>}
+
+      <div className="session-backup-bar" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
+        <button type="button" onClick={() => void handleExportBackup()}>
+          Export backup
+        </button>
+        <label className="btn-ghost" style={{ cursor: "pointer", display: "inline-flex", alignItems: "center" }}>
+          Import backup
+          <input
+            type="file"
+            accept="application/json,.json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              if (f) void handleImportBackupFile(f);
+            }}
+          />
+        </label>
+        <span className="muted" style={{ fontSize: 11 }}>
+          App {APP_VERSION} · backup format v{BACKUP_FORMAT_VERSION} · storage schema v{STORAGE_SCHEMA_VERSION}
+          {" · "}market data not included in backup
+        </span>
+      </div>
 
       <div className="session-form">
         <div className="session-form-grid">

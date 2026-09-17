@@ -325,3 +325,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 
 - Added `test-prop-full-lifecycle.mjs` covering Phase1→2→FUNDED→payout→cooldown, daily/max loss, min days, consistency, legacy reconciliation, multi-account isolation, and backward/forward replay determinism
 - No product-logic bugs requiring code changes; audit confirmed v3.19.3 balance/lifecycle model
+
+## v3.20.0 Storage architecture & PWA-safe desktop readiness
+
+- Platform-neutral `SessionStorageAdapter` (PWA = IndexedDB; Desktop adapter **not** implemented)
+- Versioned backup export/import (sessions, accounts, journal, drawings, runtime) — **excludes** market-data bars
+- Explicit versions: APP / STORAGE_SCHEMA / BACKUP_FORMAT / MARKET_DATA_CACHE
+- PWA continues on IndexedDB; no Tauri/Electron/filesystem runtime
+- Future path: PWA ↔ Desktop via backup JSON, shared domain models only
