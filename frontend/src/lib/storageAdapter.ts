@@ -40,6 +40,8 @@ import {
   setActiveSessionId,
 } from "./sessionStore";
 import { STORAGE_SCHEMA_VERSION } from "./storageVersions";
+import { getAppPlatform } from "./platform";
+
 
 export type StoragePlatform = "web-indexeddb" | "desktop-sqlite-future";
 
@@ -89,8 +91,15 @@ export const indexedDbSessionAdapter: SessionStorageAdapter = {
   setActiveSessionId,
 };
 
-/** Default adapter for the running app (always IndexedDB until a Desktop build exists). */
+/**
+ * Default adapter for the running app.
+ * v3.32.0: both web and desktop shells still use IndexedDB via this adapter.
+ * Future: desktop may return a SQLite-backed SessionStorageAdapter implementing
+ * the same interface — callers must not assume IndexedDB APIs.
+ */
 export function getSessionStorageAdapter(): SessionStorageAdapter {
+  // Platform detection is centralized; storage backend switch is future work.
+  void getAppPlatform();
   return indexedDbSessionAdapter;
 }
 

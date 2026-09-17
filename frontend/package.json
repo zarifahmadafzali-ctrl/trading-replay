@@ -1,6 +1,6 @@
 {
   "name": "trading-replay-pwa",
-  "version": "3.30.0",
+  "version": "3.32.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -35,7 +35,10 @@
     "test:drawing": "node scripts/test-drawing-v327.mjs",
     "test:orders": "node scripts/test-orders-v328.mjs",
     "test:journal-v329": "node scripts/test-journal-analytics-v329.mjs",
-    "test:market-v330": "node scripts/test-market-data-v330.mjs"
+    "test:market-v330": "node scripts/test-market-data-v330.mjs",
+    "test:platform": "node scripts/test-platform-v332.mjs",
+    "tauri:dev": "echo \"Tauri CLI not bundled \u2014 install @tauri-apps/cli and see DESKTOP.md\"",
+    "tauri:build": "echo \"Windows EXE build requires Tauri + Rust toolchain \u2014 see DESKTOP.md\""
   },
   "dependencies": {
     "react": "18.3.1",

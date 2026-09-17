@@ -441,3 +441,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Diagnostics note for large working sets; no fabricated RAM/FPS numbers
 - Day cache, offline path, generation guards, status model preserved
 - No second market-data store; no Tauri/SQLite
+
+## v3.32.0 Desktop Foundation & Platform Abstraction
+
+- Central `platform.ts` (`web` | `desktop`)
+- `PlatformFileService` web fallback (download / file input)
+- `SessionStorageAdapter` remains canonical; still IndexedDB for all hosts
+- Tauri scaffold under `frontend/src-tauri/` (EXE build NOT part of npm run build)
+- See DESKTOP.md — no SQLite, no format bumps, PWA unchanged
