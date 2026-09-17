@@ -136,12 +136,16 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [start, setStart] = useState(() => saved?.start ?? isoDaysAgo(3));
   const [end, setEnd] = useState(() => saved?.end ?? isoDaysAgo(0));
   const [dataSource, setDataSource] = useState<ReplayDataSource>(() => saved?.dataSource ?? "demo");
-  const [message, setMessage] = useState(() =>
-    saved && saved.dataSource !== "demo"
-      ? "Restoring previous session…"
-      : (saved?.message ?? "Demo data · Sync then Load")
-  );
-  const [loading, setLoading] = useState(() => !!(saved && saved.dataSource !== "demo"));
+  // v3.20.2: do not enter "Restoring…" when there is no active session (market data is global).
+  const [message, setMessage] = useState(() => {
+    const hasActive = !!getActiveSessionId();
+    if (hasActive && saved && saved.dataSource !== "demo") return "Restoring previous session…";
+    return saved?.message ?? "Demo data · Sync then Load";
+  });
+  const [loading, setLoading] = useState(() => {
+    const hasActive = !!getActiveSessionId();
+    return !!(hasActive && saved && saved.dataSource !== "demo");
+  });
   const [drawTool, setDrawTool] = useState<DrawTool>(() => (saved?.drawTool as DrawTool) || "crosshair");
   const [magnetMode, setMagnetMode] = useState<MagnetMode>("off");
   const [drawMenuOpen, setDrawMenuOpen] = useState(false);
@@ -250,7 +254,19 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       if (!id) {
         id = await migrateLegacyToSessionIfNeeded();
       }
-      if (!id || cancelled) return;
+      // No active session: idle/ready. Market data (Load 1s / Data Engine) must remain usable.
+      if (!id || cancelled) {
+        if (cancelled) return;
+        sessionIdRef.current = null;
+        loadedSessionRef.current = null;
+        setSessionMeta(null);
+        setSessionLabel("");
+        setSessionReady(true);
+        setLoading(false);
+        setPlaying(false);
+        setMessage("No active session · Use Data Engine or Load 1s (market data is global)");
+        return;
+      }
       sessionIdRef.current = id;
       setActiveSessionId(id);
       const meta = await getSession(id);

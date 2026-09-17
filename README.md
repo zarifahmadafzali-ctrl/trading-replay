@@ -341,3 +341,9 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Stamps `sessionId` on every restored trade
 - Dispatches session-changed so Journal/Analytics reload
 - Regression: export → delete → import → journal + analytics
+
+## v3.20.2 No-session Data Engine readiness
+
+- Deleting the last Session no longer leaves Replay stuck on "Restoring previous session…"
+- Market data remains global: Load 1s / Data Engine work with zero Sessions
+- sessionReady=true and loading=false when activeSessionId is null
