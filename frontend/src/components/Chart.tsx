@@ -66,6 +66,10 @@ export type RectangleShape = {
   kind: "rectangle";
   a: ChartPoint;
   b: ChartPoint;
+  visible?: boolean;
+  color?: string;
+  lineWidth?: number;
+  lineStyle?: "solid" | "dashed" | "dotted";
 };
 
 export type MeasureShape = {
@@ -73,18 +77,30 @@ export type MeasureShape = {
   kind: "measure";
   a: ChartPoint;
   b: ChartPoint;
+  visible?: boolean;
+  color?: string;
+  lineWidth?: number;
+  lineStyle?: "solid" | "dashed" | "dotted";
 };
 
 export type HLineShape = {
   id: string;
   kind: "hline";
   price: number;
+  visible?: boolean;
+  color?: string;
+  lineWidth?: number;
+  lineStyle?: "solid" | "dashed" | "dotted";
 };
 
 export type VLineShape = {
   id: string;
   kind: "vline";
   time: number;
+  visible?: boolean;
+  color?: string;
+  lineWidth?: number;
+  lineStyle?: "solid" | "dashed" | "dotted";
 };
 
 export type FibShape = {
@@ -92,6 +108,10 @@ export type FibShape = {
   kind: "fib";
   a: ChartPoint;
   b: ChartPoint;
+  visible?: boolean;
+  color?: string;
+  lineWidth?: number;
+  lineStyle?: "solid" | "dashed" | "dotted";
 };
 
 export type PositionShape = {
@@ -141,7 +161,10 @@ export type Shape = TrendlineShape | RectangleShape | MeasureShape | HLineShape 
 
 type DragTarget = {
   id: string;
-  field: "stop" | "takeProfit" | "entry" | "stopTrigger" | "a" | "b" | "price" | "time";
+  field: "stop" | "takeProfit" | "entry" | "stopTrigger" | "a" | "b" | "price" | "time" | "body";
+  /** Logical anchor at drag start for body moves (time/price deltas). */
+  originPoint?: ChartPoint;
+  originShape?: Shape;
 };
 
 const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
@@ -167,6 +190,12 @@ function formatDuration(seconds: number): string {
   if (m) parts.push(`${m}m`);
   if (sec || parts.length === 0) parts.push(`${sec}s`);
   return parts.slice(0, 2).join(" ");
+}
+
+function dashForStyle(style?: "solid" | "dashed" | "dotted"): number[] {
+  if (style === "dashed") return [8, 6];
+  if (style === "dotted") return [2, 4];
+  return [];
 }
 
 function distToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
@@ -631,6 +660,8 @@ export function Chart({
     ctx.clearRect(0, 0, w, h);
 
     for (const s of shapesRef.current) {
+      if ("visible" in s && s.visible === false) continue;
+      ctx.setLineDash([]);
       if (s.kind === "trendline" || s.kind === "ray" || s.kind === "extended") {
         const A = toXY(s.a);
         const B = toXY(s.b);
@@ -638,6 +669,7 @@ export function Chart({
         const sel = selectedShapeIdRef?.current === s.id;
         ctx.strokeStyle = sel ? "#fbbf24" : (s.color || "#60a5fa");
         ctx.lineWidth = sel ? 2.5 : (s.lineWidth || 1.5);
+        ctx.setLineDash(dashForStyle(s.lineStyle));
         // Extend ray/extended beyond anchors in screen space
         let x0 = A.x, y0 = A.y, x1 = B.x, y1 = B.y;
         const dx = x1 - x0;
@@ -712,9 +744,9 @@ export function Chart({
         const yy = handlesRef.current!.candles.priceToCoordinate(s.price);
         if (yy == null) continue;
         const sel = selectedShapeIdRef?.current === s.id;
-        ctx.strokeStyle = sel ? "#fbbf24" : "#34d399";
-        ctx.lineWidth = sel ? 2.5 : 1.5;
-        ctx.setLineDash([2, 3]);
+        ctx.strokeStyle = sel ? "#fbbf24" : (s.color || "#34d399");
+        ctx.lineWidth = sel ? 2.5 : (s.lineWidth || 1.5);
+        ctx.setLineDash(s.lineStyle ? dashForStyle(s.lineStyle) : [2, 3]);
         ctx.beginPath();
         ctx.moveTo(0, yy);
         ctx.lineTo(w, yy);
@@ -1101,6 +1133,32 @@ export function Chart({
       }
     }
 
+    // Body drag for selected multi-point drawings (move entire object).
+    const selId = selectedShapeIdRef.current;
+    if (selId) {
+      for (const s of shapesRef.current) {
+        if (s.id !== selId) continue;
+        if (s.kind === "trendline" || s.kind === "ray" || s.kind === "extended" || s.kind === "rectangle" || s.kind === "measure" || s.kind === "fib") {
+          const A = toXY(s.a);
+          const B = toXY(s.b);
+          if (A && B && distToSegment(x, y, A.x, A.y, B.x, B.y) <= lineThreshold) {
+            const originPoint = fromXY(x, y) || { time: s.a.time, price: s.a.price };
+            return { id: s.id, field: "body", originPoint, originShape: JSON.parse(JSON.stringify(s)) as Shape };
+          }
+          if (s.kind === "rectangle" && A && B) {
+            const minX = Math.min(A.x, B.x) - lineThreshold;
+            const maxX = Math.max(A.x, B.x) + lineThreshold;
+            const minY = Math.min(A.y, B.y) - lineThreshold;
+            const maxY = Math.max(A.y, B.y) + lineThreshold;
+            if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
+              const originPoint = fromXY(x, y) || { time: s.a.time, price: s.a.price };
+              return { id: s.id, field: "body", originShape: JSON.parse(JSON.stringify(s)) as Shape, originPoint };
+            }
+          }
+        }
+      }
+    }
+
     // Positions: prefer the right-side handle box, else the full horizontal band.
     for (const s of shapesRef.current) {
       if (s.kind !== "position") continue;
@@ -1150,6 +1208,27 @@ export function Chart({
     if (!d || !handles) return;
     const { candles } = handles;
 
+    if (d.field === "body" && d.originShape && d.originPoint) {
+      const cur = fromXY(x, y);
+      if (!cur) return;
+      const dT = cur.time - d.originPoint.time;
+      const dP = cur.price - d.originPoint.price;
+      const o = d.originShape;
+      if (o.kind === "trendline" || o.kind === "ray" || o.kind === "extended" || o.kind === "rectangle" || o.kind === "measure" || o.kind === "fib") {
+        setShapes(
+          shapesRef.current.map((s) =>
+            s.id === d.id && (s.kind === "trendline" || s.kind === "ray" || s.kind === "extended" || s.kind === "rectangle" || s.kind === "measure" || s.kind === "fib")
+              ? ({
+                  ...s,
+                  a: { time: o.a.time + dT, price: o.a.price + dP },
+                  b: { time: o.b.time + dT, price: o.b.price + dP },
+                } as Shape)
+              : s
+          )
+        );
+      }
+      return;
+    }
     if (d.field === "a" || d.field === "b") {
       const newPoint = fromXY(x, y);
       if (!newPoint) return;

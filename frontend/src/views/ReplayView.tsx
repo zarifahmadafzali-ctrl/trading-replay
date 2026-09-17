@@ -1663,6 +1663,58 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         </div>
       )}
 
+      {selectedShapeId && (() => {
+        const sel = shapes.find((s) => s.id === selectedShapeId);
+        if (!sel || sel.kind === "position") return null;
+        const lw = "lineWidth" in sel && typeof sel.lineWidth === "number" ? sel.lineWidth : 1.5;
+        const ls = "lineStyle" in sel && sel.lineStyle ? sel.lineStyle : "solid";
+        const vis = !("visible" in sel && sel.visible === false);
+        const patch = (partial: Record<string, unknown>) => {
+          pushShapes(
+            shapes.map((s) => (s.id === selectedShapeId ? ({ ...s, ...partial } as typeof s) : s))
+          );
+        };
+        return (
+          <div className="draw-settings card">
+            <span className="draw-settings-label">Object · {sel.kind}</span>
+            <label>
+              Width
+              <select
+                value={String(lw)}
+                onChange={(e) => patch({ lineWidth: Number(e.target.value) })}
+              >
+                <option value="1">1</option>
+                <option value="1.5">1.5</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+              </select>
+            </label>
+            <label>
+              Style
+              <select
+                value={ls}
+                onChange={(e) => patch({ lineStyle: e.target.value as "solid" | "dashed" | "dotted" })}
+              >
+                <option value="solid">Solid</option>
+                <option value="dashed">Dashed</option>
+                <option value="dotted">Dotted</option>
+              </select>
+            </label>
+            <label className="draw-settings-check">
+              <input
+                type="checkbox"
+                checked={vis}
+                onChange={(e) => patch({ visible: e.target.checked })}
+              />
+              Visible
+            </label>
+            <button type="button" onClick={deleteSelectedShape}>
+              Delete
+            </button>
+          </div>
+        );
+      })()}
+
       <div className="chartbox">
         <Toolbar
           activeTool={drawTool}

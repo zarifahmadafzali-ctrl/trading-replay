@@ -411,3 +411,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Uses the browser Fullscreen API when available; graceful no-op when unsupported
 - Distinct from PWA `display: standalone` — both can coexist
 - No trading, data, storage, or execution behavior changes
+
+## v3.27.0 Professional Chart & Drawing Engine
+
+- Body-move for selected trend/ray/extended/rect/fib/measure
+- Object settings: width, style, visibility (+ Delete)
+- Style fields on H/V-line and multi-point drawings
+- Drawing-only undo/redo preserved; no order/Journal mutation

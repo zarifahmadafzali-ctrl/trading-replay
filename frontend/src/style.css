@@ -1530,3 +1530,24 @@ html:fullscreen body {
     white-space: nowrap;
   }
 }
+
+
+/* v3.27.0 drawing object settings */
+.draw-settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin: 4px 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.draw-settings-label { color: #94a3b8; font-weight: 600; }
+.draw-settings label { display: inline-flex; align-items: center; gap: 4px; }
+.draw-settings select {
+  background: #111827;
+  border: 1px solid #334155;
+  color: #e2e8f0;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
