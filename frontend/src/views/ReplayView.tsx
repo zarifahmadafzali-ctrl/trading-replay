@@ -473,6 +473,15 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     },
   });
 
+  useEffect(() => {
+    const onEv = (ev: Event) => {
+      const text = (ev as CustomEvent<{ text?: string }>).detail?.text;
+      if (text) pushWorkspaceEvent(text);
+    };
+    window.addEventListener("tr-workspace-event", onEv);
+    return () => window.removeEventListener("tr-workspace-event", onEv);
+  }, []);
+
   async function loadRange() {
     const gen = ++loadGenRef.current;
     setLoading(true);
@@ -706,11 +715,52 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   }
 
   function cancelPendingOrder(id: string) {
-    const next = shapes.filter((s) => !(s.kind === "position" && s.id === id && s.status === "pending"));
-    if (next.length === shapes.length) return;
+    const target = shapes.find((s) => s.kind === "position" && s.id === id && s.status === "pending");
+    if (!target || target.kind !== "position") return;
+    const next = shapes.filter((s) => s.id !== id);
     pushShapes(next);
-    pushWorkspaceEvent("Pending order cancelled");
+    pushWorkspaceEvent(
+      `Pending cancelled · ${(target.orderType || "").replace(/_/g, " ")} · ${target.side.toUpperCase()} @ ${target.entry.price.toFixed(2)}`
+    );
     setSelectedShapeId(null);
+  }
+
+  function modifyPendingPrice(id: string, field: "entry" | "stop" | "takeProfit" | "stopPrice" | "limitPrice", value: number) {
+    if (!Number.isFinite(value)) return;
+    pushShapes(
+      shapes.map((s) => {
+        if (s.kind !== "position" || s.id !== id || s.status !== "pending") return s;
+        if (field === "entry") {
+          const patch: typeof s = { ...s, entry: { ...s.entry, price: value } };
+          if (s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit") {
+            return { ...patch, limitPrice: value };
+          }
+          return patch;
+        }
+        if (field === "stop") return { ...s, stop: { ...s.stop, price: value } };
+        if (field === "takeProfit") return { ...s, takeProfit: { ...s.takeProfit, price: value } };
+        if (field === "stopPrice") return { ...s, stopPrice: value };
+        if (field === "limitPrice") return { ...s, limitPrice: value, entry: { ...s.entry, price: value } };
+        return s;
+      })
+    );
+    pushWorkspaceEvent(`Pending ${field} → ${value.toFixed(2)}`);
+  }
+
+  function modifyOpenLevel(id: string, field: "stop" | "takeProfit", value: number) {
+    if (!Number.isFinite(value)) return;
+    pushShapes(
+      shapes.map((s) => {
+        if (s.kind !== "position" || s.id !== id || s.status !== "open") return s;
+        if (field === "stop") return { ...s, stop: { ...s.stop, price: value } };
+        return { ...s, takeProfit: { ...s.takeProfit, price: value } };
+      })
+    );
+    pushWorkspaceEvent(`${field === "stop" ? "SL" : "TP"} → ${value.toFixed(2)}`);
+  }
+
+  function manualClosePosition(id: string) {
+    window.dispatchEvent(new CustomEvent("tr-manual-close", { detail: { id } }));
   }
 
   async function handlePositionClosed(closed: ClosedPosition) {
@@ -1607,21 +1657,53 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                       ? mid - s.entry.price
                       : s.entry.price - mid
                     : null;
+                const accName =
+                  sessionMeta && s.accountId
+                    ? ensureSessionAccounts(sessionMeta).accounts?.find((a) => a.accountId === s.accountId)?.name
+                    : null;
                 return (
-                  <button
-                    type="button"
-                    key={s.id}
-                    className={`book-row${selectedShapeId === s.id ? " on" : ""}`}
-                    onClick={() => setSelectedShapeId(s.id)}
-                  >
-                    <span className={s.side === "long" ? "up" : "down"}>{s.side.toUpperCase()}</span>
-                    <span>@ {s.entry.price.toFixed(2)}</span>
-                    <span>SL {s.stop.price.toFixed(2)}</span>
-                    <span>TP {s.takeProfit.price.toFixed(2)}</span>
-                    <span className={pts != null && pts >= 0 ? "up" : "down"}>
-                      {pts != null ? `${pts >= 0 ? "+" : ""}${pts.toFixed(1)} pts` : "—"}
-                    </span>
-                  </button>
+                  <div key={s.id} className={`book-card${selectedShapeId === s.id ? " on" : ""}`}>
+                    <button type="button" className="book-row-main" onClick={() => setSelectedShapeId(s.id)}>
+                      <span className={s.side === "long" ? "up" : "down"}>{s.side.toUpperCase()}</span>
+                      <span>{(s.orderType || "market").replace(/_/g, " ")}</span>
+                      <span>@ {s.entry.price.toFixed(2)}</span>
+                      <span className={pts != null && pts >= 0 ? "up" : "down"}>
+                        {pts != null ? `${pts >= 0 ? "+" : ""}${pts.toFixed(1)} pts` : "—"}
+                      </span>
+                      {accName ? <span className="muted">{accName}</span> : null}
+                    </button>
+                    <div className="book-edit-row">
+                      <label>
+                        SL
+                        <input
+                          type="number"
+                          step="any"
+                          defaultValue={s.stop.price}
+                          key={`sl-${s.id}-${s.stop.price}`}
+                          onBlur={(e) => {
+                            const v = Number(e.target.value);
+                            if (Number.isFinite(v) && v !== s.stop.price) modifyOpenLevel(s.id, "stop", v);
+                          }}
+                        />
+                      </label>
+                      <label>
+                        TP
+                        <input
+                          type="number"
+                          step="any"
+                          defaultValue={s.takeProfit.price}
+                          key={`tp-${s.id}-${s.takeProfit.price}`}
+                          onBlur={(e) => {
+                            const v = Number(e.target.value);
+                            if (Number.isFinite(v) && v !== s.takeProfit.price) modifyOpenLevel(s.id, "takeProfit", v);
+                          }}
+                        />
+                      </label>
+                      <button type="button" className="on" onClick={() => manualClosePosition(s.id)}>
+                        Close
+                      </button>
+                    </div>
+                  </div>
                 );
               })}
             </div>
@@ -1630,17 +1712,90 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
               {pendingOrders.length === 0 && <p className="hint">None</p>}
               {pendingOrders.map((s) => {
                 if (s.kind !== "position") return null;
+                const isSl = s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit";
                 return (
-                  <div key={s.id} className="book-row pending-row">
+                  <div key={s.id} className={`book-card pending-card${selectedShapeId === s.id ? " on" : ""}`}>
                     <button type="button" className="book-row-main" onClick={() => setSelectedShapeId(s.id)}>
                       <span>{(s.orderType || "").replace(/_/g, " ").toUpperCase()}</span>
-                      <span>@ {s.entry.price.toFixed(2)}</span>
-                      <span>SL {s.stop.price.toFixed(2)}</span>
-                      <span>TP {s.takeProfit.price.toFixed(2)}</span>
+                      <span className={s.side === "long" ? "up" : "down"}>{s.side.toUpperCase()}</span>
+                      <span className="muted">PENDING</span>
                     </button>
-                    <button type="button" className="btn-ghost" onClick={() => cancelPendingOrder(s.id)}>
-                      Cancel
-                    </button>
+                    <div className="book-edit-row">
+                      {isSl ? (
+                        <>
+                          <label>
+                            Stop
+                            <input
+                              type="number"
+                              step="any"
+                              defaultValue={s.stopPrice ?? ""}
+                              key={`stp-${s.id}-${s.stopPrice}`}
+                              onBlur={(e) => {
+                                const v = Number(e.target.value);
+                                if (Number.isFinite(v)) modifyPendingPrice(s.id, "stopPrice", v);
+                              }}
+                            />
+                          </label>
+                          <label>
+                            Limit
+                            <input
+                              type="number"
+                              step="any"
+                              defaultValue={s.limitPrice ?? s.entry.price}
+                              key={`lim-${s.id}-${s.limitPrice ?? s.entry.price}`}
+                              onBlur={(e) => {
+                                const v = Number(e.target.value);
+                                if (Number.isFinite(v)) modifyPendingPrice(s.id, "limitPrice", v);
+                              }}
+                            />
+                          </label>
+                        </>
+                      ) : (
+                        <label>
+                          Entry
+                          <input
+                            type="number"
+                            step="any"
+                            defaultValue={s.entry.price}
+                            key={`en-${s.id}-${s.entry.price}`}
+                            onBlur={(e) => {
+                              const v = Number(e.target.value);
+                              if (Number.isFinite(v) && v !== s.entry.price) modifyPendingPrice(s.id, "entry", v);
+                            }}
+                          />
+                        </label>
+                      )}
+                      <label>
+                        SL
+                        <input
+                          type="number"
+                          step="any"
+                          defaultValue={s.stop.price}
+                          key={`psl-${s.id}-${s.stop.price}`}
+                          onBlur={(e) => {
+                            const v = Number(e.target.value);
+                            if (Number.isFinite(v) && v !== s.stop.price) modifyPendingPrice(s.id, "stop", v);
+                          }}
+                        />
+                      </label>
+                      <label>
+                        TP
+                        <input
+                          type="number"
+                          step="any"
+                          defaultValue={s.takeProfit.price}
+                          key={`ptp-${s.id}-${s.takeProfit.price}`}
+                          onBlur={(e) => {
+                            const v = Number(e.target.value);
+                            if (Number.isFinite(v) && v !== s.takeProfit.price)
+                              modifyPendingPrice(s.id, "takeProfit", v);
+                          }}
+                        />
+                      </label>
+                      <button type="button" className="btn-ghost" onClick={() => cancelPendingOrder(s.id)}>
+                        Cancel
+                      </button>
+                    </div>
                   </div>
                 );
               })}

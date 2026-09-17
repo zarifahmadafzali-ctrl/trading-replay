@@ -150,7 +150,7 @@ export type ClosedPosition = {
   takeProfit: ChartPoint;
   exitPrice: number;
   exitTime: number;
-  reason: "sl" | "tp";
+  reason: "sl" | "tp" | "manual";
   pnlPoints: number;
   riskSnapshot?: Record<string, unknown>;
   /** PNG data URL captured only on SL/TP/manual close (v3.16.1). */
@@ -458,6 +458,7 @@ export function Chart({
 
   function confirmDrafts() {
     let n = 0;
+    const events: string[] = [];
     const next = shapesRef.current.map((s) => {
       if (s.kind === "position" && s.status === "draft") {
         n++;
@@ -467,6 +468,13 @@ export function Chart({
         const ownerId = s.accountId || activeAccountIdRef.current || undefined;
         const snap =
           nextStatus === "open" ? captureRiskSnapshotRef.current?.({ ...s, accountId: ownerId }) : null;
+        if (nextStatus === "open") {
+          events.push(`Filled · ${s.side.toUpperCase()} market @ ${s.entry.price.toFixed(2)}`);
+        } else {
+          events.push(
+            `Pending · ${(s.orderType || "").replace(/_/g, " ")} · ${s.side.toUpperCase()} @ ${s.entry.price.toFixed(2)}`
+          );
+        }
         return {
           ...s,
           status: nextStatus,
@@ -477,7 +485,49 @@ export function Chart({
       return s;
     });
     setShapes(next);
+    for (const text of events) {
+      window.dispatchEvent(new CustomEvent("tr-workspace-event", { detail: { text } }));
+    }
     setHint(n ? `Order confirmed (${n})` : "No draft to confirm");
+  }
+
+  /** Manual close at current replay market price — Journal via onPositionClosed. */
+  function manualCloseById(id: string) {
+    const s = shapesRef.current.find((x) => x.kind === "position" && x.id === id) as
+      | PositionShape
+      | undefined;
+    if (!s || s.status !== "open") return;
+    const exitPrice = marketRef.current.price;
+    const exitTime = marketRef.current.time;
+    if (exitPrice == null || exitTime == null) {
+      setHint("No market price for manual close");
+      return;
+    }
+    const pnlPoints =
+      s.side === "long" ? exitPrice - s.entry.price : s.entry.price - exitPrice;
+    const closed: ClosedPosition = {
+      id: s.id,
+      side: s.side,
+      orderType: s.orderType,
+      entry: s.entry,
+      stop: s.stop,
+      takeProfit: s.takeProfit,
+      exitPrice,
+      exitTime,
+      reason: "manual",
+      pnlPoints,
+      riskSnapshot: s.riskSnapshot,
+    };
+    setShapes(shapesRef.current.filter((x) => x.id !== id));
+    onPositionClosedRef.current?.(closed);
+    window.dispatchEvent(
+      new CustomEvent("tr-workspace-event", {
+        detail: {
+          text: `Manual close · ${s.side.toUpperCase()} @ ${exitPrice.toFixed(2)} · ${pnlPoints >= 0 ? "+" : ""}${pnlPoints.toFixed(1)} pts`,
+        },
+      })
+    );
+    setHint(`Manual close @ ${exitPrice.toFixed(2)}`);
   }
 
   function cancelDrafts() {
@@ -489,11 +539,17 @@ export function Chart({
   useEffect(() => {
     const onConfirm = () => confirmDrafts();
     const onCancel = () => cancelDrafts();
+    const onManual = (ev: Event) => {
+      const id = (ev as CustomEvent<{ id?: string }>).detail?.id;
+      if (id) manualCloseById(id);
+    };
     window.addEventListener("tr-confirm-position", onConfirm);
     window.addEventListener("tr-cancel-draft", onCancel);
+    window.addEventListener("tr-manual-close", onManual);
     return () => {
       window.removeEventListener("tr-confirm-position", onConfirm);
       window.removeEventListener("tr-cancel-draft", onCancel);
+      window.removeEventListener("tr-manual-close", onManual);
     };
   }, []);
 
@@ -1499,9 +1555,38 @@ export function Chart({
     };
 
     const endDrag = () => {
-      if (!dragRef.current) return;
+      const d = dragRef.current;
+      if (!d) return;
       dragRef.current = null;
       setChartInteraction(true);
+      const shape = shapesRef.current.find((s) => s.id === d.id);
+      if (shape && shape.kind === "position") {
+        if (d.field === "stop") {
+          window.dispatchEvent(
+            new CustomEvent("tr-workspace-event", {
+              detail: { text: `SL modified · ${shape.stop.price.toFixed(2)}` },
+            })
+          );
+        } else if (d.field === "takeProfit") {
+          window.dispatchEvent(
+            new CustomEvent("tr-workspace-event", {
+              detail: { text: `TP modified · ${shape.takeProfit.price.toFixed(2)}` },
+            })
+          );
+        } else if (d.field === "entry" && shape.status === "pending") {
+          window.dispatchEvent(
+            new CustomEvent("tr-workspace-event", {
+              detail: { text: `Pending entry modified · ${shape.entry.price.toFixed(2)}` },
+            })
+          );
+        } else if (d.field === "stopTrigger" && shape.stopPrice != null) {
+          window.dispatchEvent(
+            new CustomEvent("tr-workspace-event", {
+              detail: { text: `Stop trigger modified · ${shape.stopPrice.toFixed(2)}` },
+            })
+          );
+        }
+      }
       setHint("Updated · Confirm when ready");
       scheduleRedraw();
     };
@@ -1856,6 +1941,13 @@ export function Chart({
                 };
                 const snap = captureRiskSnapshotRef.current?.(filled);
                 nextWorking.push(snap ? { ...filled, riskSnapshot: snap } : filled);
+                window.dispatchEvent(
+                  new CustomEvent("tr-workspace-event", {
+                    detail: {
+                      text: `Filled · ${s.side.toUpperCase()} stop-limit @ ${limitPx.toFixed(2)}`,
+                    },
+                  })
+                );
                 continue;
               }
             }
@@ -1878,6 +1970,13 @@ export function Chart({
             };
             const snap = captureRiskSnapshotRef.current?.(filled);
             nextWorking.push(snap ? { ...filled, riskSnapshot: snap } : filled);
+            window.dispatchEvent(
+              new CustomEvent("tr-workspace-event", {
+                detail: {
+                  text: `Filled · ${s.side.toUpperCase()} ${(s.orderType || "").replace(/_/g, " ")} @ ${s.entry.price.toFixed(2)}`,
+                },
+              })
+            );
           } else {
             nextWorking.push(s);
           }

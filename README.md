@@ -418,3 +418,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Object settings: width, style, visibility (+ Delete)
 - Style fields on H/V-line and multi-point drawings
 - Drawing-only undo/redo preserved; no order/Journal mutation
+
+## v3.28.0 Professional Order & Position Management
+
+- Book: modify pending entry/stop-limit levels, SL/TP; Cancel; Manual Close
+- Timeline: confirm, fill, modify, cancel, close (no pointer-move spam)
+- Manual close → Journal reason manual; cancel pending never journals
+- Chart ↔ Book selection; riskSnapshot still frozen at fill
