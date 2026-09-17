@@ -1,6 +1,6 @@
 {
   "name": "trading-replay-pwa",
-  "version": "3.28.0",
+  "version": "3.29.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -33,7 +33,8 @@
     "test:workspace": "node scripts/test-workspace-v325.mjs",
     "test:replay-data": "node scripts/test-replay-data-v326.mjs",
     "test:drawing": "node scripts/test-drawing-v327.mjs",
-    "test:orders": "node scripts/test-orders-v328.mjs"
+    "test:orders": "node scripts/test-orders-v328.mjs",
+    "test:journal-v329": "node scripts/test-journal-analytics-v329.mjs"
   },
   "dependencies": {
     "react": "18.3.1",

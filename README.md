@@ -425,3 +425,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Timeline: confirm, fill, modify, cancel, close (no pointer-move spam)
 - Manual close → Journal reason manual; cancel pending never journals
 - Chart ↔ Book selection; riskSnapshot still frozen at fill
+
+## v3.29.0 Professional Journal & Analytics
+
+- Journal local search; existing filters/sort/CSV preserved
+- Journal trade integrity audit helpers (no silent rewrite)
+- Book: pending price-relation warnings; lot from snapshot (never invent 1.0)
+- MAE/MFE not fabricated (requires excursion data — not stored)
+- Analytics remains read-only derived from Journal

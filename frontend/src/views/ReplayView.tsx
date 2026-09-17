@@ -12,6 +12,8 @@ import { fetchBars, addTrade } from "../lib/api";
 import { appendTradeAsync, rMultiple, auditJournalEvent } from "../lib/journal";
 import { cacheGetRange, cachePutBars } from "../lib/barCache";
 import { recordRangeLoad, recordReplayWindow } from "../lib/replayDiagnostics";
+import { validatePendingVsMarket, lotFromSnapshot } from "../lib/orderValidation";
+
 import { generateDemoBars, readCsvFile } from "../lib/demoData";
 import { aggregateVisible } from "../lib/replay";
 import { useReplayHotkeys } from "../lib/useReplayHotkeys";
@@ -1670,6 +1672,13 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                       <span className={pts != null && pts >= 0 ? "up" : "down"}>
                         {pts != null ? `${pts >= 0 ? "+" : ""}${pts.toFixed(1)} pts` : "—"}
                       </span>
+                      <span className="muted">
+                        Lot{" "}
+                        {(() => {
+                          const lot = lotFromSnapshot(s.riskSnapshot as Record<string, unknown> | undefined);
+                          return lot != null ? lot.toFixed(2) : "—";
+                        })()}
+                      </span>
                       {accName ? <span className="muted">{accName}</span> : null}
                     </button>
                     <div className="book-edit-row">
@@ -1719,7 +1728,25 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                       <span>{(s.orderType || "").replace(/_/g, " ").toUpperCase()}</span>
                       <span className={s.side === "long" ? "up" : "down"}>{s.side.toUpperCase()}</span>
                       <span className="muted">PENDING</span>
+                      <span className="muted">
+                        Lot{" "}
+                        {(() => {
+                          const lot = lotFromSnapshot(s.riskSnapshot as Record<string, unknown> | undefined);
+                          return lot != null ? lot.toFixed(2) : "—";
+                        })()}
+                      </span>
                     </button>
+                    {(() => {
+                      const w = validatePendingVsMarket(
+                        s.orderType,
+                        s.side,
+                        currentBase?.close,
+                        s.entry.price,
+                        s.stopPrice,
+                        s.limitPrice
+                      );
+                      return w.message ? <p className="book-warn">{w.message}</p> : null;
+                    })()}
                     <div className="book-edit-row">
                       {isSl ? (
                         <>

@@ -376,3 +376,35 @@ export function downloadJournalCsv(trades: JournalTrade[], filename = "journal-e
   a.click();
   URL.revokeObjectURL(url);
 }
+
+/** v3.29.0 — detect malformed closed-trade rows without rewriting them. */
+export type JournalAuditIssue = {
+  tradeId: string;
+  issues: string[];
+};
+
+export function auditJournalTrade(t: JournalTrade): string[] {
+  const issues: string[] = [];
+  if (t.entryTime == null || !Number.isFinite(t.entryTime)) issues.push("missing entryTime");
+  if (t.exitTime == null || !Number.isFinite(t.exitTime)) issues.push("missing exitTime");
+  if (t.entryTime != null && t.exitTime != null && t.exitTime < t.entryTime) issues.push("exit before entry");
+  if (!Number.isFinite(t.entryPrice)) issues.push("invalid entryPrice");
+  if (!Number.isFinite(t.exitPrice)) issues.push("invalid exitPrice");
+  if (t.currencyPnL != null && !Number.isFinite(t.currencyPnL)) issues.push("NaN currencyPnL");
+  if (t.rMultiple != null && !Number.isFinite(t.rMultiple)) issues.push("NaN rMultiple");
+  if (t.finalLot != null && (!Number.isFinite(t.finalLot) || t.finalLot < 0)) issues.push("invalid finalLot");
+  return issues;
+}
+
+export function auditJournalList(trades: JournalTrade[]): JournalAuditIssue[] {
+  const seen = new Set<string>();
+  const out: JournalAuditIssue[] = [];
+  for (const t of trades) {
+    const id = t.tradeId || t.id || "";
+    const issues = auditJournalTrade(t);
+    if (id && seen.has(id)) issues.push("duplicate tradeId");
+    if (id) seen.add(id);
+    if (issues.length) out.push({ tradeId: id || "(no-id)", issues });
+  }
+  return out;
+}

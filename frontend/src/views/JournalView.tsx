@@ -58,6 +58,7 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
   const [sessionId, setSessionId] = useState<string | null>(() => getActiveSessionId());
   const [selected, setSelected] = useState<JournalTrade | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("exitTime");
+  const [searchQ, setSearchQ] = useState("");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const [fAccount, setFAccount] = useState("all");
@@ -160,7 +161,7 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
       return sortDir === "asc" ? an - bn : bn - an;
     });
     return rows;
-  }, [trades, fAccount, fSymbol, fSide, fOrder, fReason, fPhase, sortKey, sortDir]);
+  }, [trades, fAccount, fSymbol, fSide, fOrder, fReason, fPhase, searchQ, sortKey, sortDir]);
 
   function toggleSort(k: SortKey) {
     if (sortKey === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -186,6 +187,16 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
       </header>
 
       <div className="journal-filters card">
+        <label className="journal-search">
+          Search
+          <input
+            type="search"
+            placeholder="Symbol, account, side, reason…"
+            value={searchQ}
+            onChange={(e) => setSearchQ(e.target.value)}
+          />
+        </label>
+
         <label>
           Account
           <select value={fAccount} onChange={(e) => setFAccount(e.target.value)}>
