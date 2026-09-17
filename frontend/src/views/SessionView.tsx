@@ -474,7 +474,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
       await refresh();
       setError(
         (result.errors.length ? "Import warnings. " : "") +
-          `Imported ${result.imported}, skipped ${result.skipped}. Market-data bars are never imported.`
+          `Imported ${result.imported}, skipped ${result.skipped}, journal trades restored ${result.tradesRestored ?? 0}. Market-data bars are never imported.`
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Import failed");

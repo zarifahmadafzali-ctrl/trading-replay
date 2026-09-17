@@ -333,3 +333,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Explicit versions: APP / STORAGE_SCHEMA / BACKUP_FORMAT / MARKET_DATA_CACHE
 - PWA continues on IndexedDB; no Tauri/Electron/filesystem runtime
 - Future path: PWA ↔ Desktop via backup JSON, shared domain models only
+
+## v3.20.1 Journal backup restore fix
+
+- Export uses `loadJournalForSession` (same path as Journal UI)
+- Import uses `saveJournalForSession` + verify read-back
+- Stamps `sessionId` on every restored trade
+- Dispatches session-changed so Journal/Analytics reload
+- Regression: export → delete → import → journal + analytics

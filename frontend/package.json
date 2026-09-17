@@ -1,6 +1,6 @@
 {
   "name": "trading-replay-pwa",
-  "version": "3.20.0",
+  "version": "3.20.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -21,7 +21,8 @@
     "test:reconcile": "node scripts/test-lifecycle-reconcile.mjs",
     "test:prop-balance": "node scripts/test-prop-balance-consistency.mjs",
     "test:prop-full": "node scripts/test-prop-full-lifecycle.mjs",
-    "test:backup": "node scripts/test-backup-format.mjs"
+    "test:backup": "node scripts/test-backup-format.mjs",
+    "test:backup-journal": "node scripts/test-backup-journal-restore.mjs"
   },
   "dependencies": {
     "react": "18.3.1",

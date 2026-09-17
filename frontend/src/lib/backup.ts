@@ -1,22 +1,32 @@
 /**
- * v3.20.0 — Platform-neutral backup export/import.
+ * v3.20.0 / v3.20.1 — Platform-neutral backup export/import.
  *
- * Transfer path (future): PWA ↔ Desktop via JSON file.
- * Does NOT claim shared physical DB between IndexedDB and SQLite.
+ * Journal trades are authoritative historical data (sessionTrades IndexedDB store
+ * via journal.ts). Analytics is derived from Journal — not stored separately.
  *
- * Journal trades are exported as-is (immutable historical records).
- * Market-data bars are intentionally EXCLUDED (large, shared cache; re-syncable).
+ * Market-data bars are intentionally EXCLUDED.
  */
 
 import type { SessionMeta, SessionRuntime } from "./sessionStore";
 import { getSessionStorageAdapter } from "./storageAdapter";
 import { APP_VERSION, BACKUP_FORMAT_VERSION } from "./storageVersions";
+import {
+  loadJournalForSession,
+  saveJournalForSession,
+  normalizeJournalTrade,
+  type JournalTrade,
+} from "./journal";
 
 export type BackupSessionBundle = {
   meta: SessionMeta;
   runtime?: SessionRuntime | null;
-  trades: unknown[];
+  /** Authoritative journal trades for this session (same path as JournalView). */
+  trades: JournalTrade[];
+  /** Alias for older tooling / diagnostics — same array as trades. */
+  journal?: JournalTrade[];
   shapes: unknown[];
+  /** Diagnostic: number of trades at export time. */
+  tradeCount?: number;
 };
 
 export type TradingReplayBackup = {
@@ -25,7 +35,6 @@ export type TradingReplayBackup = {
   exportedAt: string;
   platform: "web-indexeddb" | "desktop-sqlite-future" | string;
   sessions: BackupSessionBundle[];
-  /** Active session id at export time (optional). */
   activeSessionId?: string | null;
   metadata?: Record<string, unknown>;
 };
@@ -33,6 +42,15 @@ export type TradingReplayBackup = {
 export type BackupValidationResult =
   | { ok: true; backup: TradingReplayBackup }
   | { ok: false; errors: string[] };
+
+/** Extract trades array from a session bundle (supports legacy property names). */
+export function extractBundleTrades(bundle: Record<string, unknown>): unknown[] {
+  if (Array.isArray(bundle.trades)) return bundle.trades;
+  if (Array.isArray(bundle.journal)) return bundle.journal;
+  if (Array.isArray(bundle.sessionTrades)) return bundle.sessionTrades;
+  if (Array.isArray(bundle.journalTrades)) return bundle.journalTrades;
+  return [];
+}
 
 export function validateBackup(raw: unknown): BackupValidationResult {
   const errors: string[] = [];
@@ -64,32 +82,50 @@ export function validateBackup(raw: unknown): BackupValidationResult {
       } else if (typeof meta.id !== "string" || !meta.id) {
         errors.push(`sessions[${i}].meta.id missing`);
       }
-      if (!Array.isArray(b.trades)) errors.push(`sessions[${i}].trades must be an array`);
-      if (!Array.isArray(b.shapes)) errors.push(`sessions[${i}].shapes must be an array`);
+      // trades may be missing on corrupt exports — warn in metadata but allow import of meta
+      const trades = extractBundleTrades(b);
+      if (b.trades != null && !Array.isArray(b.trades) && !Array.isArray(b.journal)) {
+        errors.push(`sessions[${i}].trades must be an array when present`);
+      }
+      if (b.shapes != null && !Array.isArray(b.shapes)) {
+        errors.push(`sessions[${i}].shapes must be an array when present`);
+      }
+      void trades;
     });
   }
   if (errors.length) return { ok: false, errors };
   return { ok: true, backup: o as unknown as TradingReplayBackup };
 }
 
-/** Build a full user-data backup (sessions, accounts-in-meta, journal trades, shapes, runtime). */
+/**
+ * Build backup using the same Journal load path as JournalView/Analytics.
+ * Deep-clones trades so JSON serialization cannot hold live references.
+ */
 export async function exportBackup(): Promise<TradingReplayBackup> {
   const adapter = getSessionStorageAdapter();
   const sessions = await adapter.listSessions();
   const bundles: BackupSessionBundle[] = [];
+  let totalTrades = 0;
+
   for (const meta of sessions) {
-    const [runtime, trades, shapes] = await Promise.all([
+    const [runtime, journalRows, shapes] = await Promise.all([
       adapter.getRuntime(meta.id),
-      adapter.getTrades(meta.id),
+      loadJournalForSession(meta.id),
       adapter.getShapes(meta.id),
     ]);
+    // Deep clone via JSON to guarantee serializable plain objects
+    const trades: JournalTrade[] = JSON.parse(JSON.stringify(journalRows || [])) as JournalTrade[];
+    totalTrades += trades.length;
     bundles.push({
-      meta: { ...meta },
-      runtime: runtime ?? null,
-      trades: Array.isArray(trades) ? trades : [],
-      shapes: Array.isArray(shapes) ? shapes : [],
+      meta: JSON.parse(JSON.stringify(meta)) as SessionMeta,
+      runtime: runtime ? (JSON.parse(JSON.stringify(runtime)) as SessionRuntime) : null,
+      trades,
+      journal: trades,
+      shapes: JSON.parse(JSON.stringify(Array.isArray(shapes) ? shapes : [])),
+      tradeCount: trades.length,
     });
   }
+
   return {
     formatVersion: BACKUP_FORMAT_VERSION,
     appVersion: APP_VERSION,
@@ -100,7 +136,8 @@ export async function exportBackup(): Promise<TradingReplayBackup> {
     metadata: {
       storageSchemaVersion: adapter.schemaVersion,
       excludesMarketDataBars: true,
-      note: "Market-data day cache is not included; re-sync or keep local barCache separately.",
+      totalJournalTrades: totalTrades,
+      note: "Journal trades use sessionTrades store (same as Journal UI). Market-data bars excluded.",
     },
   };
 }
@@ -112,14 +149,14 @@ export type ImportResult = {
   skipped: number;
   errors: string[];
   sessionIds: string[];
+  tradesRestored: number;
 };
 
 /**
  * Import validated backup.
- * - merge: skip sessions whose id already exists
- * - replace-matching-ids: overwrite meta/runtime/trades/shapes for matching ids
- * Never deletes unrelated sessions. Never touches market-data bar cache.
- * Never rewrites trade field values beyond storing the exported JSON as-is.
+ * Journal is restored via saveJournalForSession (same path as live trading).
+ * Never touches market-data bar cache.
+ * Never fabricates trades.
  */
 export async function importBackup(
   raw: unknown,
@@ -127,13 +164,14 @@ export async function importBackup(
 ): Promise<ImportResult> {
   const v = validateBackup(raw);
   if (!v.ok) {
-    return { imported: 0, skipped: 0, errors: v.errors, sessionIds: [] };
+    return { imported: 0, skipped: 0, errors: v.errors, sessionIds: [], tradesRestored: 0 };
   }
   const adapter = getSessionStorageAdapter();
   const existing = await adapter.listSessions();
   const existingIds = new Set(existing.map((s) => s.id));
   let imported = 0;
   let skipped = 0;
+  let tradesRestored = 0;
   const errors: string[] = [];
   const sessionIds: string[] = [];
 
@@ -144,10 +182,12 @@ export async function importBackup(
         skipped++;
         continue;
       }
+
       await adapter.upsertSession({
         ...bundle.meta,
         updatedAt: Date.now(),
       });
+
       if (bundle.runtime && typeof bundle.runtime === "object") {
         await adapter.putRuntime({
           ...bundle.runtime,
@@ -156,7 +196,39 @@ export async function importBackup(
           updatedAt: Date.now(),
         });
       }
-      await adapter.putTrades(id, Array.isArray(bundle.trades) ? bundle.trades : []);
+
+      // Journal: same write path as appendTradeAsync / JournalView
+      const rawTrades = extractBundleTrades(bundle as unknown as Record<string, unknown>);
+      const normalized = rawTrades.map((t) =>
+        normalizeJournalTrade({
+          ...(t as object),
+          sessionId: id, // always bind to restored session id
+        } as Partial<JournalTrade> & Record<string, unknown>)
+      );
+      await saveJournalForSession(id, normalized);
+
+      // Verify write (catches silent IDB failures)
+      const verified = await loadJournalForSession(id);
+      if (normalized.length > 0 && verified.length === 0) {
+        // Retry once via adapter
+        await adapter.putTrades(id, normalized);
+        const verified2 = await loadJournalForSession(id);
+        if (verified2.length === 0) {
+          errors.push(
+            `Session ${id}: failed to persist ${normalized.length} journal trade(s) to IndexedDB`
+          );
+        } else {
+          tradesRestored += verified2.length;
+        }
+      } else {
+        tradesRestored += verified.length;
+        if (normalized.length > 0 && verified.length < normalized.length) {
+          errors.push(
+            `Session ${id}: restored ${verified.length}/${normalized.length} trades`
+          );
+        }
+      }
+
       await adapter.putShapes(id, Array.isArray(bundle.shapes) ? bundle.shapes : []);
       existingIds.add(id);
       sessionIds.push(id);
@@ -165,10 +237,25 @@ export async function importBackup(
       errors.push(e instanceof Error ? e.message : String(e));
     }
   }
-  return { imported, skipped, errors, sessionIds };
+
+  // Activate first imported session if none active (so Journal/Analytics load immediately)
+  if (sessionIds.length && !adapter.getActiveSessionId()) {
+    adapter.setActiveSessionId(sessionIds[0]);
+  }
+
+  // Notify JournalView / AnalyticsView to reload
+  try {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("tr-session-changed"));
+      window.dispatchEvent(new CustomEvent("tr-session-accounts-updated"));
+    }
+  } catch {
+    /* */
+  }
+
+  return { imported, skipped, errors, sessionIds, tradesRestored };
 }
 
-/** Download backup as JSON file in the browser. */
 export function downloadBackupJson(backup: TradingReplayBackup, filename?: string): void {
   const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -177,4 +264,28 @@ export function downloadBackupJson(backup: TradingReplayBackup, filename?: strin
   a.download = filename || `trading-replay-backup-${backup.exportedAt.slice(0, 10)}.json`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/** Diagnose whether a backup object contains journal trades. */
+export function diagnoseBackupJournal(raw: unknown): {
+  sessionCount: number;
+  totalTrades: number;
+  perSession: { id: string; tradeCount: number; source: string }[];
+} {
+  const v = validateBackup(raw);
+  if (!v.ok) return { sessionCount: 0, totalTrades: 0, perSession: [] };
+  const perSession = v.backup.sessions.map((s) => {
+    const b = s as unknown as Record<string, unknown>;
+    let source = "none";
+    if (Array.isArray(b.trades) && b.trades.length) source = "trades";
+    else if (Array.isArray(b.journal) && (b.journal as unknown[]).length) source = "journal";
+    else if (Array.isArray(b.trades)) source = "trades(empty)";
+    const arr = extractBundleTrades(b);
+    return { id: s.meta?.id || "?", tradeCount: arr.length, source };
+  });
+  return {
+    sessionCount: perSession.length,
+    totalTrades: perSession.reduce((a, p) => a + p.tradeCount, 0),
+    perSession,
+  };
 }
