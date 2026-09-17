@@ -449,3 +449,12 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - `SessionStorageAdapter` remains canonical; still IndexedDB for all hosts
 - Tauri scaffold under `frontend/src-tauri/` (EXE build NOT part of npm run build)
 - See DESKTOP.md — no SQLite, no format bumps, PWA unchanged
+
+## v3.33.0 Real Tauri Desktop Build & Windows Packaging
+
+- Stable app id: `com.tradingreplay.afzali`
+- Real Tauri 2 shell (`src-tauri` Builder + capabilities)
+- Icons + window min size; least-privilege `core:default`
+- `npm run tauri:dev` / `tauri:build` (require Rust + CLI)
+- IndexedDB still storage; SQLite NOT implemented
+- PWA `npm run build` independent of Tauri

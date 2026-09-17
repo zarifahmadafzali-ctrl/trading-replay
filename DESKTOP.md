@@ -1,86 +1,72 @@
-# Trading Replay — Desktop Foundation (v3.32.0)
+# Trading Replay — Desktop (Tauri)
 
-## Status
+## Application identity (stable)
 
-| Target | Status |
-|--------|--------|
-| Browser / PWA | **Supported** (authoritative product) |
-| Windows EXE (Tauri) | **Foundation only** — not a shippable desktop release |
-| SQLite storage | **NOT IMPLEMENTED** |
-| Auto-updater / GitHub Releases | **NOT IMPLEMENTED** |
+| Field | Value |
+|-------|--------|
+| Product name | Trading Replay |
+| Identifier | `com.tradingreplay.afzali` |
+| Version | 3.33.0 |
 
-## Platform boundary
+Do not change the identifier after v3.33.0 unless required for store policies.
+
+## Current architecture
 
 ```
-React UI + domain (Replay, Orders, Journal, Analytics, Prop)
-        ↓
-  platform.ts          → "web" | "desktop"
-  SessionStorageAdapter → getSessionStorageAdapter()
-  PlatformFileService   → getPlatformFileService()
-        ↓
-  Web today: IndexedDB + browser download/file input
-  Desktop future: same interfaces → Tauri plugins / SQLite
+PWA / Browser:
+  React → platform.ts ("web") → SessionStorageAdapter → IndexedDB
+  PlatformFileService → Blob download + file input
+
+Desktop (Tauri):
+  Same React frontend
+  platform.ts ("desktop") when Tauri globals present
+  SessionStorageAdapter → still IndexedDB (SQLite NOT implemented)
+  PlatformFileService → web fallback (native dialogs NOT wired)
 ```
 
-Do **not** scatter `window.__TAURI__` checks in trading code.
+## Commands
 
-## Data ownership (unchanged)
+| Command | Purpose | Requires Tauri CLI |
+|---------|---------|-------------------|
+| `npm run dev` | Browser Vite | No |
+| `npm run build` | PWA production | No |
+| `npm run tauri:dev` | Desktop window + Vite | Yes + Rust |
+| `npm run tauri:build` | Native bundle | Yes + Rust |
 
-| Dataset | Owner |
-|---------|--------|
-| Market 1s bars | `barCache` (IndexedDB day cache) — global, not session-owned |
-| Sessions | `SessionStorageAdapter` → sessionStore |
-| Journal | `journal.ts` → adapter trades |
-| Accounts / Prop lifecycle | `SessionMeta.accounts[]` |
-| Drawings | session shapes via adapter |
-| Analytics | **derived** from Journal (read-only) |
-| Preferences | localStorage where already used |
-
-## Cross-device transfer
-
-PWA and desktop will **not** share one physical database.
-
-Use:
-
-1. **App backup JSON** (`BACKUP_FORMAT_VERSION = 1`) — sessions, journal, accounts, shapes
-2. **Market data export** (`MARKET_DATA_EXPORT_FORMAT_VERSION = 1`) — CSV / `.trdata`
-
-## Development
+Install CLI (already in package.json as optional script driver):
 
 ```bash
 cd frontend
 npm install
-npm run dev          # browser — does NOT require Tauri
-npm run build        # PWA production build
-npm run test:platform
+# Rust 1.77+ recommended for Tauri 2
+npm run tauri:dev
+npm run tauri:build
 ```
 
-Tauri (optional, separate):
+## Permissions (v3.33.0)
 
-```bash
-# Requires Rust + Tauri CLI on the developer machine
-npm run tauri:dev    # placeholder until CLI is installed
-npm run tauri:build  # Windows EXE NOT produced in CI by default
-```
+Capability `default`:
 
-Scaffold lives under `frontend/src-tauri/` for future packaging. The Vite app root remains `frontend/`.
+- `core:default` only
+- No filesystem, shell, or arbitrary network grants
 
-## Future desktop migration contract
+Native file dialogs and SQLite are future work and must request explicit capabilities.
 
-```
-WEB                         DESKTOP (future)
-React                       React (same)
-  → SessionStorageAdapter     → SessionStorageAdapter
-  → IndexedDB                 → Tauri storage adapter
-                              → SQLite / filesystem
-```
+## Storage contracts (unchanged)
 
-Business layer above the adapter stays platform-neutral.
+- `STORAGE_SCHEMA_VERSION = 1`
+- `BACKUP_FORMAT_VERSION = 1`
+- `MARKET_DATA_EXPORT_FORMAT_VERSION = 1`
 
-## Non-goals (v3.32.0)
+PWA and desktop do **not** share one physical database. Transfer via backup JSON + market-data export.
 
-- No Electron
-- No cloud sync / auth / server database
-- No second Journal or market-data store
-- No trading-behavior changes
-- No incompatible storage/backup format bumps
+## Future (not in 3.33.0)
+
+- SQLite / filesystem adapter implementing `SessionStorageAdapter`
+- Native file dialogs via Tauri plugins
+- Auto-updater / GitHub Releases
+- Code signing
+
+## Validation notes
+
+See release report for what was actually executed in CI/sandbox (Windows EXE may be NOT RUN on Linux hosts).
