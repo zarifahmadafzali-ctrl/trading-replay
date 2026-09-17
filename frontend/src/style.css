@@ -1470,3 +1470,63 @@ footer {
 }
 .diag-body { font-size: 12px; margin-top: 6px; }
 .diag-body p { margin: 4px 0; }
+
+
+/* v3.26.1 fullscreen control */
+.topbar-end {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.fs-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background: #111827;
+  color: #e2e8f0;
+  cursor: pointer;
+}
+.fs-toggle:hover {
+  border-color: #3b82f6;
+  color: #fff;
+}
+.fs-toggle.on {
+  border-color: #3b82f6;
+  color: #93c5fd;
+}
+.fs-toggle:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+.fs-toggle.fs-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+html:fullscreen .app,
+html:-webkit-full-screen .app {
+  height: 100%;
+  min-height: 100dvh;
+}
+body:fullscreen,
+html:fullscreen body {
+  overflow: hidden;
+}
+@media (max-width: 720px) {
+  .fs-toggle {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .topbar-end .status {
+    max-width: 42vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

@@ -404,3 +404,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Read-only Market Data Diagnostics in Data Engine
 - Replay window metrics (base / display / exec) — execution remains true 1s
 - Display still bounded (~1200 candles); playback/loadGen guards preserved
+
+## v3.26.1 Fullscreen workspace control
+
+- Fullscreen toggle in the top bar (expand / compress icon)
+- Uses the browser Fullscreen API when available; graceful no-op when unsupported
+- Distinct from PWA `display: standalone` — both can coexist
+- No trading, data, storage, or execution behavior changes

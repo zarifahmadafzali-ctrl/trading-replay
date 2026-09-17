@@ -1,4 +1,5 @@
 import type { ViewName } from "../lib/types";
+import { FullscreenToggle } from "./FullscreenToggle";
 
 const TABS: { id: ViewName; label: string }[] = [
   { id: "replay", label: "Replay" },
@@ -34,16 +35,19 @@ export function NavBar({
           </button>
         ))}
       </nav>
-      <span
-        className={`status ${backendOnline ? "status-on" : "status-off"}`}
-        title={
-          backendOnline
-            ? "Connected to Data Engine backend"
-            : "Backend unreachable — using local/demo data"
-        }
-      >
-        ● {backendOnline === null ? "Checking…" : backendOnline ? "Backend online" : "Offline mode"}
-      </span>
+      <div className="topbar-end">
+        <FullscreenToggle />
+        <span
+          className={`status ${backendOnline ? "status-on" : "status-off"}`}
+          title={
+            backendOnline
+              ? "Connected to Data Engine backend"
+              : "Backend unreachable — using local/demo data"
+          }
+        >
+          ● {backendOnline === null ? "Checking…" : backendOnline ? "Backend online" : "Offline mode"}
+        </span>
+      </div>
     </header>
   );
 }
