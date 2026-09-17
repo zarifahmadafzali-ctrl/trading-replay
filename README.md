@@ -353,3 +353,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Desktop Jump To: time edits no longer overwritten by cursor ticks
 - Journal: delete trade with confirmation (row only; balance/lifecycle not auto-reversed)
 - Close screenshots fit price scale to show ENTRY + SL + TP
+
+## v3.21.0 Storage adapter adoption
+
+- Journal + SessionView persist via `getSessionStorageAdapter()`
+- Canonical ownership documented in `frontend/docs/STORAGE.md`
+- Market-data remains barCache (global); schema versions unchanged
+- No Tauri/Electron/SQLite

@@ -1,4 +1,10 @@
 /**
+ * Web IndexedDB implementation of session persistence.
+ * Call sites should prefer getSessionStorageAdapter() (storageAdapter.ts).
+ * This module remains the physical PWA backend for the adapter.
+ * Market-data bars live in barCache.ts (global symbol|day), not here.
+ */
+/**
  * v3.16.0 — Backtest Session architecture (IndexedDB).
  *
  * Session state is isolated per sessionId.

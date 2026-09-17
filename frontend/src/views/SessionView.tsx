@@ -2,19 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import { SYMBOLS } from "../lib/types";
 import {
   createSession,
-  deleteSessionAll,
   emitSessionChanged,
   ensureSessionAccounts,
-  getActiveSessionId,
-  listSessions,
   migrateLegacyToSessionIfNeeded,
-  setActiveSessionId,
   MAX_SESSION_ACCOUNTS,
-  upsertSession,
-  getRuntime,
-  getSessionTrades,
   type SessionMeta,
 } from "../lib/sessionStore";
+import { getSessionStorageAdapter } from "../lib/storageAdapter";
 import {
   defaultAccount,
   defaultInstrument,
@@ -23,6 +17,7 @@ import {
   type InstrumentSpec,
   type PropFirmConfig,
 } from "../lib/riskModel";
+
 import {
   defaultPropProgram,
   ensurePropProgram,
@@ -100,14 +95,15 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
   useEffect(() => {
     let cancelled = false;
     async function loadStatus() {
-      const sid = editingId || activeId || getActiveSessionId();
+      const sid = editingId || activeId || getSessionStorageAdapter().getActiveSessionId();
       if (!sid) {
         setStatusTrades([]);
         setStatusReplayTime(0);
         return;
       }
       try {
-        const [raw, rt] = await Promise.all([getSessionTrades(sid), getRuntime(sid)]);
+        const ad = getSessionStorageAdapter();
+        const [raw, rt] = await Promise.all([ad.getTrades(sid), ad.getRuntime(sid)]);
         if (cancelled) return;
         const trades: PropTradeLike[] = (raw || []).map((tr: any) => ({
           accountId: tr.accountId,
@@ -147,9 +143,9 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
     setLoading(true);
     try {
       await migrateLegacyToSessionIfNeeded();
-      const list = await listSessions();
+      const list = await getSessionStorageAdapter().listSessions();
       setSessions(list);
-      setActiveId(getActiveSessionId());
+      setActiveId(getSessionStorageAdapter().getActiveSessionId());
       setError(null);
     } catch {
       setError("Could not load sessions from IndexedDB");
@@ -320,7 +316,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
       setName("");
       setStrategy("");
       await refresh();
-      setActiveSessionId(meta.id);
+      getSessionStorageAdapter().setActiveSessionId(meta.id);
       setActiveId(meta.id);
       emitSessionChanged(meta.id);
       setError(null);
@@ -330,16 +326,16 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
   }
 
   async function handleActivate(id: string) {
-    setActiveSessionId(id);
+    getSessionStorageAdapter().setActiveSessionId(id);
     setActiveId(id);
     emitSessionChanged(id);
   }
 
   async function handleDelete(id: string) {
     try {
-      await deleteSessionAll(id);
+      await getSessionStorageAdapter().deleteSession(id);
       await refresh();
-      emitSessionChanged(getActiveSessionId());
+      emitSessionChanged(getSessionStorageAdapter().getActiveSessionId());
     } catch {
       setError("Could not delete session");
     }
@@ -424,11 +420,11 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
       activeAccountId: active,
       updatedAt: Date.now(),
     };
-    await upsertSession(next);
+    await getSessionStorageAdapter().upsertSession(next);
     setSessions((prev) => prev.map((s) => (s.id === editingId ? next : s)));
     setEditingId(null);
     // If this is the active session, notify replay to refresh meta via storage event / reload list
-    if (getActiveSessionId() === editingId) {
+    if (getSessionStorageAdapter().getActiveSessionId() === editingId) {
       try {
         window.dispatchEvent(new CustomEvent("tr-session-accounts-updated", { detail: next }));
       } catch { /* */ }

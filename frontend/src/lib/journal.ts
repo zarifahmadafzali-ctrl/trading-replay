@@ -1,4 +1,5 @@
-import { getActiveSessionId, getSessionTrades, putSessionTrades } from "./sessionStore";
+import { getSessionStorageAdapter } from "./storageAdapter";
+
 import type { TradeRiskSnapshot } from "./riskModel";
 
 export type CloseReason = "sl" | "tp" | "manual";
@@ -159,7 +160,8 @@ export async function loadJournalForSession(sessionId: string | null): Promise<J
       return [];
     }
   }
-  const rows = await getSessionTrades(sessionId);
+  const adapter = getSessionStorageAdapter();
+  const rows = await adapter.getTrades(sessionId);
   return (rows || []).map((t: any) => normalizeJournalTrade(t));
 }
 
@@ -172,7 +174,7 @@ export async function saveJournalForSession(sessionId: string | null, trades: Jo
     }
     return;
   }
-  await putSessionTrades(sessionId, trades);
+  await getSessionStorageAdapter().putTrades(sessionId, trades);
 }
 
 /**
@@ -180,7 +182,7 @@ export async function saveJournalForSession(sessionId: string | null, trades: Jo
  * Pending orders that never fill never call this.
  */
 export async function appendTradeAsync(trade: JournalTrade): Promise<JournalTrade[]> {
-  const sessionId = trade.sessionId || getActiveSessionId();
+  const sessionId = trade.sessionId || getSessionStorageAdapter().getActiveSessionId();
   const normalized = normalizeJournalTrade({
     ...trade,
     sessionId: sessionId || undefined,
@@ -222,7 +224,7 @@ export async function deleteJournalTrade(
   tradeIdOrId: string,
   sessionId?: string | null
 ): Promise<JournalTrade[]> {
-  const sid = sessionId !== undefined ? sessionId : getActiveSessionId();
+  const sid = sessionId !== undefined ? sessionId : getSessionStorageAdapter().getActiveSessionId();
   const prev = await loadJournalForSession(sid);
   const next = prev.filter(
     (t) => t.id !== tradeIdOrId && t.tradeId !== tradeIdOrId
@@ -241,7 +243,7 @@ export async function deleteJournalTrade(
 }
 
 export function clearJournal() {
-  const sessionId = getActiveSessionId();
+  const sessionId = getSessionStorageAdapter().getActiveSessionId();
   void saveJournalForSession(sessionId, []);
   auditJournalEvent("journal_cleared", { sessionId });
 }

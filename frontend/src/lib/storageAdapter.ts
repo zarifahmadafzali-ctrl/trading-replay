@@ -1,15 +1,27 @@
 /**
- * v3.20.0 — Platform-neutral storage adapter boundary.
+ * v3.21.0 — Central storage adapter boundary (PWA-safe).
  *
- * Web/PWA implementation: IndexedDB via sessionStore (this module).
- * Future Desktop: Tauri + SQLite adapter (NOT implemented in v3.20.0).
+ * Architecture:
  *
- * Domain logic must not call IndexedDB APIs directly for session user-data
- * when going through this adapter. Market-data bars remain in barCache
- * (shared global cache by symbol|day — not duplicated per session).
+ *   UI / Domain
+ *        ↓
+ *   Storage Adapter  (this module)
+ *        ↓
+ *   Web: IndexedDB via sessionStore
+ *   Future Desktop: Tauri + SQLite (NOT implemented)
  *
- * Physical storage is NOT shared between PWA and Desktop; transfer is via
- * platform-neutral backup export/import (see backup.ts).
+ * Canonical ownership (one authoritative path each):
+ *   SessionMeta        → adapter.listSessions / getSession / upsertSession / deleteSession
+ *   SessionRuntime     → adapter.getRuntime / putRuntime
+ *   SessionShapes      → adapter.getShapes / putShapes
+ *   SessionTrades/Journal → journal.loadJournalForSession / saveJournalForSession
+ *                         (which use adapter.getTrades / putTrades)
+ *   Accounts + Prop lifecycle → embedded on SessionMeta.accounts[]
+ *   Market-data bars   → barCache (symbol|day), NOT session-scoped, NOT in backup
+ *
+ * Market data remains a specialized cache interface (performance / shared lifecycle).
+ * Physical storage is never shared between PWA and a future Desktop client;
+ * transfer is via platform-neutral backup export/import (backup.ts).
  */
 
 import type { SessionMeta, SessionRuntime } from "./sessionStore";
@@ -31,6 +43,10 @@ import { STORAGE_SCHEMA_VERSION } from "./storageVersions";
 
 export type StoragePlatform = "web-indexeddb" | "desktop-sqlite-future";
 
+/**
+ * Platform-neutral session persistence surface.
+ * Implementations must not leak IndexedDB/SQLite types to callers.
+ */
 export interface SessionStorageAdapter {
   readonly platform: StoragePlatform;
   readonly schemaVersion: number;
@@ -73,7 +89,10 @@ export const indexedDbSessionAdapter: SessionStorageAdapter = {
   setActiveSessionId,
 };
 
-/** Default adapter for the running app (always IndexedDB in v3.20.0). */
+/** Default adapter for the running app (always IndexedDB until a Desktop build exists). */
 export function getSessionStorageAdapter(): SessionStorageAdapter {
   return indexedDbSessionAdapter;
 }
+
+/** @deprecated alias — use getSessionStorageAdapter */
+export const getActiveStorageAdapter = getSessionStorageAdapter;
