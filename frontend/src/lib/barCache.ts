@@ -4,6 +4,7 @@
  * Requesting any sub-range only hits the network for missing days.
  */
 import type { Bar } from "./types";
+import { normalizeBars } from "./marketDataIntegrity";
 
 const DB_NAME = "trading-replay-cache";
 const DB_VERSION = 3;
@@ -103,12 +104,8 @@ export async function cachePutDay(
 ): Promise<void> {
   const classification = opts?.classification || (bars.length ? "SUCCESS" : "EXPECTED_EMPTY");
   const complete = opts?.complete ?? true;
-  // Deduplicate by timestamp
-  const byT = new Map<number, Bar>();
-  for (const b of bars) {
-    if (b && typeof b.time === "number") byT.set(b.time, b);
-  }
-  const unique = Array.from(byT.values()).sort((a, b) => a.time - b.time);
+  // Validate OHLC + dedupe by timestamp (last wins) — v3.30.0
+  const unique = normalizeBars(bars).bars;
   try {
     const db = await openDb();
     await new Promise<void>((resolve, reject) => {

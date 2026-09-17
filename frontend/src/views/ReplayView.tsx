@@ -11,6 +11,7 @@ import {
 import { fetchBars, addTrade } from "../lib/api";
 import { appendTradeAsync, rMultiple, auditJournalEvent } from "../lib/journal";
 import { cacheGetRange, cachePutBars } from "../lib/barCache";
+import { normalizeBars } from "../lib/marketDataIntegrity";
 import { recordRangeLoad, recordReplayWindow } from "../lib/replayDiagnostics";
 import { validatePendingVsMarket, lotFromSnapshot } from "../lib/orderValidation";
 
@@ -549,10 +550,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         setMessage(`No data · Sync in Data Engine first`);
         return;
       }
-      const byT = new Map<number, Bar>();
-      for (const b of local.bars) byT.set(b.time, b);
-      for (const b of res.bars) byT.set(b.time, b);
-      const merged = Array.from(byT.values()).sort((a, b) => a.time - b.time);
+      const merged = normalizeBars([...local.bars, ...res.bars]).bars;
       if (gen !== loadGenRef.current) return;
       setBaseBars(merged);
       setCursor(Math.min(800, merged.length));
@@ -1033,6 +1031,10 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       cursor,
       timeframeSeconds,
       replayStepSeconds,
+      note:
+        baseBars.length > 500_000
+          ? "Large working set in memory; display still windowed (~1200 candles)"
+          : undefined,
     });
   }, [baseBars.length, visibleBars.length, cursor, timeframeSeconds, replayStepSeconds]);
   const indicators: IndicatorSpec[] = useMemo(

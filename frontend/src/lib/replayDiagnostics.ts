@@ -24,6 +24,9 @@ export type ReplayWindowDiag = {
   cursor: number;
   timeframeSeconds: number;
   replayStepSeconds: number;
+  /** v3.30.0 — read-only memory-pressure hints (not browser RAM) */
+  loadedDayHint?: number;
+  note?: string;
 };
 
 let lastRange: LastRangeLoadDiag | null = null;

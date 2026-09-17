@@ -433,3 +433,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Book: pending price-relation warnings; lot from snapshot (never invent 1.0)
 - MAE/MFE not fabricated (requires excursion data — not stored)
 - Analytics remains read-only derived from Journal
+
+## v3.30.0 Large Dataset, Offline Market Data & Data Integrity
+
+- OHLC validation + last-wins dedup on cache put and CSV import
+- Display remains windowed (~1200 candles); full multi-month still loads into baseBars working set (documented limitation)
+- Diagnostics note for large working sets; no fabricated RAM/FPS numbers
+- Day cache, offline path, generation guards, status model preserved
+- No second market-data store; no Tauri/SQLite

@@ -1,3 +1,4 @@
+import { validateBar as integrityValidateBar, normalizeBars } from "./marketDataIntegrity";
 /**
  * v3.24.1 — Cross-device market data export/import (CSV + .trdata).
  *
@@ -73,15 +74,7 @@ function dayFromUnix(t: number): string {
 }
 
 function isValidBar(b: Partial<Bar>): b is Bar {
-  if (!b || typeof b.time !== "number" || !Number.isFinite(b.time)) return false;
-  if (b.time <= 0 || b.time > 1e12) return false; // seconds, not ms
-  for (const k of ["open", "high", "low", "close"] as const) {
-    const v = b[k];
-    if (typeof v !== "number" || !Number.isFinite(v)) return false;
-  }
-  if ((b.high as number) < (b.low as number)) return false;
-  if (b.volume != null && (!Number.isFinite(b.volume) || (b.volume as number) < 0)) return false;
-  return true;
+  return integrityValidateBar(b) != null;
 }
 
 function dedupeSort(bars: Bar[]): { bars: Bar[]; duplicates: number } {

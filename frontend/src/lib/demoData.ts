@@ -1,4 +1,5 @@
 import type { Bar } from "./types";
+import { normalizeBars } from "./marketDataIntegrity";
 
 export function generateDemoBars(): Bar[] {
   const bars: Bar[] = [];
@@ -65,13 +66,11 @@ export function parseCsvBars(text: string): Bar[] {
       volume: volIdx < 0 ? 0 : Number(parts[volIdx]) || 0,
     };
 
-    if (Object.values(bar).every((v) => Number.isFinite(v))) {
-      out.push(bar);
-    }
+    out.push(bar);
   }
 
-  out.sort((a, b) => a.time - b.time);
-  return out;
+  // v3.30.0 — validate OHLC, dedupe last-wins, sort
+  return normalizeBars(out).bars;
 }
 
 export function readCsvFile(file: File): Promise<Bar[]> {
