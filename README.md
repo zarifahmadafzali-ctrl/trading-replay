@@ -397,3 +397,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Book panel: open positions, pending cancel, lightweight timeline
 - Hotkeys: Space / arrows / F (follow) / Esc (cancel draft)
 - No second Journal, Risk, or Order stores — chart shapes remain canonical
+
+## v3.26.0 Replay data performance & diagnostics
+
+- `cacheGetRange` reports hit/miss/empty, loadMs; sorts only when needed
+- Read-only Market Data Diagnostics in Data Engine
+- Replay window metrics (base / display / exec) — execution remains true 1s
+- Display still bounded (~1200 candles); playback/loadGen guards preserved

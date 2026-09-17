@@ -150,10 +150,20 @@ export async function cachePutBars(symbol: string, bars: Bar[]): Promise<number>
   return byDay.size;
 }
 
+export type RangeLoadDiagnostics = {
+  daysHit: number;
+  daysMiss: number;
+  daysEmpty: number;
+  barCount: number;
+  loadMs: number;
+  sorted: boolean;
+};
+
 export type RangeLoadResult = {
   bars: Bar[];
   fromCacheDays: string[];
   missingDays: string[];
+  diagnostics: RangeLoadDiagnostics;
 };
 
 export async function cacheGetRange(
@@ -161,27 +171,52 @@ export async function cacheGetRange(
   start: string,
   end: string
 ): Promise<RangeLoadResult> {
+  const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
   const days = eachDay(start, end);
   const fromCacheDays: string[] = [];
   const missingDays: string[] = [];
   const bars: Bar[] = [];
+  let daysEmpty = 0;
+  let needsSort = false;
+  let lastTime = -Infinity;
 
   for (const day of days) {
     const row = await cacheGetDayRow(symbol, day);
     if (row?.complete && row.classification === "EXPECTED_EMPTY") {
       fromCacheDays.push(day);
+      daysEmpty += 1;
       continue;
     }
     if (row?.bars?.length) {
       fromCacheDays.push(day);
-      bars.push(...row.bars);
+      for (const b of row.bars) {
+        if (b.time < lastTime) needsSort = true;
+        lastTime = b.time;
+        bars.push(b);
+      }
     } else {
       missingDays.push(day);
     }
   }
 
-  bars.sort((a, b) => a.time - b.time);
-  return { bars, fromCacheDays, missingDays };
+  if (needsSort) {
+    bars.sort((a, b) => a.time - b.time);
+  }
+
+  const t1 = typeof performance !== "undefined" ? performance.now() : Date.now();
+  return {
+    bars,
+    fromCacheDays,
+    missingDays,
+    diagnostics: {
+      daysHit: fromCacheDays.length - daysEmpty,
+      daysMiss: missingDays.length,
+      daysEmpty,
+      barCount: bars.length,
+      loadMs: Math.round(t1 - t0),
+      sorted: needsSort,
+    },
+  };
 }
 
 export type LocalCacheSummary = {

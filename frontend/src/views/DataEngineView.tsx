@@ -29,6 +29,8 @@ import {
   type ImportPreview,
 } from "../lib/marketDataTransfer";
 import { reconcileLocalFromBackendStatus } from "../lib/localCache";
+import { getLastRangeLoad, getLastReplayWindow } from "../lib/replayDiagnostics";
+
 import { SYMBOLS } from "../lib/types";
 
 function isoDaysAgo(days: number) {
@@ -82,6 +84,8 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
   const [selectedMarketDays, setSelectedMarketDays] = useState<Record<string, boolean>>({});
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importProgress, setImportProgress] = useState<string>("");
+  const [diagTick, setDiagTick] = useState(0);
+  const [diagOpen, setDiagOpen] = useState(false);
   const [capability, setCapability] = useState<{
     base_resolution: string;
     derived: string[];
@@ -566,6 +570,60 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
           ) : null}
         </div>
 
+
+        <div className="card market-data-diag">
+          <button type="button" className="diag-toggle" onClick={() => { setDiagOpen((v) => !v); setDiagTick((n) => n + 1); }}>
+            Market Data Diagnostics {diagOpen ? "▾" : "▸"}
+          </button>
+          {diagOpen && (
+            <div className="diag-body">
+              {(() => {
+                void diagTick;
+                const forSym = marketDays.filter((d) => d.symbol === symbol);
+                const complete = forSym.filter((d) => d.status === "COMPLETE").length;
+                const partial = forSym.filter((d) => d.status === "PARTIAL").length;
+                const empty = forSym.filter((d) => d.status === "EMPTY").length;
+                const failed = forSym.filter((d) => d.status === "FAILED").length;
+                const bars = forSym.reduce((s, d) => s + (d.barCount || 0), 0);
+                const last = getLastRangeLoad();
+                const win = getLastReplayWindow();
+                return (
+                  <>
+                    <p>
+                      <b>Symbol</b> {symbol} · <b>Cached days</b> {forSym.length} ·{" "}
+                      <b>Complete</b> {complete} · <b>Partial</b> {partial} · <b>Empty</b> {empty}
+                      {failed ? ` · Failed ${failed}` : ""}
+                    </p>
+                    <p>
+                      <b>Bars in device cache (listed)</b> {bars.toLocaleString()}
+                    </p>
+                    {last ? (
+                      <p>
+                        <b>Last Load 1s</b> {last.source} · {last.barCount.toLocaleString()} bars · hit{" "}
+                        {last.daysHit} / miss {last.daysMiss} · {last.loadMs}ms
+                        {last.sorted ? " · resorted" : " · already ordered"}
+                      </p>
+                    ) : (
+                      <p className="hint">No Load 1s recorded yet in this tab.</p>
+                    )}
+                    {win ? (
+                      <p>
+                        <b>Replay window</b> base {win.baseBars.toLocaleString()} · display{" "}
+                        {win.displayCandles.toLocaleString()} · exec {win.execWindow} · cursor {win.cursor} · TF{" "}
+                        {win.timeframeSeconds}s · step {win.replayStepSeconds}s
+                      </p>
+                    ) : (
+                      <p className="hint">Open Replay once to populate window metrics.</p>
+                    )}
+                    <p className="hint">
+                      Diagnostics are read-only. Execution still uses true 1s bars (execBars), not display candles.
+                    </p>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+        </div>
 
         <div className="card market-data-mgmt">
           <h3>Market Data Management</h3>

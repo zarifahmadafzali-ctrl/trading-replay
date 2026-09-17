@@ -1456,3 +1456,17 @@ footer {
 @media (max-width: 720px) {
   .workspace-book-cols { grid-template-columns: 1fr; }
 }
+
+/* v3.26.0 diagnostics */
+.market-data-diag { margin-bottom: 8px; }
+.diag-toggle {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0;
+}
+.diag-body { font-size: 12px; margin-top: 6px; }
+.diag-body p { margin: 4px 0; }

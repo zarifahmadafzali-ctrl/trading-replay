@@ -11,6 +11,7 @@ import {
 import { fetchBars, addTrade } from "../lib/api";
 import { appendTradeAsync, rMultiple, auditJournalEvent } from "../lib/journal";
 import { cacheGetRange, cachePutBars } from "../lib/barCache";
+import { recordRangeLoad, recordReplayWindow } from "../lib/replayDiagnostics";
 import { generateDemoBars, readCsvFile } from "../lib/demoData";
 import { aggregateVisible } from "../lib/replay";
 import { useReplayHotkeys } from "../lib/useReplayHotkeys";
@@ -483,8 +484,22 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         setBaseBars(local.bars);
         setCursor(Math.min(800, local.bars.length));
         setDataSource("loaded");
+        const d = local.diagnostics;
+        recordRangeLoad({
+          symbol,
+          start,
+          end,
+          source: "local-cache",
+          barCount: local.bars.length,
+          daysHit: d.daysHit,
+          daysMiss: d.daysMiss,
+          daysEmpty: d.daysEmpty,
+          loadMs: d.loadMs,
+          sorted: d.sorted,
+          at: Date.now(),
+        });
         setMessage(
-          `From device · ${local.bars.length.toLocaleString()} bars · ${local.fromCacheDays.length} day(s) · ${start} → ${end}`
+          `From device · ${local.bars.length.toLocaleString()} bars · ${local.fromCacheDays.length} day(s) · ${d.loadMs}ms · ${start} → ${end}`
         );
         return;
       }
@@ -499,7 +514,21 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           setBaseBars(local.bars);
           setCursor(Math.min(800, local.bars.length));
           setDataSource("loaded");
-          setMessage(`Offline · ${local.fromCacheDays.length} cached day(s)`);
+          const d = local.diagnostics;
+          recordRangeLoad({
+            symbol,
+            start,
+            end,
+            source: "offline-cache",
+            barCount: local.bars.length,
+            daysHit: d.daysHit,
+            daysMiss: d.daysMiss,
+            daysEmpty: d.daysEmpty,
+            loadMs: d.loadMs,
+            sorted: d.sorted,
+            at: Date.now(),
+          });
+          setMessage(`Offline · ${local.fromCacheDays.length} cached day(s) · ${d.loadMs}ms`);
         } else setMessage("No cache · backend offline");
         return;
       }
@@ -517,6 +546,20 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       setBaseBars(merged);
       setCursor(Math.min(800, merged.length));
       setDataSource("loaded");
+      const d = local.diagnostics;
+      recordRangeLoad({
+        symbol,
+        start,
+        end,
+        source: local.bars.length ? "backend-merge" : "backend-merge",
+        barCount: merged.length,
+        daysHit: d.daysHit,
+        daysMiss: d.daysMiss,
+        daysEmpty: d.daysEmpty,
+        loadMs: d.loadMs,
+        sorted: true,
+        at: Date.now(),
+      });
       const daysSaved = await cachePutBars(symbol, merged);
       if (gen !== loadGenRef.current) return;
       setMessage(`Loaded ${merged.length.toLocaleString()} · saved ${daysSaved} day(s) on device`);
@@ -926,6 +969,20 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     () => aggregateVisible(baseBars, cursor, timeframeSeconds),
     [baseBars, cursor, timeframeSeconds]
   );
+  // Read-only window metrics (no trading side effects)
+  useEffect(() => {
+    const prev = prevCursorRef.current;
+    const lo = Math.min(prev, cursor);
+    const hi = Math.max(prev, cursor);
+    recordReplayWindow({
+      baseBars: baseBars.length,
+      displayCandles: visibleBars.length,
+      execWindow: Math.max(0, hi - lo) || (baseBars.length ? 1 : 0),
+      cursor,
+      timeframeSeconds,
+      replayStepSeconds,
+    });
+  }, [baseBars.length, visibleBars.length, cursor, timeframeSeconds, replayStepSeconds]);
   const indicators: IndicatorSpec[] = useMemo(
     () =>
       INDICATOR_DEFS.filter((d) => activeIndicatorIds.includes(d.id)).map((d) => ({
