@@ -164,6 +164,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   /** When true, do not overwrite goToValue from cursor (desktop time edit). */
   const [goToEditing, setGoToEditing] = useState(false);
   const [shapes, setShapes] = useState<Shape[]>(() => loadShapesFor(saved?.symbol ?? SYMBOLS[0]));
+  const [workspaceLog, setWorkspaceLog] = useState<{ t: number; text: string }[]>([]);
+  const [bookOpen, setBookOpen] = useState(true);
   const shapesRefForUndo = useRef(shapes);
   shapesRefForUndo.current = shapes;
   function pushShapes(next: Shape[]) {
@@ -367,6 +369,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         speed,
         followPrice,
         orderType,
+        workspaceLog: workspaceLog.slice(0, 40),
         drawTool,
         activeIndicatorIds,
         message,
@@ -401,6 +404,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     drawTool,
     message,
     activeIndicatorIds,
+    workspaceLog,
   ]);
 
   // Keep playback loop deps minimal: length/step read from refs so
@@ -460,6 +464,11 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     onStepBack: () => {
       setPlaying(false);
       setCursor((c) => Math.max(1, c - Math.max(1, replayStepSeconds)));
+    },
+    onToggleFollow: () => setFollowPrice((v) => !v),
+    onEscape: () => {
+      window.dispatchEvent(new Event("tr-cancel-draft"));
+      setSelectedShapeId(null);
     },
   });
 
@@ -648,6 +657,19 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   }
 
   
+  function pushWorkspaceEvent(text: string, timeSec?: number) {
+    const tsec = timeSec ?? baseBars[Math.max(0, cursor - 1)]?.time ?? Math.floor(Date.now() / 1000);
+    setWorkspaceLog((prev) => [{ t: tsec, text }, ...prev].slice(0, 40));
+  }
+
+  function cancelPendingOrder(id: string) {
+    const next = shapes.filter((s) => !(s.kind === "position" && s.id === id && s.status === "pending"));
+    if (next.length === shapes.length) return;
+    pushShapes(next);
+    pushWorkspaceEvent("Pending order cancelled");
+    setSelectedShapeId(null);
+  }
+
   async function handlePositionClosed(closed: ClosedPosition) {
     const note = `auto-${closed.reason} · ${closed.pnlPoints >= 0 ? "+" : ""}${closed.pnlPoints.toFixed(2)} pts`;
     const snap = (closed.riskSnapshot || lastRiskSnapshotRef.current) as Record<string, unknown> | null;
@@ -1039,6 +1061,20 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     },
     [sessionMeta, riskPercent, symbol]
   );
+
+  const openPositions = useMemo(
+    () => shapes.filter((s) => s.kind === "position" && s.status === "open"),
+    [shapes]
+  );
+  const pendingOrders = useMemo(
+    () => shapes.filter((s) => s.kind === "position" && s.status === "pending"),
+    [shapes]
+  );
+  const activeAccount = useMemo(() => {
+    if (!sessionMeta) return null;
+    const full = ensureSessionAccounts(sessionMeta);
+    return full.accounts?.find((a) => a.accountId === full.activeAccountId) || null;
+  }, [sessionMeta]);
 
   const liveRisk = useMemo((): RiskCalcResult | null => {
     if (!sessionMeta) return null;
@@ -1477,9 +1513,100 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         <span className="status-message">{message}</span>
       </div>
 
+      <div className="workspace-strip">
+        <span className="ws-item">
+          <b>Session</b> {sessionMeta?.name || (sessionReady ? "— none —" : "…")}
+        </span>
+        <span className="ws-item">
+          <b>{symbol}</b> {start} → {end}
+        </span>
+        <span className="ws-item">
+          <b>Account</b>{" "}
+          {activeAccount
+            ? `${activeAccount.name} · ${(activeAccount.balance ?? activeAccount.initialBalance).toLocaleString()} · risk ${riskPercent}%`
+            : "—"}
+        </span>
+        <span className="ws-item">
+          <b>Book</b> {openPositions.length} open · {pendingOrders.length} pending
+        </span>
+        <span className="ws-item muted">{dataSource === "loaded" ? "1s data" : dataSource}</span>
+        <button type="button" className={bookOpen ? "on" : ""} onClick={() => setBookOpen((v) => !v)}>
+          Book ▾
+        </button>
+      </div>
+
+      {bookOpen && (
+        <div className="workspace-book card">
+          <div className="workspace-book-cols">
+            <div>
+              <h4>Open positions</h4>
+              {openPositions.length === 0 && <p className="hint">None</p>}
+              {openPositions.map((s) => {
+                if (s.kind !== "position") return null;
+                const mid = currentBase?.close;
+                const pts =
+                  mid != null
+                    ? s.side === "long"
+                      ? mid - s.entry.price
+                      : s.entry.price - mid
+                    : null;
+                return (
+                  <button
+                    type="button"
+                    key={s.id}
+                    className={`book-row${selectedShapeId === s.id ? " on" : ""}`}
+                    onClick={() => setSelectedShapeId(s.id)}
+                  >
+                    <span className={s.side === "long" ? "up" : "down"}>{s.side.toUpperCase()}</span>
+                    <span>@ {s.entry.price.toFixed(2)}</span>
+                    <span>SL {s.stop.price.toFixed(2)}</span>
+                    <span>TP {s.takeProfit.price.toFixed(2)}</span>
+                    <span className={pts != null && pts >= 0 ? "up" : "down"}>
+                      {pts != null ? `${pts >= 0 ? "+" : ""}${pts.toFixed(1)} pts` : "—"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div>
+              <h4>Pending orders</h4>
+              {pendingOrders.length === 0 && <p className="hint">None</p>}
+              {pendingOrders.map((s) => {
+                if (s.kind !== "position") return null;
+                return (
+                  <div key={s.id} className="book-row pending-row">
+                    <button type="button" className="book-row-main" onClick={() => setSelectedShapeId(s.id)}>
+                      <span>{(s.orderType || "").replace(/_/g, " ").toUpperCase()}</span>
+                      <span>@ {s.entry.price.toFixed(2)}</span>
+                      <span>SL {s.stop.price.toFixed(2)}</span>
+                      <span>TP {s.takeProfit.price.toFixed(2)}</span>
+                    </button>
+                    <button type="button" className="btn-ghost" onClick={() => cancelPendingOrder(s.id)}>
+                      Cancel
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            <div>
+              <h4>Timeline</h4>
+              {workspaceLog.length === 0 && <p className="hint">Events appear as you trade</p>}
+              <ul className="workspace-timeline">
+                {workspaceLog.slice(0, 12).map((e, i) => (
+                  <li key={`${e.t}-${i}`}>
+                    <span className="muted">
+                      {new Date(e.t * 1000).toISOString().slice(11, 19)}
+                    </span>{" "}
+                    {e.text}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="chartbox">
-
-
         <Toolbar
           activeTool={drawTool}
           onToolChange={pickTool}

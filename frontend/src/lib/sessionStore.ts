@@ -51,6 +51,8 @@ export type SessionRuntime = {
   /** Always restored paused */
   playing: boolean;
   updatedAt: number;
+  /** Optional lightweight trade/workspace event lines (v3.25.0, capped). Not a second Journal. */
+  workspaceLog?: { t: number; text: string }[];
 };
 
 const DB_NAME = "trading-replay-sessions";

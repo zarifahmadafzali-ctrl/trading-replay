@@ -390,3 +390,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Import preview + safe merge
 - Independent of App Backup and Sessions
 - Desktop readiness: shared portable contracts only (no Tauri/EXE)
+
+## v3.25.0 Professional trading workspace
+
+- Workspace strip: session, symbol/range, active account, book counts
+- Book panel: open positions, pending cancel, lightweight timeline
+- Hotkeys: Space / arrows / F (follow) / Esc (cancel draft)
+- No second Journal, Risk, or Order stores — chart shapes remain canonical
