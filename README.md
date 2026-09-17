@@ -383,3 +383,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - JOURNAL_CHANGED event keeps Analytics in sync after delete
 - Avg win/loss $ KPIs; R expectancy requires real R samples
 - No balance/Prop mutation from Analytics
+
+## v3.24.1 Cross-device market data transfer
+
+- CSV + `.trdata` export/import for global barCache
+- Import preview + safe merge
+- Independent of App Backup and Sessions
+- Desktop readiness: shared portable contracts only (no Tauri/EXE)

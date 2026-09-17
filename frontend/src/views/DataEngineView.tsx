@@ -18,6 +18,16 @@ import {
   type LocalCacheSummary,
   type MarketDayInfo,
 } from "../lib/barCache";
+import {
+  exportDaysToCsv,
+  exportDaysToTrData,
+  downloadTextFile,
+  csvTextToDayPackages,
+  parseTrData,
+  previewMarketImport,
+  importMarketPackages,
+  type ImportPreview,
+} from "../lib/marketDataTransfer";
 import { reconcileLocalFromBackendStatus } from "../lib/localCache";
 import { SYMBOLS } from "../lib/types";
 
@@ -69,6 +79,9 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
   const [localCaching, setLocalCaching] = useState(false);
   const [marketDays, setMarketDays] = useState<MarketDayInfo[]>([]);
   const [marketBusy, setMarketBusy] = useState(false);
+  const [selectedMarketDays, setSelectedMarketDays] = useState<Record<string, boolean>>({});
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [importProgress, setImportProgress] = useState<string>("");
   const [capability, setCapability] = useState<{
     base_resolution: string;
     derived: string[];
@@ -557,7 +570,10 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
         <div className="card market-data-mgmt">
           <h3>Market Data Management</h3>
           <p className="hint">
-            Global 1-second cache (symbol|day). Independent of Sessions. Size is estimated (bars × 40 bytes), not exact IndexedDB usage.
+            Global 1-second cache (symbol|day). Independent of Sessions. Size is estimated (bars × 40 bytes).
+            <br />
+            <b>App Backup</b> = Sessions/Journal/Accounts (no market bars).{" "}
+            <b>Market Data Export</b> = 1s bars only (no Journal). Works with zero Sessions.
           </p>
           <div className="sync-row" style={{ flexWrap: "wrap", gap: 8 }}>
             <button type="button" disabled={marketBusy} onClick={() => void refreshMarketDays()}>
@@ -608,13 +624,181 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
             >
               Delete all market data
             </button>
+            <button
+              type="button"
+              disabled={marketBusy || !Object.values(selectedMarketDays).some(Boolean)}
+              onClick={() => {
+                const selected = marketDays.filter((d) => selectedMarketDays[d.id]);
+                if (!selected.length) return;
+                const sym = selected[0].symbol;
+                if (selected.some((d) => d.symbol !== sym)) {
+                  window.alert("Select days from a single symbol for export.");
+                  return;
+                }
+                const days = selected.map((d) => d.day).sort();
+                setMarketBusy(true);
+                void exportDaysToCsv(sym, days)
+                  .then(({ csv, barCount, filename }) => {
+                    downloadTextFile(csv, filename, "text/csv;charset=utf-8");
+                    pushLog(`Exported CSV ${filename} · ${barCount.toLocaleString()} bars · ${days.length} day(s)`);
+                  })
+                  .finally(() => setMarketBusy(false));
+              }}
+            >
+              Export CSV
+            </button>
+            <button
+              type="button"
+              disabled={marketBusy || !Object.values(selectedMarketDays).some(Boolean)}
+              onClick={() => {
+                const selected = marketDays.filter((d) => selectedMarketDays[d.id]);
+                if (!selected.length) return;
+                const sym = selected[0].symbol;
+                if (selected.some((d) => d.symbol !== sym)) {
+                  window.alert("Select days from a single symbol for export.");
+                  return;
+                }
+                const days = selected.map((d) => d.day).sort();
+                setMarketBusy(true);
+                void exportDaysToTrData(sym, days)
+                  .then(({ json, barCount, filename }) => {
+                    downloadTextFile(json, filename, "application/json");
+                    pushLog(`Exported .trdata ${filename} · ${barCount.toLocaleString()} bars`);
+                  })
+                  .finally(() => setMarketBusy(false));
+              }}
+            >
+              Export .trdata
+            </button>
+            <label className="btn-file">
+              Import CSV / .trdata
+              <input
+                type="file"
+                accept=".csv,.trdata,application/json,text/csv"
+                disabled={marketBusy}
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (!file) return;
+                  setMarketBusy(true);
+                  setImportProgress("Reading file…");
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    void (async () => {
+                      try {
+                        const text = String(reader.result || "");
+                        let packages;
+                        let invalidRows = 0;
+                        let parseErrors: string[] = [];
+                        if (file.name.endsWith(".trdata") || file.name.endsWith(".json")) {
+                          let raw: unknown;
+                          try {
+                            raw = JSON.parse(text);
+                          } catch {
+                            window.alert("Invalid JSON in .trdata file");
+                            return;
+                          }
+                          const parsed = parseTrData(raw);
+                          if (!parsed.ok) {
+                            window.alert(parsed.errors.join("\n"));
+                            return;
+                          }
+                          packages = parsed.pkg.days;
+                        } else {
+                          const r = csvTextToDayPackages(text, symbol);
+                          packages = r.packages;
+                          invalidRows = r.invalidRows;
+                          parseErrors = r.errors;
+                          if (!packages.length) {
+                            window.alert(parseErrors.join("\n") || "No valid bars in CSV");
+                            return;
+                          }
+                        }
+                        const preview = await previewMarketImport(packages);
+                        preview.invalidRows = invalidRows;
+                        if (parseErrors.length) preview.errors = [...preview.errors, ...parseErrors];
+                        setImportPreview(preview);
+                        setImportProgress("");
+                      } catch (err) {
+                        window.alert(err instanceof Error ? err.message : String(err));
+                      } finally {
+                        setMarketBusy(false);
+                      }
+                    })();
+                  };
+                  reader.onerror = () => {
+                    setMarketBusy(false);
+                    window.alert("Could not read file");
+                  };
+                  reader.readAsText(file);
+                }}
+              />
+            </label>
           </div>
+          {importPreview && (
+            <div className="card import-preview">
+              <h4>Import preview</h4>
+              <p>
+                Symbol <b>{importPreview.symbol}</b> · Days {importPreview.days.join(", ")}
+              </p>
+              <p>
+                Rows {importPreview.rowsDetected.toLocaleString()} · Valid {importPreview.validRows.toLocaleString()} ·
+                Invalid {importPreview.invalidRows} · Duplicates {importPreview.duplicateRows} · New bars ~
+                {importPreview.newBars.toLocaleString()}
+              </p>
+              <p className="hint">
+                First {importPreview.firstTime ?? "—"} · Last {importPreview.lastTime ?? "—"} (unix seconds)
+              </p>
+              {importPreview.errors.length > 0 && (
+                <p className="warn-text">{importPreview.errors.join("; ")}</p>
+              )}
+              <div className="sync-row" style={{ gap: 8 }}>
+                <button
+                  type="button"
+                  disabled={marketBusy || importPreview.errors.some((e) => e.includes("Mixed symbols"))}
+                  onClick={() => {
+                    setMarketBusy(true);
+                    setImportProgress("Importing…");
+                    void importMarketPackages(importPreview.packages)
+                      .then((res) => {
+                        pushLog(
+                          `Imported ${res.daysWritten} day(s) · ${res.barsWritten.toLocaleString()} bars` +
+                            (res.errors.length ? ` · errors: ${res.errors.join("; ")}` : "")
+                        );
+                        setImportPreview(null);
+                        return refreshMarketDays();
+                      })
+                      .finally(() => {
+                        setMarketBusy(false);
+                        setImportProgress("");
+                      });
+                  }}
+                >
+                  Import (merge)
+                </button>
+                <button type="button" disabled={marketBusy} onClick={() => setImportPreview(null)}>
+                  Cancel
+                </button>
+              </div>
+              {importProgress && <p className="hint">{importProgress}</p>}
+            </div>
+          )}
           {marketDays.length === 0 ? (
             <p className="hint">No local market-data days cached.</p>
           ) : (
             <div className="market-day-list">
               {marketDays.slice(0, 60).map((d) => (
                 <div key={d.id} className="market-day-row">
+                  <label className="market-day-check">
+                    <input
+                      type="checkbox"
+                      checked={!!selectedMarketDays[d.id]}
+                      onChange={(e) =>
+                        setSelectedMarketDays((prev) => ({ ...prev, [d.id]: e.target.checked }))
+                      }
+                    />
+                  </label>
                   <span className="market-day-sym">{d.symbol}</span>
                   <span>{d.day}</span>
                   <span className={`market-day-status st-${d.status.toLowerCase()}`}>{d.status}</span>

@@ -57,3 +57,14 @@ barCache.ts (IndexedDB, symbol|day)
 - Delete day / symbol / all (market data only)
 - Concurrent same-day fetch dedup
 - Management UI in Data Engine
+
+## Market data transfer (v3.24.1)
+
+- **CSV**: `time,open,high,low,close,volume` — `time` is unix **seconds** (no TZ conversion).
+- **.trdata**: JSON package `kind=trading-replay-market-data`, `formatVersion` = `MARKET_DATA_EXPORT_FORMAT_VERSION` (1).
+- Export/import via Data Engine → Market Data Management; works with **zero Sessions**.
+- CSV imports mark days **PARTIAL** (cannot prove COMPLETE). `.trdata` may preserve `complete` metadata.
+- Merge is default (dedupe by timestamp). App Backup still excludes market bars.
+
+### Future Windows
+Same CSV/.trdata contracts; physical store may be SQLite later. App updates ≠ market-data updates ≠ user backups.

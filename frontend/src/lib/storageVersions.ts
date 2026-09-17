@@ -7,7 +7,7 @@
  */
 
 /** Application product version (package.json). */
-export const APP_VERSION = "3.24.0";
+export const APP_VERSION = "3.24.1";
 
 /**
  * IndexedDB session schema version (trading-replay-sessions DB).
@@ -26,6 +26,12 @@ export const BACKUP_FORMAT_VERSION = 1;
  * Market data is NOT an application binary update.
  */
 export const MARKET_DATA_CACHE_VERSION = 1;
+
+/**
+ * Portable market-data file format (CSV companion + .trdata JSON package).
+ * Independent of BACKUP_FORMAT_VERSION and MARKET_DATA_CACHE_VERSION.
+ */
+export const MARKET_DATA_EXPORT_FORMAT_VERSION = 1;
 
 /** Prop lifecycle rules engine version (last reconcile semantics). */
 export const PROP_LIFECYCLE_RULES_VERSION_TAG = 3;

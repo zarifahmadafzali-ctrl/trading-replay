@@ -1385,3 +1385,24 @@ footer {
     grid-auto-rows: auto;
   }
 }
+
+/* v3.24.1 market data transfer */
+.market-day-check { display: flex; align-items: center; }
+.market-day-row {
+  grid-template-columns: 28px 64px 96px 88px 1fr 1fr 1fr auto;
+}
+.btn-file {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  background: #1e293b;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.import-preview { margin-top: 10px; border: 1px solid #334155; }
+@media (max-width: 720px) {
+  .market-day-row {
+    grid-template-columns: 28px 1fr 1fr;
+  }
+}
