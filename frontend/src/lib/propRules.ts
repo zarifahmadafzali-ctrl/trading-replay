@@ -277,10 +277,10 @@ export function countTradingDays(trades: PropTradeLike[], accountId?: string): n
   const days = new Set<string>();
   for (const t of trades) {
     if (accountId && t.accountId && t.accountId !== accountId) continue;
-    // Prefer exitTime — a trading day is a day a position was closed
-    const ts = t.exitTime != null && Number.isFinite(t.exitTime) ? t.exitTime : t.entryTime;
-    if (ts == null || !Number.isFinite(ts)) continue;
-    days.add(utcDayKey(ts));
+    // v3.35.0: ONLY closed trades count (exitTime required). Pending/open do not.
+    // Multiple closes on the same UTC calendar day = 1 trading day.
+    if (t.exitTime == null || !Number.isFinite(t.exitTime)) continue;
+    days.add(utcDayKey(t.exitTime));
   }
   return days.size;
 }

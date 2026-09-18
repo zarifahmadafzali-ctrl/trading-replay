@@ -10,10 +10,25 @@ body {
 }
 
 .app {
-  height: 100vh;
+  /* v3.35.0: prefer dvh; min-height allows document growth; overflow-y auto so
+     fullscreen / long pages (Data Engine, Journal, Analytics) can scroll. */
+  min-height: 100vh;
+  min-height: 100dvh;
+  height: auto;
+  max-height: none;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+html.tr-fullscreen .app,
+.app:fullscreen,
+.app:-webkit-full-screen {
+  min-height: 100%;
+  height: 100%;
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 /* Top bar / navigation */
@@ -1623,4 +1638,70 @@ html:fullscreen body {
   color: #e2e8f0;
   border-radius: 6px;
   padding: 6px 10px;
+}
+
+
+/* v3.35.0 — compact Trade Book + fullscreen scroll + mobile drawing toolbar */
+.workspace-book {
+  margin: 4px 6px;
+  padding: 4px 6px;
+}
+.workspace-book h4 {
+  margin: 0 0 4px;
+  font-size: 11px;
+}
+.book-card {
+  padding: 4px 6px !important;
+  margin: 0 0 4px !important;
+  gap: 4px !important;
+  font-size: 11px;
+}
+.book-row-main {
+  gap: 6px !important;
+  min-height: 28px;
+  padding: 2px 0 !important;
+}
+.book-edit-row {
+  gap: 4px !important;
+  margin: 2px 0 !important;
+}
+.book-edit-row input {
+  min-height: 28px !important;
+  padding: 2px 6px !important;
+  font-size: 11px !important;
+}
+.book-edit-row button,
+.workspace-book button {
+  min-height: 28px;
+  padding: 2px 8px !important;
+  font-size: 11px !important;
+}
+.book-warn {
+  font-size: 10px;
+  margin: 2px 0 0;
+}
+
+/* Drawing toolbar always above chart panels on mobile */
+@media (max-width: 900px) {
+  .tv-toolbar,
+  .tv-toolbar-float {
+    z-index: 80 !important;
+    pointer-events: auto !important;
+  }
+  .workspace-book {
+    max-height: 40vh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* Data Engine / Journal / Analytics page body scroll safety */
+.view-panel,
+.session-page,
+.data-engine-page,
+.journal-page,
+.analytics-page {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  max-height: none;
 }

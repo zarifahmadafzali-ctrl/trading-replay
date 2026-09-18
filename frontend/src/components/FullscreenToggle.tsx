@@ -81,12 +81,19 @@ export function FullscreenToggle() {
     setStandalone(isStandaloneDisplay());
     setActive(!!getFullscreenElement());
 
-    const onChange = () => setActive(!!getFullscreenElement());
+    const onChange = () => {
+      const fs = !!getFullscreenElement();
+      setActive(fs);
+      // v3.35.0 — CSS hook for scrollable fullscreen layouts
+      document.documentElement.classList.toggle("tr-fullscreen", fs);
+    };
+    onChange();
     document.addEventListener("fullscreenchange", onChange);
     document.addEventListener("webkitfullscreenchange", onChange as EventListener);
     return () => {
       document.removeEventListener("fullscreenchange", onChange);
       document.removeEventListener("webkitfullscreenchange", onChange as EventListener);
+      document.documentElement.classList.remove("tr-fullscreen");
     };
   }, []);
 

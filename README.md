@@ -458,3 +458,12 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - `npm run tauri:dev` / `tauri:build` (require Rust + CLI)
 - IndexedDB still storage; SQLite NOT implemented
 - PWA `npm run build` independent of Tauri
+
+## v3.35.0 Prop Lifecycle Accuracy & Workspace UX
+
+- Trading days: closed trades only (exitTime); same UTC day = 1 day
+- Min trading days configurable (not hard-coded); blocks phase pass until met
+- Fullscreen/page scroll: app uses min-height 100dvh + overflow-y auto
+- Compact Trade Book CSS; mobile drawing toolbar z-index 80
+- Payout schedule UI only on Funded phase
+- Legacy session Prop defaults labeled non-authoritative

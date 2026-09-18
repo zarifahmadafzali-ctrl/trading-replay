@@ -772,9 +772,22 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                     );
                   })}
 
-                  <div className="muted" style={{ fontSize: 11, margin: "8px 0 4px" }}>PAYOUT SCHEDULE</div>
                   {(() => {
                     const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
+                    const isFundedPhase = (phase?.type || "").toLowerCase() === "funded" || /funded/i.test(phase?.name || "");
+                    if (!isFundedPhase) {
+                      return (
+                        <p className="muted" style={{ fontSize: 11, margin: "8px 0 4px" }}>
+                          Payout rules apply on the Funded phase only — not required to pass challenge phases.
+                        </p>
+                      );
+                    }
+                    return null;
+                  })()}
+                  {(() => {
+                    const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
+                    const isFundedPhase = (phase?.type || "").toLowerCase() === "funded" || /funded/i.test(phase?.name || "");
+                    if (!isFundedPhase) return null;
                     const sch = normalizePayoutSchedule(phase?.rules?.payout || { mode: "on_demand" });
                     const mode = sch.mode || "on_demand";
                     const numField = (field: keyof PayoutSchedule, label: string) => {
@@ -969,7 +982,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
 
         {sessionType === "prop" && (
           <div className="prop-block">
-            <h3>Prop Firm rules (session defaults · optional)</h3>
+            <h3>Legacy session Prop defaults (optional · does not override Account phases)</h3>
             <p className="muted" style={{ fontSize: 11 }}>Canonical Prop rules live on each Account → Prop Program → Phases below. This block is legacy session metadata only and does not override per-phase RuleSets.</p>
             <div className="session-form-grid">
               <label>
@@ -1377,9 +1390,22 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                     );
                   })}
 
-                  <div className="muted" style={{ fontSize: 11, margin: "8px 0 4px" }}>PAYOUT SCHEDULE</div>
                   {(() => {
                     const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
+                    const isFundedPhase = (phase?.type || "").toLowerCase() === "funded" || /funded/i.test(phase?.name || "");
+                    if (!isFundedPhase) {
+                      return (
+                        <p className="muted" style={{ fontSize: 11, margin: "8px 0 4px" }}>
+                          Payout rules apply on the Funded phase only — not required to pass challenge phases.
+                        </p>
+                      );
+                    }
+                    return null;
+                  })()}
+                  {(() => {
+                    const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
+                    const isFundedPhase = (phase?.type || "").toLowerCase() === "funded" || /funded/i.test(phase?.name || "");
+                    if (!isFundedPhase) return null;
                     const sch = normalizePayoutSchedule(phase?.rules?.payout || { mode: "on_demand" });
                     const mode = sch.mode || "on_demand";
                     const numField = (field: keyof PayoutSchedule, label: string) => {
