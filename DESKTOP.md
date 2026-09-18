@@ -83,3 +83,24 @@ Persistence checks: create session/runtime/shapes/journal → close → reopen �
 Tauri 2 + current plugins may require **Rust/Cargo ≥ 1.77** (edition2024). This environment used 1.75 — full `tauri:dev` / Windows EXE not completed here.
 
 `DESKTOP_SQLITE_SCHEMA_VERSION = 1` unchanged.
+
+## v3.37.0 — Desktop SQLite storage hardening (no GUI required)
+
+Code-level completion of the SQLite layer without requiring Tauri GUI/GTK/WebKit:
+
+- Shared SQL allow-list (`sqliteSqlGuard.ts` + Rust `assert_allowed_exec` / `assert_allowed_query`)
+- Reject DROP / ATTACH / multi-statement / non-SELECT abuse on IPC
+- Schema ensure: non-destructive versioning; refuse newer-than-supported schema
+- Expanded memory-driver tests: multi-session isolation, zero-session, rollback, market-data table absence
+- `DESKTOP_SQLITE_SCHEMA_VERSION` remains **1**
+- `BACKUP_FORMAT_VERSION` remains **1**
+- Market bars remain IndexedDB-only
+
+### Explicitly NOT verified in this release environment
+
+| Item | Status |
+|------|--------|
+| Tauri GUI (`tauri:dev`) | BLOCKED — missing gdk-3.0 / webkit2gtk on host |
+| Real Tauri → SQLite IPC | NOT RUN |
+| Windows EXE | NOT RUN (Linux host) |
+

@@ -29,6 +29,10 @@ function parseJson<T>(raw: unknown): T | undefined {
   }
 }
 
+/**
+ * Create-if-not-exists + non-destructive schema version bookkeeping.
+ * Future physical migrations append here; never DROP user tables.
+ */
 export async function ensureSqliteSchema(driver: SqliteDriver): Promise<void> {
   const statements = SQLITE_SCHEMA_SQL.split(";")
     .map((s) => s.trim())
@@ -37,7 +41,30 @@ export async function ensureSqliteSchema(driver: SqliteDriver): Promise<void> {
     await driver.exec(stmt);
   }
   const rows = await driver.query("SELECT * FROM meta WHERE key = ?", [META_SCHEMA_VERSION_KEY]);
-  if (!rows.length) {
+  const raw = rows[0]?.value;
+  const current = typeof raw === "string" || typeof raw === "number" ? Number(raw) : 0;
+
+  if (!rows.length || !Number.isFinite(current) || current < 1) {
+    // First open or missing version marker — schema DDL already applied above.
+    await driver.exec("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", [
+      META_SCHEMA_VERSION_KEY,
+      String(DESKTOP_SQLITE_SCHEMA_VERSION),
+    ]);
+    return;
+  }
+
+  if (current > DESKTOP_SQLITE_SCHEMA_VERSION) {
+    // Newer DB opened by older app — refuse silent downgrade mutations.
+    throw new Error(
+      `Desktop SQLite schema ${current} is newer than supported ${DESKTOP_SQLITE_SCHEMA_VERSION}`
+    );
+  }
+
+  // current === DESKTOP_SQLITE_SCHEMA_VERSION (1): no-op migrations.
+  // When DESKTOP_SQLITE_SCHEMA_VERSION bumps, add ordered migration steps here
+  // (ALTER TABLE … ADD COLUMN, new CREATE TABLE IF NOT EXISTS, then version bump).
+  if (current < DESKTOP_SQLITE_SCHEMA_VERSION) {
+    // Placeholder path for future migrations (none required for v1 → v1).
     await driver.exec("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", [
       META_SCHEMA_VERSION_KEY,
       String(DESKTOP_SQLITE_SCHEMA_VERSION),

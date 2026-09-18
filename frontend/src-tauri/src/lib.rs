@@ -95,20 +95,76 @@ pub fn app_db_path(app: &tauri::AppHandle) -> PathBuf {
     dir.join("trading-replay.sqlite")
 }
 
+/// Allow-list matching frontend sqliteSqlGuard (v3.37.0).
+/// Domain UI never constructs SQL; only SessionStorageAdapter fixed shapes.
+fn assert_allowed_exec(sql: &str) -> Result<(), String> {
+    let sql_trim = sql.trim();
+    if sql_trim.is_empty() {
+        return Ok(());
+    }
+    let body = sql_trim.trim_end_matches(';').trim();
+    if body.contains(';') {
+        return Err("multi-statement exec rejected".into());
+    }
+    let upper = body.to_uppercase();
+    let compact: String = upper.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    if compact.starts_with("SELECT") {
+        return Err("use sqlite_query for SELECT".into());
+    }
+    // Hard rejects
+    if compact.contains("DROP ")
+        || compact.contains("ATTACH ")
+        || compact.contains("DETACH ")
+        || compact.starts_with("ALTER ")
+        || compact.starts_with("UPDATE ")
+        || compact.contains(" PRAGMA ")
+            && !compact.starts_with("PRAGMA FOREIGN_KEYS")
+    {
+        return Err("sqlite_exec statement not allowed".into());
+    }
+
+    let ok = compact.starts_with("BEGIN")
+        || compact.starts_with("COMMIT")
+        || compact.starts_with("ROLLBACK")
+        || compact.starts_with("CREATE TABLE IF NOT EXISTS ")
+        || compact.starts_with("INSERT OR REPLACE INTO ")
+        || compact.starts_with("INSERT OR IGNORE INTO ")
+        || compact.starts_with("DELETE FROM ")
+        || compact == "PRAGMA FOREIGN_KEYS = ON"
+        || compact == "PRAGMA FOREIGN_KEYS=ON";
+
+    if !ok {
+        return Err("sqlite_exec statement not on allow-list".into());
+    }
+    Ok(())
+}
+
+fn assert_allowed_query(sql: &str) -> Result<(), String> {
+    let body = sql.trim().trim_end_matches(';').trim();
+    if body.is_empty() {
+        return Err("empty query".into());
+    }
+    if body.contains(';') {
+        return Err("multi-statement query rejected".into());
+    }
+    let upper = body.to_uppercase();
+    if !upper.starts_with("SELECT ") && upper != "SELECT" {
+        return Err("sqlite_query only accepts SELECT".into());
+    }
+    if upper.contains(" INTO ") || upper.contains("ATTACH") || upper.contains("LOAD_EXTENSION") {
+        return Err("sqlite_query statement not allowed".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn sqlite_exec(state: tauri::State<'_, DbState>, sql: String, params: Vec<Value>) -> Result<(), String> {
     let sql_trim = sql.trim();
     if sql_trim.is_empty() {
         return Ok(());
     }
-    // Controlled surface: adapter-only statements; reject multi-statement abuse
-    if sql_trim.contains(';') && !sql_trim.ends_with(';') {
-        return Err("multi-statement exec rejected".into());
-    }
-    let upper = sql_trim.to_uppercase();
-    if upper.starts_with("SELECT") {
-        return Err("use sqlite_query for SELECT".into());
-    }
+    assert_allowed_exec(sql_trim)?;
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     let bound = bind_params(&params);
     let refs: Vec<&dyn ToSql> = bound.iter().map(|b| b.as_ref()).collect();
@@ -124,9 +180,7 @@ fn sqlite_query(
     params: Vec<Value>,
 ) -> Result<Vec<Value>, String> {
     let sql_trim = sql.trim().trim_end_matches(';');
-    if !sql_trim.to_uppercase().starts_with("SELECT") {
-        return Err("sqlite_query only accepts SELECT".into());
-    }
+    assert_allowed_query(sql_trim)?;
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     let bound = bind_params(&params);
     let refs: Vec<&dyn ToSql> = bound.iter().map(|b| b.as_ref()).collect();

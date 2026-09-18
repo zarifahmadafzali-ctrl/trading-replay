@@ -481,3 +481,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - rusqlite wired in Tauri commands
 - `sqlite_verify` native persistence test (PASS in CI sandbox)
 - Full Tauri GUI/Windows EXE requires newer Rust toolchain
+
+## v3.37.0 Desktop SQLite storage hardening
+
+- SQL allow-list on Tauri `sqlite_exec` / `sqlite_query`
+- Schema migration bookkeeping (still physical version 1)
+- Expanded SQLite adapter tests without GUI
+- Web/PWA IndexedDB path unchanged
+- Tauri GUI and Windows EXE remain environment-blocked where GTK/WebKit or Windows host is unavailable
