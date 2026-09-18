@@ -7,7 +7,7 @@
  */
 
 /** Application product version (package.json). */
-export const APP_VERSION = "3.35.0";
+export const APP_VERSION = "3.36.0";
 
 /**
  * IndexedDB session schema version (trading-replay-sessions DB).
@@ -35,3 +35,6 @@ export const MARKET_DATA_EXPORT_FORMAT_VERSION = 1;
 
 /** Prop lifecycle rules engine version (last reconcile semantics). */
 export const PROP_LIFECYCLE_RULES_VERSION_TAG = 3;
+
+/** Re-export physical desktop schema version for docs/tests. */
+export { DESKTOP_SQLITE_SCHEMA_VERSION } from "./sqliteSchema";

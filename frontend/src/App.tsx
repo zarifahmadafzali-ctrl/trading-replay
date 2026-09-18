@@ -7,11 +7,16 @@ import { DataEngineView } from "./views/DataEngineView";
 import { JournalView } from "./views/JournalView";
 import { AnalyticsView } from "./views/AnalyticsView";
 import { checkHealth } from "./lib/api";
+import { bootDesktopSqliteIfNeeded } from "./lib/tauriSqliteDriver";
 import type { ViewName } from "./lib/types";
 
 export function App() {
   const [view, setView] = useState<ViewName>("replay");
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    void bootDesktopSqliteIfNeeded();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

@@ -1,6 +1,6 @@
 {
   "name": "trading-replay-pwa",
-  "version": "3.35.0",
+  "version": "3.36.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -41,7 +41,8 @@
     "tauri:build": "tauri build",
     "tauri": "tauri",
     "test:platform-v333": "node scripts/test-platform-v333.mjs",
-    "test:v335": "node scripts/test-prop-min-days-v335.mjs"
+    "test:v335": "node scripts/test-prop-min-days-v335.mjs",
+    "test:sqlite": "node scripts/test-sqlite-adapter-v336.mjs"
   },
   "dependencies": {
     "react": "18.3.1",

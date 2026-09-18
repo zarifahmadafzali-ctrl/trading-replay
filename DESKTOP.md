@@ -1,72 +1,62 @@
-# Trading Replay — Desktop (Tauri)
+# Trading Replay — Desktop Storage (v3.36.0)
 
-## Application identity (stable)
+## Application identity
 
 | Field | Value |
 |-------|--------|
-| Product name | Trading Replay |
+| Product | Trading Replay |
 | Identifier | `com.tradingreplay.afzali` |
-| Version | 3.33.0 |
+| Version | 3.36.0 |
 
-Do not change the identifier after v3.33.0 unless required for store policies.
+## Storage architecture
 
-## Current architecture
+| Data | Web | Desktop |
+|------|-----|---------|
+| Sessions / Journal / shapes / runtime / accounts / Prop | IndexedDB | **SQLite** (`SessionStorageAdapter`) |
+| Market 1s bars | IndexedDB `barCache` | **IndexedDB `barCache`** (not migrated in 3.36) |
 
 ```
-PWA / Browser:
-  React → platform.ts ("web") → SessionStorageAdapter → IndexedDB
-  PlatformFileService → Blob download + file input
-
-Desktop (Tauri):
-  Same React frontend
-  platform.ts ("desktop") when Tauri globals present
-  SessionStorageAdapter → still IndexedDB (SQLite NOT implemented)
-  PlatformFileService → web fallback (native dialogs NOT wired)
+React domain
+    ↓
+getSessionStorageAdapter()
+    ↓
+  web → indexedDbSessionAdapter
+  desktop → createSqliteSessionAdapter(driver)
+              ↓
+         Memory (tests) | Tauri invoke (production shell)
 ```
+
+## SQLite schema
+
+`DESKTOP_SQLITE_SCHEMA_VERSION = 1`
+
+Tables: `meta`, `sessions`, `session_runtime`, `session_shapes`, `journal_trades`, `app_kv`
+
+JSON payloads store the same logical `SessionMeta` / `SessionRuntime` / Journal arrays as the web adapter.
+
+## Database location
+
+Intended: application data directory + `trading-replay.sqlite`  
+(via Tauri path API when native rusqlite is linked; placeholder path documented in Rust setup)
+
+## Permissions
+
+Command surface only:
+
+- `sqlite_exec`
+- `sqlite_query`
+
+No `filesystem:*`, `shell:*`, or open-ended SQL from UI.
+
+## Migration
+
+IndexedDB is **not** deleted. First desktop SQLite start creates an empty DB. Use App Backup JSON (`BACKUP_FORMAT_VERSION = 1`) to transfer logical data between web and desktop.
 
 ## Commands
 
-| Command | Purpose | Requires Tauri CLI |
-|---------|---------|-------------------|
-| `npm run dev` | Browser Vite | No |
-| `npm run build` | PWA production | No |
-| `npm run tauri:dev` | Desktop window + Vite | Yes + Rust |
-| `npm run tauri:build` | Native bundle | Yes + Rust |
-
-Install CLI (already in package.json as optional script driver):
-
 ```bash
-cd frontend
-npm install
-# Rust 1.77+ recommended for Tauri 2
-npm run tauri:dev
-npm run tauri:build
+npm run dev          # web IndexedDB
+npm run build        # PWA
+npm run test:sqlite  # memory-driver conformance
+npm run tauri:dev    # desktop shell when Rust/CLI available
 ```
-
-## Permissions (v3.33.0)
-
-Capability `default`:
-
-- `core:default` only
-- No filesystem, shell, or arbitrary network grants
-
-Native file dialogs and SQLite are future work and must request explicit capabilities.
-
-## Storage contracts (unchanged)
-
-- `STORAGE_SCHEMA_VERSION = 1`
-- `BACKUP_FORMAT_VERSION = 1`
-- `MARKET_DATA_EXPORT_FORMAT_VERSION = 1`
-
-PWA and desktop do **not** share one physical database. Transfer via backup JSON + market-data export.
-
-## Future (not in 3.33.0)
-
-- SQLite / filesystem adapter implementing `SessionStorageAdapter`
-- Native file dialogs via Tauri plugins
-- Auto-updater / GitHub Releases
-- Code signing
-
-## Validation notes
-
-See release report for what was actually executed in CI/sandbox (Windows EXE may be NOT RUN on Linux hosts).

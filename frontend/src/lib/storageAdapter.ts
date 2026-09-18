@@ -8,7 +8,7 @@
  *   Storage Adapter  (this module)
  *        ↓
  *   Web: IndexedDB via sessionStore
- *   Future Desktop: Tauri + SQLite (NOT implemented)
+ *   Desktop: SQLite via registerDesktopSessionAdapter (v3.36.0)
  *
  * Canonical ownership (one authoritative path each):
  *   SessionMeta        → adapter.listSessions / getSession / upsertSession / deleteSession
@@ -43,7 +43,7 @@ import { STORAGE_SCHEMA_VERSION } from "./storageVersions";
 import { getAppPlatform } from "./platform";
 
 
-export type StoragePlatform = "web-indexeddb" | "desktop-sqlite-future";
+export type StoragePlatform = "web-indexeddb" | "desktop-sqlite";
 
 /**
  * Platform-neutral session persistence surface.
@@ -93,13 +93,21 @@ export const indexedDbSessionAdapter: SessionStorageAdapter = {
 
 /**
  * Default adapter for the running app.
- * v3.32.0: both web and desktop shells still use IndexedDB via this adapter.
- * Future: desktop may return a SQLite-backed SessionStorageAdapter implementing
- * the same interface — callers must not assume IndexedDB APIs.
+ * Web → IndexedDB. Desktop → SQLite adapter when a driver is registered.
+ * Until a desktop driver is injected (Tauri boot), falls back to IndexedDB
+ * so the same bundle never crashes without Tauri.
  */
+let desktopAdapterOverride: SessionStorageAdapter | null = null;
+
+/** Called once from desktop boot after SQLite driver is ready. */
+export function registerDesktopSessionAdapter(adapter: SessionStorageAdapter): void {
+  desktopAdapterOverride = adapter;
+}
+
 export function getSessionStorageAdapter(): SessionStorageAdapter {
-  // Platform detection is centralized; storage backend switch is future work.
-  void getAppPlatform();
+  if (getAppPlatform() === "desktop" && desktopAdapterOverride) {
+    return desktopAdapterOverride;
+  }
   return indexedDbSessionAdapter;
 }
 

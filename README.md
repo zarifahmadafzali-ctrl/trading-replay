@@ -467,3 +467,11 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Compact Trade Book CSS; mobile drawing toolbar z-index 80
 - Payout schedule UI only on Funded phase
 - Legacy session Prop defaults labeled non-authoritative
+
+## v3.36.0 Desktop SQLite Storage Adapter
+
+- `SessionStorageAdapter` → SQLite on desktop (memory driver for tests)
+- Web remains IndexedDB
+- Market data stays in barCache/IndexedDB
+- `DESKTOP_SQLITE_SCHEMA_VERSION = 1`; backup format unchanged
+- Tauri commands `sqlite_exec` / `sqlite_query` (typed; no arbitrary UI SQL)
