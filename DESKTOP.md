@@ -6,7 +6,7 @@
 |-------|--------|
 | Product | Trading Replay |
 | Identifier | `com.tradingreplay.afzali` |
-| Version | 3.36.0 |
+| Version | 3.36.1 |
 
 ## Storage architecture
 
@@ -60,3 +60,26 @@ npm run build        # PWA
 npm run test:sqlite  # memory-driver conformance
 npm run tauri:dev    # desktop shell when Rust/CLI available
 ```
+
+
+## v3.36.1 — Native rusqlite
+
+Real SQLite via `rusqlite` (bundled) behind:
+
+- `sqlite_exec`
+- `sqlite_query`
+
+### Native verification (no GUI)
+
+```bash
+# Standalone proof (works on Rust 1.70–1.75):
+cd /path/to/verify-crate   # or cargo run --bin sqlite_verify when Tauri deps resolve
+```
+
+Persistence checks: create session/runtime/shapes/journal → close → reopen → data remains → transactional delete.
+
+### Tauri full shell
+
+Tauri 2 + current plugins may require **Rust/Cargo ≥ 1.77** (edition2024). This environment used 1.75 — full `tauri:dev` / Windows EXE not completed here.
+
+`DESKTOP_SQLITE_SCHEMA_VERSION = 1` unchanged.

@@ -1,14 +1,19 @@
 [package]
 name = "trading-replay"
-version = "3.33.0"
-description = "Trading Replay desktop shell (Tauri)"
+version = "3.36.1"
+description = "Trading Replay desktop shell (Tauri + SQLite)"
 authors = ["Trading Replay"]
 edition = "2021"
-rust-version = "1.77"
+# Host may be older than 1.77; Tauri 2 prefers >=1.77. rusqlite path is independently testable.
+rust-version = "1.70"
 
 [lib]
 name = "trading_replay_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "sqlite_verify"
+path = "src/bin/sqlite_verify.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -17,6 +22,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rusqlite = { version = "0.29", features = ["bundled"] }
 
 [profile.release]
 panic = "abort"

@@ -475,3 +475,9 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Market data stays in barCache/IndexedDB
 - `DESKTOP_SQLITE_SCHEMA_VERSION = 1`; backup format unchanged
 - Tauri commands `sqlite_exec` / `sqlite_query` (typed; no arbitrary UI SQL)
+
+## v3.36.1 Native SQLite verification
+
+- rusqlite wired in Tauri commands
+- `sqlite_verify` native persistence test (PASS in CI sandbox)
+- Full Tauri GUI/Windows EXE requires newer Rust toolchain
