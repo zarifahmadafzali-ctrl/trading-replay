@@ -104,3 +104,14 @@ Code-level completion of the SQLite layer without requiring Tauri GUI/GTK/WebKit
 | Real Tauri → SQLite IPC | NOT RUN |
 | Windows EXE | NOT RUN (Linux host) |
 
+
+## v3.38.0 — Portable data & cross-platform storage
+
+Logical app backup remains **BACKUP_FORMAT_VERSION = 1** and is platform-neutral:
+
+- Export/import accept an optional `SessionStorageAdapter` (IndexedDB or SQLite).
+- Same JSON restores sessions, runtime, shapes, journal, accounts/Prop fields on either store.
+- Market-data bars remain excluded; market cache is independent of session delete.
+- Validation rejects future formatVersion and embedded bars/marketData.
+- Tauri GUI / Windows EXE still **NOT RUN** in environments without GTK/WebKit or Windows.
+

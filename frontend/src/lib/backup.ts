@@ -33,7 +33,8 @@ export type TradingReplayBackup = {
   formatVersion: number;
   appVersion: string;
   exportedAt: string;
-  platform: "web-indexeddb" | "desktop-sqlite-future" | string;
+  /** Physical source at export time — logical payload is platform-neutral. */
+  platform: "web-indexeddb" | "desktop-sqlite" | string;
   sessions: BackupSessionBundle[];
   activeSessionId?: string | null;
   metadata?: Record<string, unknown>;
@@ -67,30 +68,53 @@ export function validateBackup(raw: unknown): BackupValidationResult {
   } else if (o.formatVersion < 1) {
     errors.push(`Unsupported formatVersion ${o.formatVersion}`);
   }
+  // Market-data bars must never appear in app backup
+  if (o.bars != null || o.marketData != null || o.barCache != null || o.ticks != null) {
+    errors.push("Backup must not include market-data bars (bars/marketData/barCache/ticks)");
+  }
   if (!Array.isArray(o.sessions)) {
     errors.push("Missing sessions array");
   } else {
+    const seenIds = new Set<string>();
     o.sessions.forEach((s, i) => {
       if (!s || typeof s !== "object") {
         errors.push(`sessions[${i}] is not an object`);
         return;
       }
       const b = s as Record<string, unknown>;
+      if (b.bars != null || b.marketData != null) {
+        errors.push(`sessions[${i}] must not embed market-data bars`);
+      }
       const meta = b.meta as Record<string, unknown> | undefined;
       if (!meta || typeof meta !== "object") {
         errors.push(`sessions[${i}].meta missing`);
-      } else if (typeof meta.id !== "string" || !meta.id) {
+      } else if (typeof meta.id !== "string" || !meta.id.trim()) {
         errors.push(`sessions[${i}].meta.id missing`);
+      } else {
+        if (seenIds.has(meta.id)) {
+          errors.push(`Duplicate session id in backup: ${meta.id}`);
+        }
+        seenIds.add(meta.id);
       }
-      // trades may be missing on corrupt exports — warn in metadata but allow import of meta
-      const trades = extractBundleTrades(b);
       if (b.trades != null && !Array.isArray(b.trades) && !Array.isArray(b.journal)) {
         errors.push(`sessions[${i}].trades must be an array when present`);
       }
       if (b.shapes != null && !Array.isArray(b.shapes)) {
         errors.push(`sessions[${i}].shapes must be an array when present`);
       }
-      void trades;
+      // Soft-check trade identity when present
+      const trades = extractBundleTrades(b);
+      trades.forEach((t, ti) => {
+        if (!t || typeof t !== "object") {
+          errors.push(`sessions[${i}].trades[${ti}] is not an object`);
+          return;
+        }
+        const tr = t as Record<string, unknown>;
+        const tid = tr.tradeId ?? tr.id;
+        if (tid != null && typeof tid !== "string") {
+          errors.push(`sessions[${i}].trades[${ti}] tradeId/id must be string when present`);
+        }
+      });
     });
   }
   if (errors.length) return { ok: false, errors };
@@ -98,23 +122,39 @@ export function validateBackup(raw: unknown): BackupValidationResult {
 }
 
 /**
- * Build backup using the same Journal load path as JournalView/Analytics.
+ * Build backup from the active (or injected) SessionStorageAdapter.
+ * Logical JSON is platform-neutral: same shape from IndexedDB or SQLite.
  * Deep-clones trades so JSON serialization cannot hold live references.
+ * Never includes market-data bars.
+ *
+ * @param storage Optional adapter for tests / cross-platform tooling.
+ *                Defaults to getSessionStorageAdapter().
  */
-export async function exportBackup(): Promise<TradingReplayBackup> {
-  const adapter = getSessionStorageAdapter();
+export async function exportBackup(
+  storage?: import("./storageAdapter").SessionStorageAdapter
+): Promise<TradingReplayBackup> {
+  const adapter = storage ?? getSessionStorageAdapter();
   const sessions = await adapter.listSessions();
   const bundles: BackupSessionBundle[] = [];
   let totalTrades = 0;
 
   for (const meta of sessions) {
-    const [runtime, journalRows, shapes] = await Promise.all([
+    // Prefer adapter trades (works for SQLite without registering global desktop adapter).
+    // Fall back to journal helper when using default web path.
+    let journalRows: unknown[] = [];
+    if (storage) {
+      journalRows = await adapter.getTrades(meta.id);
+    } else {
+      journalRows = await loadJournalForSession(meta.id);
+    }
+    const [runtime, shapes] = await Promise.all([
       adapter.getRuntime(meta.id),
-      loadJournalForSession(meta.id),
       adapter.getShapes(meta.id),
     ]);
-    // Deep clone via JSON to guarantee serializable plain objects
-    const trades: JournalTrade[] = JSON.parse(JSON.stringify(journalRows || [])) as JournalTrade[];
+    const trades: JournalTrade[] = JSON.parse(JSON.stringify(journalRows || [])).map(
+      (t: Partial<JournalTrade> & Record<string, unknown>) =>
+        normalizeJournalTrade({ ...t, sessionId: meta.id })
+    ) as JournalTrade[];
     totalTrades += trades.length;
     bundles.push({
       meta: JSON.parse(JSON.stringify(meta)) as SessionMeta,
@@ -137,7 +177,9 @@ export async function exportBackup(): Promise<TradingReplayBackup> {
       storageSchemaVersion: adapter.schemaVersion,
       excludesMarketDataBars: true,
       totalJournalTrades: totalTrades,
-      note: "Journal trades use sessionTrades store (same as Journal UI). Market-data bars excluded.",
+      portable: true,
+      note:
+        "Logical session/journal/shapes only. Market-data bars excluded. Importable on web IndexedDB or desktop SQLite.",
     },
   };
 }
@@ -153,20 +195,22 @@ export type ImportResult = {
 };
 
 /**
- * Import validated backup.
- * Journal is restored via saveJournalForSession (same path as live trading).
+ * Import validated backup into the active (or injected) SessionStorageAdapter.
  * Never touches market-data bar cache.
  * Never fabricates trades.
+ *
+ * @param storage Optional adapter (tests / SQLite without Tauri GUI).
  */
 export async function importBackup(
   raw: unknown,
-  mode: ImportMode = "merge"
+  mode: ImportMode = "merge",
+  storage?: import("./storageAdapter").SessionStorageAdapter
 ): Promise<ImportResult> {
   const v = validateBackup(raw);
   if (!v.ok) {
     return { imported: 0, skipped: 0, errors: v.errors, sessionIds: [], tradesRestored: 0 };
   }
-  const adapter = getSessionStorageAdapter();
+  const adapter = storage ?? getSessionStorageAdapter();
   const existing = await adapter.listSessions();
   const existingIds = new Set(existing.map((s) => s.id));
   let imported = 0;
@@ -177,7 +221,12 @@ export async function importBackup(
 
   for (const bundle of v.backup.sessions) {
     try {
-      const id = bundle.meta.id;
+      const id = bundle.meta?.id;
+      if (!id || typeof id !== "string") {
+        errors.push("Session bundle missing meta.id");
+        skipped++;
+        continue;
+      }
       if (existingIds.has(id) && mode === "merge") {
         skipped++;
         continue;
@@ -197,7 +246,6 @@ export async function importBackup(
         });
       }
 
-      // Journal: same write path as appendTradeAsync / JournalView
       const rawTrades = extractBundleTrades(bundle as unknown as Record<string, unknown>);
       const normalized = rawTrades.map((t) =>
         normalizeJournalTrade({
@@ -205,17 +253,29 @@ export async function importBackup(
           sessionId: id, // always bind to restored session id
         } as Partial<JournalTrade> & Record<string, unknown>)
       );
-      await saveJournalForSession(id, normalized);
 
-      // Verify write (catches silent IDB failures)
-      const verified = await loadJournalForSession(id);
+      // Prefer direct adapter writes so SQLite and IndexedDB share the same import path.
+      await adapter.putTrades(id, normalized);
+      if (!storage) {
+        // Keep journal helper path warm for web listeners / audit when using default adapter.
+        try {
+          await saveJournalForSession(id, normalized);
+        } catch {
+          /* adapter already holds data */
+        }
+      }
+
+      const verified = storage
+        ? ((await adapter.getTrades(id)) as unknown[])
+        : await loadJournalForSession(id);
       if (normalized.length > 0 && verified.length === 0) {
-        // Retry once via adapter
         await adapter.putTrades(id, normalized);
-        const verified2 = await loadJournalForSession(id);
-        if (verified2.length === 0) {
+        const verified2 = storage
+          ? await adapter.getTrades(id)
+          : await loadJournalForSession(id);
+        if (!verified2.length) {
           errors.push(
-            `Session ${id}: failed to persist ${normalized.length} journal trade(s) to IndexedDB`
+            `Session ${id}: failed to persist ${normalized.length} journal trade(s) via ${adapter.platform}`
           );
         } else {
           tradesRestored += verified2.length;
@@ -223,9 +283,7 @@ export async function importBackup(
       } else {
         tradesRestored += verified.length;
         if (normalized.length > 0 && verified.length < normalized.length) {
-          errors.push(
-            `Session ${id}: restored ${verified.length}/${normalized.length} trades`
-          );
+          errors.push(`Session ${id}: restored ${verified.length}/${normalized.length} trades`);
         }
       }
 
@@ -238,12 +296,14 @@ export async function importBackup(
     }
   }
 
-  // Activate first imported session if none active (so Journal/Analytics load immediately)
-  if (sessionIds.length && !adapter.getActiveSessionId()) {
+  // Restore activeSessionId from backup when present and valid; else first imported.
+  const wanted = v.backup.activeSessionId;
+  if (wanted && sessionIds.includes(wanted)) {
+    adapter.setActiveSessionId(wanted);
+  } else if (sessionIds.length && !adapter.getActiveSessionId()) {
     adapter.setActiveSessionId(sessionIds[0]);
   }
 
-  // Notify JournalView / AnalyticsView to reload
   try {
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("tr-session-changed"));

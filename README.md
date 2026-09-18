@@ -489,3 +489,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Expanded SQLite adapter tests without GUI
 - Web/PWA IndexedDB path unchanged
 - Tauri GUI and Windows EXE remain environment-blocked where GTK/WebKit or Windows host is unavailable
+
+## v3.38.0 Portable data & cross-platform storage
+
+- Adapter-injectable backup export/import for IndexedDB ↔ SQLite logical round-trips
+- Stronger backup validation (no market bars; duplicate session ids)
+- `npm run test:portable` — SQLite memory portable backup suite
+- Format versions unchanged (backup/storage/sqlite/market export all stay at 1)

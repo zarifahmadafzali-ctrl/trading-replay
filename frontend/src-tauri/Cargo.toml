@@ -1,6 +1,6 @@
 [package]
 name = "trading-replay"
-version = "3.37.0"
+version = "3.38.0"
 description = "Trading Replay desktop shell (Tauri + SQLite)"
 authors = ["Trading Replay"]
 edition = "2021"
