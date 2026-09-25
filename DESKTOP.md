@@ -115,3 +115,48 @@ Logical app backup remains **BACKUP_FORMAT_VERSION = 1** and is platform-neutral
 - Validation rejects future formatVersion and embedded bars/marketData.
 - Tauri GUI / Windows EXE still **NOT RUN** in environments without GTK/WebKit or Windows.
 
+
+## v3.39.0 — GitHub Actions Windows build
+
+Build a **Windows** installer/EXE on a GitHub-hosted runner. You do **not** need Visual Studio or the Tauri toolchain on your laptop.
+
+### How to run the build
+
+1. Open the GitHub repo: `zarifahmadafzali-ctrl/trading-replay`
+2. Go to **Actions** → workflow **Windows Tauri Build**
+3. Click **Run workflow** → **Run workflow** (`workflow_dispatch` only; not on every push to `main`)
+4. Wait for the job `Build Windows installer` on `windows-latest`
+
+### Where to find artifacts
+
+After a green run:
+
+1. Open the completed workflow run
+2. **Artifacts** → download **`trading-replay-windows`**
+
+Typical contents (Tauri 2 + `bundle.targets: all`):
+
+| Path pattern | Type |
+|--------------|------|
+| `*.exe` under NSIS bundle | NSIS installer (unsigned) |
+| `*.msi` under MSI bundle | MSI installer (unsigned), if produced |
+| `trading-replay.exe` / product EXE | Raw release binary (unsigned) |
+
+Exact filenames depend on Tauri/NSIS naming (`productName`: **Trading Replay**, identifier `com.tradingreplay.afzali`).
+
+### Unsigned build warning
+
+This workflow does **not** configure code signing certificates or secrets.
+
+- Windows SmartScreen / Defender may warn on first run.
+- Treat the artifact as an **unsigned** developer package until you add your own signing step.
+
+### Local requirements (optional)
+
+- **Using GitHub Actions:** no Visual Studio on the developer machine.
+- **Local `npm run tauri:build` on Windows:** still needs Rust MSVC + WebView2 + VS Build Tools as per Tauri docs — independent of this CI path.
+
+### What this does not change
+
+- PWA / browser build (`npm run build`) remains available.
+- Storage formats, backup, market data, and trading logic are unchanged by this workflow.

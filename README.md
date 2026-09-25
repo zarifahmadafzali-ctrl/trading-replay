@@ -496,3 +496,10 @@ No changes to Chart.tsx, the 1-second execution engine, `execBars`, SL/TP logic,
 - Stronger backup validation (no market bars; duplicate session ids)
 - `npm run test:portable` — SQLite memory portable backup suite
 - Format versions unchanged (backup/storage/sqlite/market export all stay at 1)
+
+## v3.39.0 GitHub Actions Windows EXE build
+
+- Workflow: **Windows Tauri Build** (`.github/workflows/windows-build.yml`)
+- Trigger: **Actions → Run workflow** (`workflow_dispatch`)
+- Artifact: **trading-replay-windows** (unsigned NSIS/MSI/EXE)
+- No Visual Studio required on the developer laptop when using CI
