@@ -6,10 +6,16 @@ authors = ["Trading Replay"]
 edition = "2021"
 # Host may be older than 1.77; Tauri 2 prefers >=1.77. rusqlite path is independently testable.
 rust-version = "1.70"
+# Required when multiple [[bin]] targets exist; Tauri picks this as the app binary.
+default-run = "trading-replay"
 
 [lib]
 name = "trading_replay_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "trading-replay"
+path = "src/main.rs"
 
 [[bin]]
 name = "sqlite_verify"
