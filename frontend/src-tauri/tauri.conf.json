@@ -33,15 +33,16 @@
     "active": true,
     "targets": "all",
     "icon": [
+      "icons/icon.ico",
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/henry.w@example.net",
-      "icons/icon.png",
-      "icons/icon.ico"
+      "icons/icon.png"
     ],
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico"
       }
     }
   }
