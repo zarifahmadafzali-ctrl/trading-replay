@@ -332,10 +332,17 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
   }
 
   async function handleDelete(id: string) {
+    const target = sessions.find((s) => s.id === id);
+    const label = target?.name || id;
+    const ok = window.confirm(
+      `Delete session "${label}"?\n\nThis permanently removes the session workspace, journal trades, drawings, and runtime for this session only.\n\nThis cannot be undone.`
+    );
+    if (!ok) return;
     try {
       await getSessionStorageAdapter().deleteSession(id);
       await refresh();
       emitSessionChanged(getSessionStorageAdapter().getActiveSessionId());
+      setError(null);
     } catch {
       setError("Could not delete session");
     }
@@ -1117,6 +1124,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
       ) : sessions.length === 0 ? (
         <p className="empty-state">No sessions yet. Create one to start an isolated backtest.</p>
       ) : (
+        <div className="session-list-scroll" role="region" aria-label="Session list">
         <ul className="session-items">
           {sessions.map((s) => {
             const full = ensureSessionAccounts(s);
@@ -1617,6 +1625,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
             );
           })}
         </ul>
+        </div>
       )}
     </section>
   );

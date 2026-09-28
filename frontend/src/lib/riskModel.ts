@@ -198,11 +198,13 @@ export function normalizeAccount(
 export function defaultInstrument(symbol: string): InstrumentSpec {
   const s = symbol.toUpperCase();
   if (s === "US30" || s === "DJ30") {
+    // CFD index: $1 per point per 1.0 lot. tick 0.01 → tickValue 0.01 so
+    // tickValue/tickSize stays consistent with pointValue if either path is used.
     return {
       symbol: s,
       contractSize: 1,
       tickSize: 0.01,
-      tickValue: 1,
+      tickValue: 0.01,
       pointValue: 1,
       pipValue: 1,
       minLot: 0.01,

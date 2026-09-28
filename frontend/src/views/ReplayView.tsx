@@ -614,14 +614,99 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     setCursor(Math.min(baseBars.length, Math.max(1, lo + 1)));
   }
 
+  /**
+   * Session navigation (not same-day time jump).
+   * First click: jump to this session's start on the current calendar day if still ahead
+   * of the cursor; otherwise the next occurrence in available bars.
+   * Subsequent clicks after that session has passed: next trading day's occurrence.
+   * Timezones: Asia/Tokyo, Europe/London, America/New_York (DST-aware via Intl).
+   */
   function jumpSession(kind: "tokyo" | "london" | "ny") {
     if (!baseBars.length) return;
     setPlaying(false);
     const cur = baseBars[Math.max(0, cursor - 1)] ?? baseBars[0];
-    const d = new Date(cur.time * 1000);
-    const hours: Record<string, number> = { tokyo: 0, london: 7, ny: 13 };
-    d.setUTCHours(hours[kind], kind === "ny" ? 30 : 0, 0, 0);
-    const target = Math.floor(d.getTime() / 1000);
+    const curSec = cur.time;
+    const tz =
+      kind === "tokyo" ? "Asia/Tokyo" : kind === "london" ? "Europe/London" : "America/New_York";
+    const startHour = kind === "ny" ? 9 : kind === "london" ? 8 : 9;
+    const startMin = kind === "ny" ? 30 : 0;
+
+    function localParts(unixSec: number) {
+      const d = new Date(unixSec * 1000);
+      const fmt = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      });
+      const parts = fmt.formatToParts(d);
+      const get = (t: string) => Number(parts.find((p) => p.type === t)?.value || 0);
+      return {
+        y: get("year"),
+        m: get("month"),
+        day: get("day"),
+        hour: get("hour"),
+        minute: get("minute"),
+      };
+    }
+
+    /** Approximate unix for local y-m-d H:M in tz by binary search on bars/time. */
+    function localWallToUnix(y: number, m: number, day: number, hour: number, minute: number): number {
+      // Seed: treat as UTC then refine using Intl offset
+      let guess = Math.floor(Date.UTC(y, m - 1, day, hour, minute, 0, 0) / 1000);
+      for (let i = 0; i < 8; i++) {
+        const lp = localParts(guess);
+        const targetMin = hour * 60 + minute;
+        const actualMin = lp.hour * 60 + lp.minute;
+        let dayDelta =
+          Date.UTC(y, m - 1, day) - Date.UTC(lp.y, lp.m - 1, lp.day);
+        dayDelta = Math.round(dayDelta / 86400000);
+        const minDelta = dayDelta * 1440 + (targetMin - actualMin);
+        if (minDelta === 0) break;
+        guess += minDelta * 60;
+      }
+      return guess;
+    }
+
+    function addLocalDays(y: number, m: number, day: number, add: number) {
+      const dt = new Date(Date.UTC(y, m - 1, day + add));
+      return { y: dt.getUTCFullYear(), m: dt.getUTCMonth() + 1, day: dt.getUTCDate() };
+    }
+
+    const lp = localParts(curSec);
+    // If we are still before today's session start → go there; else next day onward
+    const todayStart = localWallToUnix(lp.y, lp.m, lp.day, startHour, startMin);
+    let searchFrom = todayStart;
+    // Already at/past this session start (with 1s tolerance) → next day
+    if (curSec >= todayStart - 1) {
+      const n = addLocalDays(lp.y, lp.m, lp.day, 1);
+      searchFrom = localWallToUnix(n.y, n.m, n.day, startHour, startMin);
+    }
+
+    // Walk forward up to ~14 calendar days until we land on/after a bar
+    let target = searchFrom;
+    for (let d = 0; d < 14; d++) {
+      const cand =
+        d === 0
+          ? searchFrom
+          : (() => {
+              const base = localParts(searchFrom);
+              const n = addLocalDays(base.y, base.m, base.day, d);
+              return localWallToUnix(n.y, n.m, n.day, startHour, startMin);
+            })();
+      if (cand > curSec) {
+        target = cand;
+        // Prefer first candidate that exists in bar range or is after last bar end
+        if (cand <= baseBars[baseBars.length - 1].time + 86400) {
+          target = cand;
+          break;
+        }
+      }
+    }
+
     let lo = 0;
     let hi = baseBars.length - 1;
     while (lo < hi) {
@@ -629,7 +714,14 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       if (baseBars[mid].time < target) lo = mid + 1;
       else hi = mid;
     }
+    // If exact target is in the past relative to found index, step to next bar
+    if (baseBars[lo] && baseBars[lo].time <= curSec && lo + 1 < baseBars.length) {
+      lo = lo + 1;
+    }
     setCursor(Math.min(baseBars.length, Math.max(1, lo + 1)));
+    setMessage(
+      `Session → ${kind === "ny" ? "New York" : kind === "london" ? "London" : "Tokyo"} next start`
+    );
   }
 
   function addCustomTf() {
@@ -828,6 +920,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       durationSeconds: Math.max(0, closed.exitTime - closed.entry.time),
       snapshot: snap as any,
       closeScreenshot: closed.screenshot,
+      entryScreenshot: closed.entryScreenshot,
       fillStatus: "closed" as const,
       entrySource: closed.orderType === "market" ? "market" : "pending_fill",
       accountType: (acc?.accountType as "personal" | "prop") || "personal",
@@ -1122,6 +1215,18 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       const instrument = full.instrument || defaultInstrument(symbol);
       const lev = getEffectiveLeverage(account);
       const accountForRisk = lev !== account.leverage ? { ...account, leverage: lev } : account;
+      // Sum margin of other open positions on the same account (personal + prop)
+      let usedMargin = 0;
+      for (const s of shapes) {
+        if (s.kind !== "position" || s.status !== "open") continue;
+        if (s.id === pos.id) continue;
+        const owner = s.accountId || account.accountId;
+        if (owner !== account.accountId) continue;
+        const lot = Number((s.riskSnapshot as any)?.finalLot);
+        if (!(lot > 0)) continue;
+        const levSnap = Math.max(1, Number((s.riskSnapshot as any)?.leverage) || lev);
+        usedMargin += (s.entry.price * (instrument.contractSize || 1) * lot) / levSnap;
+      }
       const result = calculateRisk({
         account: accountForRisk,
         instrument,
@@ -1130,6 +1235,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         stopPrice: pos.stop.price,
         takeProfitPrice: pos.takeProfit.price,
         side: pos.side,
+        usedMargin,
       });
       const propSnap = buildPropRuleSnapshot(account);
       return {
@@ -1166,11 +1272,23 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         rr: result.rr,
         marginConstrained: result.marginConstrained,
         targetRiskPercent: result.targetRiskPercent,
+        usedMargin,
         entryTime: pos.entry.time,
+        // Debug sizing breakdown (persisted in journal snapshot)
+        sizingDebug: {
+          riskBasedLot: result.riskBasedLot,
+          marginMaxLot: result.marginMaxLot,
+          finalLot: result.finalLot,
+          marginRequired: result.marginRequired,
+          freeMargin: result.freeMargin,
+          usedMargin,
+          equity: result.equity,
+          leverage: result.leverage,
+        },
         ...(propSnap ? { propRuleSnapshot: propSnap } : {}),
       };
     },
-    [sessionMeta, riskPercent, symbol]
+    [sessionMeta, riskPercent, symbol, shapes]
   );
 
   const openPositions = useMemo(
@@ -1202,6 +1320,18 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       | undefined;
     const p = draft || pos;
     if (!p || p.kind !== "position") return null;
+    // Margin already committed by OTHER open positions on this account
+    let usedMargin = 0;
+    for (const s of shapes) {
+      if (s.kind !== "position" || s.status !== "open") continue;
+      if (s.id === p.id) continue;
+      const owner = s.accountId || account.accountId;
+      if (owner !== account.accountId) continue;
+      const lot = Number((s.riskSnapshot as any)?.finalLot);
+      if (!(lot > 0)) continue;
+      const lev = Math.max(1, Number((s.riskSnapshot as any)?.leverage) || account.leverage || 1);
+      usedMargin += (s.entry.price * (instrument.contractSize || 1) * lot) / lev;
+    }
     const result = calculateRisk({
       account,
       instrument,
@@ -1210,6 +1340,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       stopPrice: p.stop.price,
       takeProfitPrice: p.takeProfit.price,
       side: p.side,
+      usedMargin,
     });
     lastRiskSnapshotRef.current = result;
     return result;

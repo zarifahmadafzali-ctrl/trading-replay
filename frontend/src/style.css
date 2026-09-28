@@ -275,6 +275,35 @@ main h3 {
   flex-direction: column;
   gap: 8px;
 }
+/* Phase 1: keep long session lists reachable */
+.session-list-scroll {
+  max-height: min(52vh, 480px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  margin-top: 8px;
+  -webkit-overflow-scrolling: touch;
+}
+.session-list-scroll .session-items {
+  margin: 0;
+}
+.session-items li {
+  flex-wrap: wrap;
+}
+@media (max-width: 720px) {
+  .session-list-scroll {
+    max-height: min(40vh, 360px);
+  }
+  .session-items li {
+    align-items: flex-start;
+  }
+  .session-items .session-actions {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+}
 .watchlist-items li,
 .session-items li {
   display: flex;

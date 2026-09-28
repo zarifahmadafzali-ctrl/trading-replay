@@ -42,7 +42,10 @@ export type JournalTrade = {
   tpDistance?: number | null;
   durationSeconds?: number;
   snapshot?: TradeRiskSnapshot;
+  /** Chart PNG when the position closed (SL/TP/manual). */
   closeScreenshot?: string;
+  /** Chart PNG when the position opened / filled (entry confirmation). */
+  entryScreenshot?: string;
 
   /** v3.19.0 extensions (optional for legacy rows) */
   tradeId?: string;
@@ -129,6 +132,7 @@ export function normalizeJournalTrade(raw: Partial<JournalTrade> & Record<string
     durationSeconds: numOrUndef(raw.durationSeconds),
     snapshot: raw.snapshot as TradeRiskSnapshot | undefined,
     closeScreenshot: raw.closeScreenshot as string | undefined,
+    entryScreenshot: raw.entryScreenshot as string | undefined,
     currencyPnL: numOrNull(raw.currencyPnL),
     balanceAfter: numOrNull(raw.balanceAfter),
     rewardAmount: numOrNull(raw.rewardAmount),

@@ -448,12 +448,29 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
               </section>
             )}
 
+            {selected.entryScreenshot && (
+              <section>
+                <h4>Entry snapshot</h4>
+                <p className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
+                  Chart at order fill / confirmation (Entry, SL, TP + drawings)
+                </p>
+                <img
+                  src={selected.entryScreenshot}
+                  alt="Trade entry chart"
+                  className="journal-screenshot"
+                />
+              </section>
+            )}
+
             {selected.closeScreenshot && (
               <section>
-                <h4>Chart at close</h4>
+                <h4>Exit snapshot</h4>
+                <p className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
+                  Chart at close ({selected.reason || "exit"}) — Entry, SL, TP preserved
+                </p>
                 <img
                   src={selected.closeScreenshot}
-                  alt="Trade close chart"
+                  alt="Trade exit chart"
                   className="journal-screenshot"
                 />
               </section>

@@ -139,6 +139,8 @@ export type PositionShape = {
   accountId?: string;
   /** Frozen at actual fill (v3.16.1). */
   riskSnapshot?: Record<string, unknown>;
+  /** Chart PNG at the moment the position became open (entry/confirm). */
+  entryScreenshot?: string;
 };
 
 export type ClosedPosition = {
@@ -155,6 +157,8 @@ export type ClosedPosition = {
   riskSnapshot?: Record<string, unknown>;
   /** PNG data URL captured only on SL/TP/manual close (v3.16.1). */
   screenshot?: string;
+  /** Chart PNG captured when the position opened (entry/confirm). */
+  entryScreenshot?: string;
 };
 
 export type Shape = TrendlineShape | RectangleShape | MeasureShape | HLineShape | VLineShape | FibShape | PositionShape;
@@ -456,6 +460,59 @@ export function Chart({
     }
   }
 
+  /** Capture chart canvas with Entry/SL/TP fitted in view (drawings included). */
+  function capturePositionScreenshot(pos: PositionShape, exitPrice?: number): string | undefined {
+    try {
+      const handles = handlesRef.current;
+      if (!handles?.chart || !handles.candles) return undefined;
+      const prices = [pos.entry.price, pos.stop.price, pos.takeProfit.price, exitPrice]
+        .filter((x): x is number => x != null && Number.isFinite(x));
+      const minP = Math.min(...prices);
+      const maxP = Math.max(...prices);
+      const span = maxP - minP || Math.max(Math.abs(maxP) * 0.002, 1);
+      const pad = span * 0.25;
+      const ps = handles.candles.priceScale();
+      let prevRange: { from: number; to: number } | null = null;
+      try {
+        prevRange =
+          (ps as { getVisibleRange?: () => { from: number; to: number } | null }).getVisibleRange?.() ??
+          null;
+        (ps as { applyOptions?: (o: object) => void }).applyOptions?.({ autoScale: false });
+        (ps as { setVisibleRange?: (r: { from: number; to: number }) => void }).setVisibleRange?.({
+          from: minP - pad,
+          to: maxP + pad,
+        });
+      } catch {
+        /* scale optional */
+      }
+      // Force overlay redraw so drawings appear in the capture
+      try {
+        scheduleRedraw();
+      } catch {
+        /* */
+      }
+      const shot = handles.chart.takeScreenshot?.();
+      let dataUrl: string | undefined;
+      if (shot && typeof (shot as HTMLCanvasElement).toDataURL === "function") {
+        dataUrl = (shot as HTMLCanvasElement).toDataURL("image/png");
+      }
+      try {
+        if (prevRange) {
+          (ps as { setVisibleRange?: (r: { from: number; to: number }) => void }).setVisibleRange?.(
+            prevRange
+          );
+        } else {
+          (ps as { applyOptions?: (o: object) => void }).applyOptions?.({ autoScale: true });
+        }
+      } catch {
+        /* */
+      }
+      return dataUrl;
+    } catch {
+      return undefined;
+    }
+  }
+
   function confirmDrafts() {
     let n = 0;
     const events: string[] = [];
@@ -468,6 +525,8 @@ export function Chart({
         const ownerId = s.accountId || activeAccountIdRef.current || undefined;
         const snap =
           nextStatus === "open" ? captureRiskSnapshotRef.current?.({ ...s, accountId: ownerId }) : null;
+        const entryShot =
+          nextStatus === "open" ? capturePositionScreenshot({ ...s, status: "open" }) : undefined;
         if (nextStatus === "open") {
           events.push(`Filled · ${s.side.toUpperCase()} market @ ${s.entry.price.toFixed(2)}`);
         } else {
@@ -480,6 +539,7 @@ export function Chart({
           status: nextStatus,
           ...(ownerId ? { accountId: ownerId } : {}),
           ...(snap ? { riskSnapshot: snap } : {}),
+          ...(entryShot ? { entryScreenshot: entryShot } : {}),
         };
       }
       return s;
@@ -505,6 +565,7 @@ export function Chart({
     }
     const pnlPoints =
       s.side === "long" ? exitPrice - s.entry.price : s.entry.price - exitPrice;
+    const screenshot = capturePositionScreenshot(s, exitPrice);
     const closed: ClosedPosition = {
       id: s.id,
       side: s.side,
@@ -517,6 +578,8 @@ export function Chart({
       reason: "manual",
       pnlPoints,
       riskSnapshot: s.riskSnapshot,
+      screenshot,
+      entryScreenshot: s.entryScreenshot,
     };
     setShapes(shapesRef.current.filter((x) => x.id !== id));
     onPositionClosedRef.current?.(closed);
@@ -1940,7 +2003,12 @@ export function Chart({
                   entry: { time: bar.time, price: limitPx },
                 };
                 const snap = captureRiskSnapshotRef.current?.(filled);
-                nextWorking.push(snap ? { ...filled, riskSnapshot: snap } : filled);
+                const entryShot = capturePositionScreenshot(filled);
+                nextWorking.push({
+                  ...filled,
+                  ...(snap ? { riskSnapshot: snap } : {}),
+                  ...(entryShot ? { entryScreenshot: entryShot } : {}),
+                });
                 window.dispatchEvent(
                   new CustomEvent("tr-workspace-event", {
                     detail: {
@@ -1969,7 +2037,12 @@ export function Chart({
               entry: { time: bar.time, price: s.entry.price },
             };
             const snap = captureRiskSnapshotRef.current?.(filled);
-            nextWorking.push(snap ? { ...filled, riskSnapshot: snap } : filled);
+            const entryShot = capturePositionScreenshot(filled);
+            nextWorking.push({
+              ...filled,
+              ...(snap ? { riskSnapshot: snap } : {}),
+              ...(entryShot ? { entryScreenshot: entryShot } : {}),
+            });
             window.dispatchEvent(
               new CustomEvent("tr-workspace-event", {
                 detail: {
@@ -2020,47 +2093,7 @@ export function Chart({
         }
         mutated = true;
         const pnlPoints = long ? exitPrice - s.entry.price : s.entry.price - exitPrice;
-        let screenshot: string | undefined;
-        try {
-          const handles = handlesRef.current;
-          if (handles?.chart && handles.candles) {
-            // Fit price scale so ENTRY, SL, and TP are all visible (not just exit)
-            const prices = [s.entry.price, s.stop.price, s.takeProfit.price, exitPrice].filter(
-              (x) => Number.isFinite(x)
-            );
-            const minP = Math.min(...prices);
-            const maxP = Math.max(...prices);
-            const span = maxP - minP || Math.max(Math.abs(maxP) * 0.002, 1);
-            const pad = span * 0.25;
-            const ps = handles.candles.priceScale();
-            let prevRange: { from: number; to: number } | null = null;
-            try {
-              prevRange = (ps as { getVisibleRange?: () => { from: number; to: number } | null }).getVisibleRange?.() ?? null;
-              (ps as { applyOptions?: (o: object) => void }).applyOptions?.({ autoScale: false });
-              (ps as { setVisibleRange?: (r: { from: number; to: number }) => void }).setVisibleRange?.({
-                from: minP - pad,
-                to: maxP + pad,
-              });
-            } catch {
-              /* scale optional */
-            }
-            const shot = handles.chart.takeScreenshot?.();
-            if (shot && typeof (shot as HTMLCanvasElement).toDataURL === "function") {
-              screenshot = (shot as HTMLCanvasElement).toDataURL("image/png");
-            }
-            try {
-              if (prevRange) {
-                (ps as { setVisibleRange?: (r: { from: number; to: number }) => void }).setVisibleRange?.(prevRange);
-              } else {
-                (ps as { applyOptions?: (o: object) => void }).applyOptions?.({ autoScale: true });
-              }
-            } catch {
-              /* */
-            }
-          }
-        } catch {
-          /* screenshot optional */
-        }
+        const screenshot = capturePositionScreenshot(s, exitPrice);
         closed.push({
           id: s.id,
           side: s.side,
@@ -2074,6 +2107,7 @@ export function Chart({
           pnlPoints,
           riskSnapshot: s.riskSnapshot,
           screenshot,
+          entryScreenshot: s.entryScreenshot,
         });
       }
       working = nextWorking;
