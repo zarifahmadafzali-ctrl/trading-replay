@@ -683,6 +683,72 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                   <option value="prop">Prop</option>
                 </select>
               </label>
+              <label>
+                Risk Mode
+                <select
+                  value={a.riskMode || "percent_equity"}
+                  onChange={(e) =>
+                    updateAccount(a.accountId, {
+                      riskMode: e.target.value as "percent_equity" | "fixed_money" | "fixed_lot",
+                    })
+                  }
+                >
+                  <option value="percent_equity">% of Equity</option>
+                  <option value="fixed_money">Fixed Money Risk</option>
+                  <option value="fixed_lot">Fixed Lot</option>
+                </select>
+              </label>
+              {(a.riskMode || "percent_equity") === "percent_equity" && (
+                <label>
+                  Risk %
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    value={a.riskPercent ?? 1}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      updateAccount(a.accountId, {
+                        riskPercent: Number.isFinite(n) && n >= 0 ? n : 1,
+                      });
+                    }}
+                  />
+                </label>
+              )}
+              {a.riskMode === "fixed_money" && (
+                <label>
+                  Fixed Risk ($)
+                  <input
+                    type="number"
+                    step="1"
+                    min="0"
+                    value={a.fixedRiskAmount ?? 100}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      updateAccount(a.accountId, {
+                        fixedRiskAmount: Number.isFinite(n) && n >= 0 ? n : 0,
+                      });
+                    }}
+                  />
+                </label>
+              )}
+              {a.riskMode === "fixed_lot" && (
+                <label>
+                  Fixed Lot
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={a.fixedLot ?? 0.1}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      updateAccount(a.accountId, {
+                        fixedLot: Number.isFinite(n) && n >= 0 ? n : 0,
+                      });
+                    }}
+                  />
+                </label>
+              )}
               {(a.accountType || "personal") === "prop" && (
                 <div className="prop-rules-box">
                   <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>PROP PROGRAM</div>
@@ -778,6 +844,37 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                       </label>
                     );
                   })}
+                  {(() => {
+                    const phase =
+                      (a.propProgram?.phases || []).find(
+                        (p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)
+                      ) || a.propProgram?.phases?.[0];
+                    const def = phase?.rules?.tradingDayDefinition || "fill_and_close";
+                    return (
+                      <label>
+                        Trading Day Definition
+                        <select
+                          value={def}
+                          onChange={(e) =>
+                            patchActivePhaseRules(
+                              a.accountId,
+                              {
+                                tradingDayDefinition: e.target.value as
+                                  | "fill_and_close"
+                                  | "any_fill"
+                                  | "any_close",
+                              },
+                              false
+                            )
+                          }
+                        >
+                          <option value="fill_and_close">Filled + Closed</option>
+                          <option value="any_fill">Any Filled Trade</option>
+                          <option value="any_close">Any Closed Trade</option>
+                        </select>
+                      </label>
+                    );
+                  })()}
 
                   {(() => {
                     const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
@@ -915,8 +1012,31 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                         {numField("minimumPayoutPct", "Minimum Payout %")}
                         {numField("minimumPayoutAmount", "Minimum Payout Amount")}
                         {numField("profitSplitPct", "Profit Split % (trader)")}
+                        {numField("fixedPayoutAmount", "Fixed Payout Amount (optional)")}
                         {numField("processingDays", "Processing Days")}
                         {numField("cooldownDays", "Cooldown Days")}
+                        <label>
+                          Post-Payout Behavior
+                          <select
+                            value={sch.postPayoutBehavior || "no_reset"}
+                            onChange={(e) =>
+                              patchActivePhasePayout(
+                                a.accountId,
+                                {
+                                  postPayoutBehavior: e.target.value as
+                                    | "no_reset"
+                                    | "reset_equity_to_baseline"
+                                    | "reset_profit_tracking",
+                                },
+                                false
+                              )
+                            }
+                          >
+                            <option value="no_reset">No Reset (deduct only)</option>
+                            <option value="reset_equity_to_baseline">Reset Equity to Baseline</option>
+                            <option value="reset_profit_tracking">Reset Profit Tracking Only</option>
+                          </select>
+                        </label>
                       </>
                     );
                   })()}
@@ -1397,6 +1517,37 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                       </label>
                     );
                   })}
+                  {(() => {
+                    const phase =
+                      (a.propProgram?.phases || []).find(
+                        (p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)
+                      ) || a.propProgram?.phases?.[0];
+                    const def = phase?.rules?.tradingDayDefinition || "fill_and_close";
+                    return (
+                      <label>
+                        Trading Day Definition
+                        <select
+                          value={def}
+                          onChange={(e) =>
+                            patchActivePhaseRules(
+                              a.accountId,
+                              {
+                                tradingDayDefinition: e.target.value as
+                                  | "fill_and_close"
+                                  | "any_fill"
+                                  | "any_close",
+                              },
+                              true
+                            )
+                          }
+                        >
+                          <option value="fill_and_close">Filled + Closed</option>
+                          <option value="any_fill">Any Filled Trade</option>
+                          <option value="any_close">Any Closed Trade</option>
+                        </select>
+                      </label>
+                    );
+                  })()}
 
                   {(() => {
                     const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
@@ -1534,8 +1685,31 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                         {numField("minimumPayoutPct", "Minimum Payout %")}
                         {numField("minimumPayoutAmount", "Minimum Payout Amount")}
                         {numField("profitSplitPct", "Profit Split % (trader)")}
+                        {numField("fixedPayoutAmount", "Fixed Payout Amount (optional)")}
                         {numField("processingDays", "Processing Days")}
                         {numField("cooldownDays", "Cooldown Days")}
+                        <label>
+                          Post-Payout Behavior
+                          <select
+                            value={sch.postPayoutBehavior || "no_reset"}
+                            onChange={(e) =>
+                              patchActivePhasePayout(
+                                a.accountId,
+                                {
+                                  postPayoutBehavior: e.target.value as
+                                    | "no_reset"
+                                    | "reset_equity_to_baseline"
+                                    | "reset_profit_tracking",
+                                },
+                                true
+                              )
+                            }
+                          >
+                            <option value="no_reset">No Reset (deduct only)</option>
+                            <option value="reset_equity_to_baseline">Reset Equity to Baseline</option>
+                            <option value="reset_profit_tracking">Reset Profit Tracking Only</option>
+                          </select>
+                        </label>
                       </>
                     );
                   })()}

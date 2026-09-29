@@ -415,6 +415,31 @@ export function appendLifecycleEvents(
   };
 }
 
+/**
+ * v3.41.0 — Apply payout amount to working balance with configurable post-payout behavior.
+ * Never deletes trades or payout history.
+ */
+export function applyPayoutBalance(
+  account: AccountProfile,
+  payoutAmount: number,
+  behavior: import("./payoutSchedule").PostPayoutBehavior = "no_reset",
+  baselineSize?: number
+): AccountProfile {
+  if (!(payoutAmount > 0) || !Number.isFinite(payoutAmount)) return account;
+  const deducted = account.balance - payoutAmount;
+  if (behavior === "reset_equity_to_baseline") {
+    const base =
+      baselineSize != null && baselineSize > 0
+        ? baselineSize
+        : account.initialBalance > 0
+          ? account.initialBalance
+          : deducted;
+    return { ...account, balance: base };
+  }
+  // no_reset and reset_profit_tracking: deduct only (profit window uses last PAYOUT_PAID timestamp)
+  return { ...account, balance: deducted };
+}
+
 /** After PHASE_STARTED / FUNDED, sync activePropPhaseId when event carries phaseId. */
 export function applyPhaseFromLifecycle(
   account: AccountProfile,

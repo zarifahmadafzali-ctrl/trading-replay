@@ -1330,15 +1330,25 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         const levSnap = Math.max(1, Number((s.riskSnapshot as any)?.leverage) || lev);
         usedMargin += (s.entry.price * (instrument.contractSize || 1) * lot) / levSnap;
       }
+      const mode = account.riskMode || "percent_equity";
+      const pct =
+        mode === "percent_equity"
+          ? account.riskPercent != null && Number.isFinite(account.riskPercent)
+            ? account.riskPercent
+            : riskPercent
+          : riskPercent;
       const result = calculateRisk({
         account: accountForRisk,
         instrument,
-        riskPercent,
+        riskPercent: pct,
         entryPrice: pos.entry.price,
         stopPrice: pos.stop.price,
         takeProfitPrice: pos.takeProfit.price,
         side: pos.side,
         usedMargin,
+        riskMode: mode,
+        fixedRiskAmount: account.fixedRiskAmount,
+        fixedLot: account.fixedLot,
       });
       const propSnap = buildPropRuleSnapshot(account);
       return {
@@ -1353,6 +1363,9 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         leverage: result.leverage,
         riskPercent: result.riskPercent,
         riskAmount: result.riskAmount,
+        riskMode: mode,
+        fixedRiskAmount: account.fixedRiskAmount,
+        fixedLot: account.fixedLot,
         entryPrice: pos.entry.price,
         stopLoss: pos.stop.price,
         takeProfit: pos.takeProfit.price,
@@ -1435,15 +1448,25 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       const lev = Math.max(1, Number((s.riskSnapshot as any)?.leverage) || account.leverage || 1);
       usedMargin += (s.entry.price * (instrument.contractSize || 1) * lot) / lev;
     }
+    const mode = account.riskMode || "percent_equity";
+    const pct =
+      mode === "percent_equity"
+        ? account.riskPercent != null && Number.isFinite(account.riskPercent)
+          ? account.riskPercent
+          : riskPercent
+        : riskPercent;
     const result = calculateRisk({
       account,
       instrument,
-      riskPercent,
+      riskPercent: pct,
       entryPrice: p.entry.price,
       stopPrice: p.stop.price,
       takeProfitPrice: p.takeProfit.price,
       side: p.side,
       usedMargin,
+      riskMode: mode,
+      fixedRiskAmount: account.fixedRiskAmount,
+      fixedLot: account.fixedLot,
     });
     lastRiskSnapshotRef.current = result;
     return result;

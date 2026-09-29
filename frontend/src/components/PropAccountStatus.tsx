@@ -16,6 +16,7 @@ import {
   buildPayoutEvents,
   appendLifecycleEvents,
   eventsUpTo,
+  applyPayoutBalance,
   type LifecycleEvent,
   type LifecycleState,
 } from "../lib/accountLifecycle";
@@ -213,8 +214,15 @@ export function PropAccountStatus({
       phaseId: phase?.id,
       phaseName: phase?.name,
     });
-    // Also stamp REQUEST path is inside buildPayoutEvents
-    onAccountChange(appendLifecycleEvents(account, events));
+    let next = appendLifecycleEvents(account, events);
+    // v3.41.0 — when processing is immediate (paid at/before now), adjust balance now.
+    const paidEv = events.find((e) => e.type === "PAYOUT_PAID");
+    if (paidEv && toUnixSafe(paidEv.timestamp) <= toUnixSafe(replayTime) && amount > 0) {
+      const behavior = payoutUi.sch.postPayoutBehavior || "no_reset";
+      const baseline = rules?.accountSize || account.initialBalance || account.balance;
+      next = applyPayoutBalance(next, amount, behavior, baseline);
+    }
+    onAccountChange(next);
   }
 
   const nextPhase = (() => {
@@ -237,6 +245,14 @@ export function PropAccountStatus({
         {prog?.programName ? <span>· {prog.programName}</span> : null}
         <span>· Size {fmtUsd(size)}</span>
         <span>· Bal {fmtUsd(account.balance)}</span>
+        <span>
+          · Risk{" "}
+          {(account.riskMode || "percent_equity") === "fixed_lot"
+            ? `Fixed ${account.fixedLot ?? 0} lot`
+            : (account.riskMode || "percent_equity") === "fixed_money"
+              ? `$${account.fixedRiskAmount ?? 0}`
+              : `${account.riskPercent ?? "—"}% equity`}
+        </span>
       </div>
 
       {phase && (

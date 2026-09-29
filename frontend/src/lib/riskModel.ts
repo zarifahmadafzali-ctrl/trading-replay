@@ -1,10 +1,19 @@
 /**
  * v3.17.5 — Account-level risk / lot / margin model.
+ * v3.41.0 — Configurable risk modes (fixed lot / fixed money / % equity).
  *
- * Account owns: balance, leverage, minLot/maxLot/lotStep
+ * Account owns: balance, leverage, minLot/maxLot/lotStep, riskMode
  * Instrument owns: point/tick/contract + optional instrumentMaxLot hard cap
  * Leverage affects margin capacity only — never multiplies PnL.
  */
+
+/**
+ * Position sizing mode (generic — not firm-specific).
+ * - percent_equity: riskAmount = equity × riskPercent/100 (default, pre-v3.41)
+ * - fixed_money: riskAmount = fixedRiskAmount (account currency)
+ * - fixed_lot: riskBasedLot = fixedLot (still clamped by margin + caps)
+ */
+export type RiskMode = "percent_equity" | "fixed_money" | "fixed_lot";
 
 export type AccountProfile = {
   accountId: string;
@@ -22,6 +31,14 @@ export type AccountProfile = {
   minLot?: number;
   maxLot?: number;
   lotStep?: number;
+  /** v3.41.0 — sizing mode. Default: percent_equity (backward compatible). */
+  riskMode?: RiskMode;
+  /** Default / account risk % when riskMode === "percent_equity". */
+  riskPercent?: number;
+  /** Currency risk per trade when riskMode === "fixed_money". */
+  fixedRiskAmount?: number;
+  /** Absolute lot before margin clamp when riskMode === "fixed_lot". */
+  fixedLot?: number;
   /** v3.17.6 Prop program (optional; only when accountType === "prop"). */
   propFirmName?: string;
   propProgramName?: string;
@@ -83,6 +100,10 @@ export type TradeRiskSnapshot = {
   leverage?: number;
   riskPercent?: number;
   riskAmount?: number;
+  /** v3.41.0 — sizing mode frozen at fill */
+  riskMode?: RiskMode;
+  fixedRiskAmount?: number;
+  fixedLot?: number;
   entryPrice?: number;
   stopLoss?: number;
   takeProfit?: number | null;
@@ -109,6 +130,10 @@ export type TradeRiskSnapshot = {
 export type RiskCalcInput = {
   account: AccountProfile;
   instrument: InstrumentSpec;
+  /**
+   * Risk % of equity — used when riskMode is percent_equity (default).
+   * Ignored for fixed_money / fixed_lot except as informational targetRiskPercent.
+   */
   riskPercent: number;
   entryPrice: number;
   stopPrice: number;
@@ -116,6 +141,15 @@ export type RiskCalcInput = {
   side: "long" | "short";
   openPnL?: number;
   usedMargin?: number;
+  /**
+   * v3.41.0 — override account.riskMode for this calculation.
+   * When omitted, uses account.riskMode || "percent_equity".
+   */
+  riskMode?: RiskMode;
+  /** Override account.fixedRiskAmount for fixed_money mode. */
+  fixedRiskAmount?: number;
+  /** Override account.fixedLot for fixed_lot mode. */
+  fixedLot?: number;
 };
 
 export type RiskCalcResult = {
@@ -346,8 +380,33 @@ export function calculateRisk(input: RiskCalcInput): RiskCalcResult {
   const step = accStep > 0 ? accStep : instrument.lotStep || 0.01;
   const effectiveMin = Math.max(accMin, instMin);
 
+  // v3.41.0 — resolve sizing mode (account default + per-call override)
+  const riskMode: RiskMode =
+    input.riskMode || account.riskMode || "percent_equity";
   const riskPct = Math.max(0, riskPercent);
-  const riskAmount = equity * (riskPct / 100);
+  const fixedMoney =
+    input.fixedRiskAmount != null && Number.isFinite(input.fixedRiskAmount)
+      ? Math.max(0, input.fixedRiskAmount)
+      : account.fixedRiskAmount != null && Number.isFinite(account.fixedRiskAmount)
+        ? Math.max(0, account.fixedRiskAmount)
+        : 0;
+  const fixedLotVal =
+    input.fixedLot != null && Number.isFinite(input.fixedLot)
+      ? Math.max(0, input.fixedLot)
+      : account.fixedLot != null && Number.isFinite(account.fixedLot)
+        ? Math.max(0, account.fixedLot)
+        : 0;
+
+  // Risk amount depends on mode; % equity always uses CURRENT equity (not initial balance).
+  let riskAmount = 0;
+  if (riskMode === "fixed_money") {
+    riskAmount = fixedMoney;
+  } else if (riskMode === "fixed_lot") {
+    // Informational only — actual risk computed after finalLot is known
+    riskAmount = 0;
+  } else {
+    riskAmount = equity * (riskPct / 100);
+  }
 
   let riskBasedLot: number | null = null;
   let marginMaxLot: number | null = null;
@@ -361,8 +420,22 @@ export function calculateRisk(input: RiskCalcInput): RiskCalcResult {
   let volumeBlockReason: string | null = null;
 
   if (missing.length === 0 && pointValue) {
-    const rawRiskLot = riskAmount / (slDistance * pointValue);
-    riskBasedLot = roundDownToStep(rawRiskLot, step, effectiveMin);
+    // Risk-based lot from mode
+    if (riskMode === "fixed_lot") {
+      if (fixedLotVal > 0) {
+        riskBasedLot = roundDownToStep(fixedLotVal, step, effectiveMin);
+        if (!(riskBasedLot > 0)) riskBasedLot = null;
+      } else {
+        riskBasedLot = null;
+      }
+    } else {
+      // percent_equity or fixed_money — both use riskAmount / (sl * pointValue)
+      if (riskAmount > 0 && slDistance > 0) {
+        const rawRiskLot = riskAmount / (slDistance * pointValue);
+        riskBasedLot = roundDownToStep(rawRiskLot, step, effectiveMin);
+        if (!(riskBasedLot > 0)) riskBasedLot = null;
+      }
+    }
 
     marginMaxLot = calculateMarginBasedMaxLot(
       freeMargin,
@@ -386,13 +459,23 @@ export function calculateRisk(input: RiskCalcInput): RiskCalcResult {
       }
     } else {
       insufficientVolume = true;
-      volumeBlockReason = "No valid volume under current risk/margin limits.";
+      if (riskMode === "fixed_lot" && !(fixedLotVal > 0)) {
+        volumeBlockReason = "Fixed lot is not set or is zero.";
+      } else if (riskMode === "fixed_money" && !(fixedMoney > 0)) {
+        volumeBlockReason = "Fixed risk amount is not set or is zero.";
+      } else {
+        volumeBlockReason = "No valid volume under current risk/margin limits.";
+      }
     }
 
     if (finalLot != null && finalLot > 0) {
       marginRequired = calculateRequiredMargin(entryPrice, finalLot, instrument, leverage);
       actualRiskAmount = slDistance * pointValue * finalLot;
       actualRiskPercent = equity > 0 ? (actualRiskAmount / equity) * 100 : null;
+      // For fixed_lot, riskAmount was 0 — fill informational risk from actual
+      if (riskMode === "fixed_lot" && riskAmount <= 0 && actualRiskAmount != null) {
+        riskAmount = actualRiskAmount;
+      }
       if (tpDistance != null && tpDistance > 0) {
         potentialProfit = tpDistance * pointValue * finalLot;
         rr = slDistance > 0 ? tpDistance / slDistance : null;

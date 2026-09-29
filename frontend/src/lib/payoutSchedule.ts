@@ -19,6 +19,18 @@ export type PayoutScheduleAnchor =
   | "last_payout"
   | "fixed_date";
 
+/**
+ * v3.41.0 — What happens to equity / profit tracking after a payout is recorded.
+ * Trading history and payout history are NEVER deleted.
+ * - no_reset: only deduct payout amount from balance (default)
+ * - reset_equity_to_baseline: set balance to phase/account size after payout
+ * - reset_profit_tracking: balance unchanged beyond payout deduction; profit window resets via last payout timestamp
+ */
+export type PostPayoutBehavior =
+  | "no_reset"
+  | "reset_equity_to_baseline"
+  | "reset_profit_tracking";
+
 /** 0 = Sunday … 6 = Saturday (UTC) */
 export type PayoutSchedule = {
   mode: PayoutScheduleMode;
@@ -42,6 +54,13 @@ export type PayoutSchedule = {
   /** Legacy: treated as intervalDays when mode missing */
   payoutIntervalDays?: number;
   enabled?: boolean;
+  /** v3.41.0 — post-payout equity handling. Default: no_reset. */
+  postPayoutBehavior?: PostPayoutBehavior;
+  /**
+   * v3.41.0 — optional fixed payout amount (currency).
+   * When set and > 0, overrides split-based trader payout (still capped by available profit).
+   */
+  fixedPayoutAmount?: number;
 };
 
 export type PayoutEligibilityInput = {
@@ -116,6 +135,8 @@ export function normalizePayoutSchedule(raw?: Partial<PayoutSchedule> | null): P
     firstPayoutDelayDays: raw.firstPayoutDelayDays,
     payoutIntervalDays: raw.payoutIntervalDays,
     enabled: raw.enabled !== false,
+    postPayoutBehavior: raw.postPayoutBehavior || "no_reset",
+    fixedPayoutAmount: raw.fixedPayoutAmount,
   };
 }
 
@@ -343,7 +364,12 @@ export function calculatePayoutEligibility(input: PayoutEligibilityInput): Payou
   const minAbs = sch.minimumPayoutAmount != null && sch.minimumPayoutAmount > 0 ? sch.minimumPayoutAmount : 0;
   const minimumRequired = Math.max(minPctAmt, minAbs);
 
-  const { traderPayout, firmShare } = calculatePayoutAmount(input.availableProfit, sch.profitSplitPct);
+  let { traderPayout, firmShare } = calculatePayoutAmount(input.availableProfit, sch.profitSplitPct);
+  // v3.41.0 — optional fixed payout amount (capped by available profit)
+  if (sch.fixedPayoutAmount != null && Number.isFinite(sch.fixedPayoutAmount) && sch.fixedPayoutAmount > 0) {
+    traderPayout = Math.min(sch.fixedPayoutAmount, Math.max(0, input.availableProfit));
+    firmShare = Math.max(0, input.availableProfit - traderPayout);
+  }
 
   const tradingDays = countTradingDays(input.trades, input.accountId);
   if (sch.minimumTradingDays != null && tradingDays < sch.minimumTradingDays) {

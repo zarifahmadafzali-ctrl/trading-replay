@@ -5,12 +5,22 @@
 
 import type { AccountProfile } from "./riskModel";
 
+/**
+ * v3.41.0 — How a calendar day qualifies as a "trading day".
+ * - fill_and_close (default): ≥1 trade with both entry and exit on that UTC day
+ * - any_fill: ≥1 filled trade whose entry falls on that UTC day
+ * - any_close: ≥1 closed trade whose exit falls on that UTC day
+ */
+export type TradingDayDefinition = "fill_and_close" | "any_fill" | "any_close";
+
 export type PropRuleSet = {
   accountSize: number;
   profitTargetPct?: number;
   dailyLossLimitPct?: number;
   maxOverallLossPct?: number;
   minimumTradingDays?: number;
+  /** v3.41.0 — activity rule for counting trading days. Default: fill_and_close. */
+  tradingDayDefinition?: TradingDayDefinition;
   consistencyPct?: number;
   leverage?: number;
   newsTradingAllowed?: boolean;
@@ -150,6 +160,7 @@ export function normalizePropProgram(prog: PropProgramConfig | null | undefined,
         dailyLossLimitPct: ph.rules?.dailyLossLimitPct,
         maxOverallLossPct: ph.rules?.maxOverallLossPct,
         minimumTradingDays: ph.rules?.minimumTradingDays,
+        tradingDayDefinition: ph.rules?.tradingDayDefinition,
         consistencyPct: ph.rules?.consistencyPct,
         leverage: ph.rules?.leverage,
         payout: ph.rules?.payout ? { ...ph.rules.payout } : undefined,
@@ -270,19 +281,89 @@ export function utcDayKey(unixSec: number): string {
 }
 
 /**
- * Unique UTC calendar days with at least one closed trade (exitTime).
- * Trading Days ≠ trade count. Same-day multiple trades count as 1 day.
+ * Unique UTC calendar days that qualify as trading days.
+ * Trading Days ≠ trade count. Multiple qualifying trades on the same day = 1 day.
+ *
+ * v3.41.0: definition is configurable.
+ * Default remains fill_and_close (closed trade with exitTime) for backward compatibility.
  */
-export function countTradingDays(trades: PropTradeLike[], accountId?: string): number {
-  const days = new Set<string>();
+export function countTradingDays(
+  trades: PropTradeLike[],
+  accountId?: string,
+  definition: TradingDayDefinition = "fill_and_close"
+): number {
+  return auditTradingDays(trades, accountId, definition).length;
+}
+
+/** Per-day audit row explaining why a day counted. */
+export type TradingDayAudit = {
+  date: string;
+  filledTrades: number;
+  closedTrades: number;
+  netPnL: number;
+  rule: TradingDayDefinition;
+};
+
+/**
+ * Build an auditable list of qualifying trading days.
+ * - any_fill: day of entryTime counts when entry exists
+ * - any_close: day of exitTime counts when exit exists
+ * - fill_and_close: day of exitTime counts when both entry and exit exist (default)
+ */
+export function auditTradingDays(
+  trades: PropTradeLike[],
+  accountId?: string,
+  definition: TradingDayDefinition = "fill_and_close"
+): TradingDayAudit[] {
+  type Acc = { filled: number; closed: number; pnl: number };
+  const byDay = new Map<string, Acc>();
+
   for (const t of trades) {
     if (accountId && t.accountId && t.accountId !== accountId) continue;
-    // v3.35.0: ONLY closed trades count (exitTime required). Pending/open do not.
-    // Multiple closes on the same UTC calendar day = 1 trading day.
-    if (t.exitTime == null || !Number.isFinite(t.exitTime)) continue;
-    days.add(utcDayKey(t.exitTime));
+    const hasEntry = t.entryTime != null && Number.isFinite(t.entryTime);
+    const hasExit = t.exitTime != null && Number.isFinite(t.exitTime);
+
+    let dayKey: string | null = null;
+    if (definition === "any_fill") {
+      if (!hasEntry) continue;
+      dayKey = utcDayKey(t.entryTime!);
+    } else if (definition === "any_close") {
+      if (!hasExit) continue;
+      dayKey = utcDayKey(t.exitTime!);
+    } else {
+      // fill_and_close (default)
+      if (!hasEntry || !hasExit) continue;
+      dayKey = utcDayKey(t.exitTime!);
+    }
+    if (!dayKey) continue;
+
+    const acc = byDay.get(dayKey) || { filled: 0, closed: 0, pnl: 0 };
+    if (hasEntry) acc.filled += 1;
+    if (hasExit) {
+      acc.closed += 1;
+      if (t.currencyPnL != null && Number.isFinite(t.currencyPnL)) {
+        acc.pnl += t.currencyPnL;
+      } else if (
+        t.rMultiple != null &&
+        Number.isFinite(t.rMultiple) &&
+        t.actualRiskAmount != null &&
+        Number.isFinite(t.actualRiskAmount)
+      ) {
+        acc.pnl += t.rMultiple * t.actualRiskAmount;
+      }
+    }
+    byDay.set(dayKey, acc);
   }
-  return days.size;
+
+  return Array.from(byDay.entries())
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([date, v]) => ({
+      date,
+      filledTrades: v.filled,
+      closedTrades: v.closed,
+      netPnL: v.pnl,
+      rule: definition,
+    }));
 }
 
 export function sumCurrencyPnL(trades: PropTradeLike[], accountId?: string): number {
@@ -371,7 +452,8 @@ export function calculatePropProgress(state: PropProgressState): {
       : 0;
   const todayKey = utcDayKey(state.currentTime);
   const todayRealizedPnL = dayRealizedPnL(state.trades, todayKey, state.account.accountId);
-  const tradingDays = countTradingDays(state.trades, state.account.accountId);
+  const dayDef = rules?.tradingDayDefinition || "fill_and_close";
+  const tradingDays = countTradingDays(state.trades, state.account.accountId, dayDef);
   return {
     rules,
     phase,
