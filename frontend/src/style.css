@@ -22,13 +22,55 @@ body {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
+
+/*
+ * v3.40.2 — Fullscreen scroll fix (mobile Desktop Mode + browser fullscreen).
+ * Fullscreen element is <html>; class tr-fullscreen is toggled on it.
+ * Nested .app + main + section all with overflow:auto trapped touch pans.
+ * In fullscreen: one clear chain — section (or main for replay) is the scrollport.
+ */
+html.tr-fullscreen,
+html.tr-fullscreen body {
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
 html.tr-fullscreen .app,
 .app:fullscreen,
 .app:-webkit-full-screen {
   min-height: 100%;
   height: 100%;
   max-height: 100%;
+  overflow: hidden; /* do not compete with main/section scroll */
+  display: flex;
+  flex-direction: column;
+}
+html.tr-fullscreen main,
+.app:fullscreen main,
+.app:-webkit-full-screen main {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  -webkit-overflow-scrolling: touch;
+}
+html.tr-fullscreen main > section:not(.replay-view),
+.app:fullscreen main > section:not(.replay-view) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+  padding-bottom: 96px; /* keep Open/Edit/Delete reachable above home indicator */
+}
+html.tr-fullscreen .view-panel,
+.app:fullscreen .view-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* Top bar / navigation */
@@ -162,9 +204,13 @@ input[type="date"] {
   flex: 1;
   min-height: 0;
 }
+.chart-wrap,
 .chart {
   width: 100%;
   height: 100%;
+  /* Chart owns touch gestures (pan via LWC or drawing via our handlers).
+     Prevents the document/page from scrolling while the finger is on the chart. */
+  touch-action: none;
 }
 .chartbox small {
   position: absolute;
@@ -202,11 +248,18 @@ input[type="date"] {
   flex-wrap: wrap;
 }
 
-/* Shared cards / sections used across views */
+/* Shared cards / sections used across views.
+   Non-fullscreen: section may grow with content; .app scrolls.
+   Fullscreen: html.tr-fullscreen rules make section the sole scrollport. */
 main > section:not(.replay-view) {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 16px 20px;
-  overflow: auto;
+  padding-bottom: max(16px, env(safe-area-inset-bottom, 0px) + 24px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 main h2 {
   margin-top: 0;

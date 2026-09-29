@@ -1643,6 +1643,32 @@ export function Chart({
       const y = ev.clientY - rect.top;
       downRef.current = { x, y, time: Date.now() };
 
+      // v3.40.2: drawing tools own the pointer so mobile page scroll does not
+      // fight the rubber-band preview / placement. Crosshair/none still allow
+      // normal LWC chart pan (handleScroll stays enabled).
+      const toolNow = drawToolRef.current;
+      const isDrawToolActive =
+        toolNow === "trendline" ||
+        toolNow === "ray" ||
+        toolNow === "extended" ||
+        toolNow === "rectangle" ||
+        toolNow === "measure" ||
+        toolNow === "fib" ||
+        toolNow === "hline" ||
+        toolNow === "vline" ||
+        toolNow === "long" ||
+        toolNow === "short";
+      if (isDrawToolActive) {
+        setChartInteraction(false);
+        try {
+          el.setPointerCapture(ev.pointerId);
+        } catch {
+          /* ignore */
+        }
+        ev.preventDefault();
+        // do not return — continue into hit-test / place flow
+      }
+
       // Tapping the on-canvas "×" next to a selected shape deletes it immediately.
       const btn = deleteButtonRef.current;
       if (btn && Math.hypot(btn.x - x, btn.y - y) <= btn.r + 4) {
@@ -1703,19 +1729,35 @@ export function Chart({
       }
       // Keep crosshair in sync while placing multi-point tools so live preview
       // follows mouse/finger even when chart crosshair events are sparse (touch).
-      if (stepsRef.current.length === 1) {
-        const tool = drawToolRef.current;
-        if (
-          tool === "trendline" ||
+      const tool = drawToolRef.current;
+      const placing =
+        stepsRef.current.length === 1 &&
+        (tool === "trendline" ||
           tool === "ray" ||
           tool === "extended" ||
           tool === "rectangle" ||
           tool === "measure" ||
-          tool === "fib"
-        ) {
-          const pt = fromXY(x, y);
-          if (pt) crosshairRef.current = applyMagnet(pt, magnetModeRef.current);
-        }
+          tool === "fib");
+      if (placing) {
+        const pt = fromXY(x, y);
+        if (pt) crosshairRef.current = applyMagnet(pt, magnetModeRef.current);
+        // Block page scroll while rubber-band preview is active on touch.
+        if (ev.pointerType === "touch") ev.preventDefault();
+      } else if (
+        ev.pointerType === "touch" &&
+        (tool === "trendline" ||
+          tool === "ray" ||
+          tool === "extended" ||
+          tool === "rectangle" ||
+          tool === "measure" ||
+          tool === "fib" ||
+          tool === "hline" ||
+          tool === "vline" ||
+          tool === "long" ||
+          tool === "short")
+      ) {
+        // Drawing tool selected: finger move must not scroll the document.
+        ev.preventDefault();
       }
       scheduleRedraw();
     };
@@ -1918,6 +1960,19 @@ export function Chart({
       },
     });
     stepsRef.current = [];
+    // Restore chart pan when leaving a drawing tool; disable while actively drawing.
+    const drawing =
+      drawTool === "trendline" ||
+      drawTool === "ray" ||
+      drawTool === "extended" ||
+      drawTool === "rectangle" ||
+      drawTool === "measure" ||
+      drawTool === "fib" ||
+      drawTool === "hline" ||
+      drawTool === "vline" ||
+      drawTool === "long" ||
+      drawTool === "short";
+    setChartInteraction(!drawing);
     if (drawTool === "trendline" || drawTool === "ray" || drawTool === "extended") {
       setHint("Click Point A · move for live preview · click Point B");
     } else if (drawTool === "rectangle") {
