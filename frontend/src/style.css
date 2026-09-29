@@ -275,33 +275,42 @@ main h3 {
   flex-direction: column;
   gap: 8px;
 }
-/* Phase 1: keep long session lists reachable */
+/* Session list: page-level scroll first so Edit/Delete never hide under nested
+   overflow/fullscreen traps. Tall viewports may still use an inner scroll. */
 .session-list-scroll {
-  max-height: min(52vh, 480px);
-  overflow-y: auto;
-  overflow-x: hidden;
+  max-height: none;
+  overflow: visible;
   padding-right: 4px;
+  padding-bottom: 72px;
   margin-top: 8px;
   -webkit-overflow-scrolling: touch;
+}
+@media (min-height: 900px) {
+  .session-list-scroll {
+    max-height: min(55vh, 560px);
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
 }
 .session-list-scroll .session-items {
   margin: 0;
 }
 .session-items li {
   flex-wrap: wrap;
+  align-items: flex-start;
+}
+.session-items .session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-shrink: 0;
 }
 @media (max-width: 720px) {
-  .session-list-scroll {
-    max-height: min(40vh, 360px);
-  }
   .session-items li {
     align-items: flex-start;
   }
   .session-items .session-actions {
     width: 100%;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
   }
 }
 .watchlist-items li,
@@ -666,6 +675,51 @@ footer {
 }
 .goto-label input {
   max-width: 160px;
+}
+
+/* Compact Session jump menu (Tokyo / London / NY / Custom) */
+.session-jump-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.session-jump-panel {
+  min-width: 220px;
+  max-width: min(92vw, 280px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  z-index: 55;
+}
+.session-jump-panel > button {
+  text-align: left;
+  width: 100%;
+  justify-content: flex-start;
+}
+.session-custom-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #27323e;
+}
+.session-custom-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: #97a3b3;
+}
+.session-custom-form input,
+.session-custom-form select {
+  background: #0b0f14;
+  border: 1px solid #293542;
+  color: #d9e1eb;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
 }
 
 @media (max-width: 700px) {

@@ -407,15 +407,51 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
             </section>
 
             <section>
-              <h4>Reward</h4>
+              <h4>Risk / Reward</h4>
               <div className="journal-detail-grid">
-                <span>SL</span>
+                <span>Entry</span>
+                <span>{fmtNum(selected.entryPrice)}</span>
+                <span>Stop Loss</span>
                 <span>{fmtNum(selected.stopPrice)}</span>
-                <span>TP</span>
+                <span>Take Profit</span>
                 <span>{fmtNum(selected.takeProfitPrice)}</span>
+                <span>Risk (pts)</span>
+                <span>
+                  {(() => {
+                    const e = selected.entryPrice;
+                    const s = selected.stopPrice;
+                    if (!Number.isFinite(e) || !Number.isFinite(s)) return "N/A";
+                    const d = Math.abs(e - s);
+                    return d < 1e-12 ? "N/A" : d.toFixed(2);
+                  })()}
+                </span>
+                <span>Reward (pts)</span>
+                <span>
+                  {(() => {
+                    const e = selected.entryPrice;
+                    const tp = selected.takeProfitPrice;
+                    if (!Number.isFinite(e) || !Number.isFinite(tp) || tp === 0) return "N/A";
+                    const d = Math.abs(tp - e);
+                    return d < 1e-12 ? "N/A" : d.toFixed(2);
+                  })()}
+                </span>
+                <span>R:R (planned)</span>
+                <span>
+                  {(() => {
+                    const e = selected.entryPrice;
+                    const s = selected.stopPrice;
+                    const tp = selected.takeProfitPrice;
+                    if (!Number.isFinite(e) || !Number.isFinite(s) || !Number.isFinite(tp)) return "N/A";
+                    const risk = Math.abs(e - s);
+                    const reward = Math.abs(tp - e);
+                    if (risk < 1e-12 || reward < 1e-12) return "N/A";
+                    const ratio = reward / risk;
+                    return `1:${ratio.toFixed(2)}`;
+                  })()}
+                </span>
                 <span>Reward $</span>
                 <span>{fmtUsd(selected.rewardAmount)}</span>
-                <span>R multiple</span>
+                <span>Result R</span>
                 <span>{fmtNum(selected.rMultiple, 2)}</span>
               </div>
             </section>

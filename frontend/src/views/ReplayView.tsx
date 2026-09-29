@@ -167,6 +167,13 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [goToValue, setGoToValue] = useState("");
   /** When true, do not overwrite goToValue from cursor (desktop time edit). */
   const [goToEditing, setGoToEditing] = useState(false);
+  /** Compact Session jump menu (Tokyo/London/NY/Custom) — separate from Go To. */
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
+  const [customSessionOpen, setCustomSessionOpen] = useState(false);
+  const [customName, setCustomName] = useState("Custom");
+  const [customTz, setCustomTz] = useState("America/New_York");
+  const [customStart, setCustomStart] = useState("09:30");
+  const [customEnd, setCustomEnd] = useState("16:00");
   const [shapes, setShapes] = useState<Shape[]>(() => loadShapesFor(saved?.symbol ?? SYMBOLS[0]));
   const [workspaceLog, setWorkspaceLog] = useState<{ t: number; text: string }[]>([]);
   const [bookOpen, setBookOpen] = useState(true);
@@ -722,6 +729,102 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     setMessage(
       `Session → ${kind === "ny" ? "New York" : kind === "london" ? "London" : "Tokyo"} next start`
     );
+    setSessionMenuOpen(false);
+  }
+
+  /** Jump to next occurrence of a custom local wall-clock time (timezone-aware). */
+  function jumpCustomSession(tz: string, startHHMM: string, label: string) {
+    if (!baseBars.length) return;
+    const m = startHHMM.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) {
+      setMessage("Custom session: use HH:MM start time");
+      return;
+    }
+    const startHour = Math.min(23, Math.max(0, parseInt(m[1], 10)));
+    const startMin = Math.min(59, Math.max(0, parseInt(m[2], 10)));
+    setPlaying(false);
+    const cur = baseBars[Math.max(0, cursor - 1)] ?? baseBars[0];
+    const curSec = cur.time;
+
+    function localParts(unixSec: number) {
+      const d = new Date(unixSec * 1000);
+      const fmt = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      });
+      const parts = fmt.formatToParts(d);
+      const get = (t: string) => Number(parts.find((p) => p.type === t)?.value || 0);
+      return { y: get("year"), m: get("month"), day: get("day"), hour: get("hour"), minute: get("minute") };
+    }
+    function localWallToUnix(y: number, mo: number, day: number, hour: number, minute: number): number {
+      let guess = Math.floor(Date.UTC(y, mo - 1, day, hour, minute, 0, 0) / 1000);
+      for (let i = 0; i < 8; i++) {
+        const lp = localParts(guess);
+        const targetMin = hour * 60 + minute;
+        const actualMin = lp.hour * 60 + lp.minute;
+        let dayDelta = Date.UTC(y, mo - 1, day) - Date.UTC(lp.y, lp.m - 1, lp.day);
+        dayDelta = Math.round(dayDelta / 86400000);
+        const minDelta = dayDelta * 1440 + (targetMin - actualMin);
+        if (minDelta === 0) break;
+        guess += minDelta * 60;
+      }
+      return guess;
+    }
+    function addLocalDays(y: number, mo: number, day: number, add: number) {
+      const dt = new Date(Date.UTC(y, mo - 1, day + add));
+      return { y: dt.getUTCFullYear(), m: dt.getUTCMonth() + 1, day: dt.getUTCDate() };
+    }
+
+    const lp = localParts(curSec);
+    const todayStart = localWallToUnix(lp.y, lp.m, lp.day, startHour, startMin);
+    let searchFrom = todayStart;
+    if (curSec >= todayStart - 1) {
+      const n = addLocalDays(lp.y, lp.m, lp.day, 1);
+      searchFrom = localWallToUnix(n.y, n.m, n.day, startHour, startMin);
+    }
+    let target = searchFrom;
+    for (let d = 0; d < 14; d++) {
+      const cand =
+        d === 0
+          ? searchFrom
+          : (() => {
+              const base = localParts(searchFrom);
+              const n = addLocalDays(base.y, base.m, base.day, d);
+              return localWallToUnix(n.y, n.m, n.day, startHour, startMin);
+            })();
+      if (cand > curSec) {
+        target = cand;
+        if (cand <= baseBars[baseBars.length - 1].time + 86400) {
+          target = cand;
+          break;
+        }
+      }
+    }
+    let lo = 0;
+    let hi = baseBars.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (baseBars[mid].time < target) lo = mid + 1;
+      else hi = mid;
+    }
+    if (baseBars[lo] && baseBars[lo].time <= curSec && lo + 1 < baseBars.length) lo = lo + 1;
+    setCursor(Math.min(baseBars.length, Math.max(1, lo + 1)));
+    setMessage(`Session → ${label || "Custom"} next start (${tz} ${startHHMM})`);
+    setSessionMenuOpen(false);
+    setCustomSessionOpen(false);
+    try {
+      localStorage.setItem(
+        "tr-custom-session-v1",
+        JSON.stringify({ name: label, tz, start: startHHMM, end: customEnd })
+      );
+    } catch {
+      /* */
+    }
   }
 
   function addCustomTf() {
@@ -1708,9 +1811,83 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           )}
         </div>
 
-        <button type="button" onClick={() => jumpSession("tokyo")}>Tokyo</button>
-        <button type="button" onClick={() => jumpSession("london")}>London</button>
-        <button type="button" onClick={() => jumpSession("ny")}>NY</button>
+        <div className="session-jump-wrap">
+          <button
+            type="button"
+            className={sessionMenuOpen ? "on" : undefined}
+            onClick={() => {
+              setSessionMenuOpen((o) => !o);
+              setCustomSessionOpen(false);
+            }}
+            aria-expanded={sessionMenuOpen}
+          >
+            Session ▾
+          </button>
+          {sessionMenuOpen && (
+            <div className="session-jump-panel panel-top tools-panel" role="menu">
+              <button type="button" role="menuitem" onClick={() => jumpSession("tokyo")}>
+                Tokyo · 09:00 Asia/Tokyo
+              </button>
+              <button type="button" role="menuitem" onClick={() => jumpSession("london")}>
+                London · 08:00 Europe/London
+              </button>
+              <button type="button" role="menuitem" onClick={() => jumpSession("ny")}>
+                New York · 09:30 America/New_York
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => setCustomSessionOpen((o) => !o)}
+              >
+                Custom…
+              </button>
+              {customSessionOpen && (
+                <div className="session-custom-form">
+                  <label>
+                    Name
+                    <input value={customName} onChange={(e) => setCustomName(e.target.value)} />
+                  </label>
+                  <label>
+                    Timezone
+                    <select value={customTz} onChange={(e) => setCustomTz(e.target.value)}>
+                      <option value="America/New_York">America/New_York</option>
+                      <option value="Europe/London">Europe/London</option>
+                      <option value="Asia/Tokyo">Asia/Tokyo</option>
+                      <option value="UTC">UTC</option>
+                    </select>
+                  </label>
+                  <label>
+                    Start
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="HH:MM"
+                      value={customStart}
+                      onChange={(e) => setCustomStart(e.target.value)}
+                    />
+                  </label>
+                  <label>
+                    End
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="HH:MM"
+                      value={customEnd}
+                      onChange={(e) => setCustomEnd(e.target.value)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="on"
+                    onClick={() => jumpCustomSession(customTz, customStart, customName || "Custom")}
+                  >
+                    Jump to start
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
         <label className="goto-label">
           Go To
           <input

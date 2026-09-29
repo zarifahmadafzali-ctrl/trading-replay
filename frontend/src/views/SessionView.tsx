@@ -1152,7 +1152,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                     </button>
                   )}
                   <button type="button" onClick={() => void startEditAccounts(s)}>
-                    Edit Accounts
+                    Edit
                   </button>
                   <button type="button" onClick={() => void handleDelete(s.id)}>
                     Delete

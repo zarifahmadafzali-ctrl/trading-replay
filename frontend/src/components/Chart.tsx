@@ -460,7 +460,11 @@ export function Chart({
     }
   }
 
-  /** Capture chart canvas with Entry/SL/TP fitted in view (drawings included). */
+  /**
+   * Capture Entry/SL/TP + candles + drawing overlay as one image.
+   * lightweight-charts takeScreenshot() only returns the chart canvas;
+   * user drawings live on a separate overlay canvas, so we composite both.
+   */
   function capturePositionScreenshot(pos: PositionShape, exitPrice?: number): string | undefined {
     try {
       const handles = handlesRef.current;
@@ -485,17 +489,56 @@ export function Chart({
       } catch {
         /* scale optional */
       }
-      // Force overlay redraw so drawings appear in the capture
+      // Synchronous overlay redraw so drawings are painted before capture
       try {
-        scheduleRedraw();
+        if (rafRef.current != null) {
+          cancelAnimationFrame(rafRef.current);
+          rafRef.current = null;
+        }
+        redrawOverlay();
       } catch {
         /* */
       }
-      const shot = handles.chart.takeScreenshot?.();
-      let dataUrl: string | undefined;
-      if (shot && typeof (shot as HTMLCanvasElement).toDataURL === "function") {
-        dataUrl = (shot as HTMLCanvasElement).toDataURL("image/png");
+      const shot = handles.chart.takeScreenshot?.() as HTMLCanvasElement | undefined;
+      if (!shot || typeof shot.toDataURL !== "function") {
+        try {
+          if (prevRange) {
+            (ps as { setVisibleRange?: (r: { from: number; to: number }) => void }).setVisibleRange?.(
+              prevRange
+            );
+          } else {
+            (ps as { applyOptions?: (o: object) => void }).applyOptions?.({ autoScale: true });
+          }
+        } catch {
+          /* */
+        }
+        return undefined;
       }
+      // Composite chart canvas + drawing overlay into one PNG
+      const out = document.createElement("canvas");
+      out.width = shot.width;
+      out.height = shot.height;
+      const octx = out.getContext("2d");
+      if (!octx) {
+        try {
+          if (prevRange) {
+            (ps as { setVisibleRange?: (r: { from: number; to: number }) => void }).setVisibleRange?.(
+              prevRange
+            );
+          } else {
+            (ps as { applyOptions?: (o: object) => void }).applyOptions?.({ autoScale: true });
+          }
+        } catch {
+          /* */
+        }
+        return shot.toDataURL("image/png");
+      }
+      octx.drawImage(shot, 0, 0);
+      const overlay = overlayRef.current;
+      if (overlay && overlay.width > 0 && overlay.height > 0) {
+        octx.drawImage(overlay, 0, 0, out.width, out.height);
+      }
+      const dataUrl = out.toDataURL("image/png");
       try {
         if (prevRange) {
           (ps as { setVisibleRange?: (r: { from: number; to: number }) => void }).setVisibleRange?.(
@@ -1126,23 +1169,63 @@ export function Chart({
       ctx.fill();
     }
 
-    // Live preview while the measure tool's first point is placed but the
-    // second hasn't been clicked yet — shows the running delta as you move.
-    if (drawToolRef.current === "measure" && stepsRef.current.length === 1 && crosshairRef.current) {
+    // Live rubber-band preview after first point (trendline / ray / extended /
+    // rectangle / fib / measure): Point A ────── cursor until second click.
+    if (stepsRef.current.length === 1 && crosshairRef.current) {
+      const tool = drawToolRef.current;
       const a = stepsRef.current[0];
       const b = crosshairRef.current;
       const A = toXY(a);
       const B = toXY(b);
       if (A && B) {
-        ctx.strokeStyle = "#c084fc";
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([6, 4]);
-        ctx.beginPath();
-        ctx.moveTo(A.x, A.y);
-        ctx.lineTo(B.x, B.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        drawMeasureLabel(ctx, a, b, A, B, "#c084fc");
+        if (tool === "measure") {
+          ctx.strokeStyle = "#c084fc";
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([6, 4]);
+          ctx.beginPath();
+          ctx.moveTo(A.x, A.y);
+          ctx.lineTo(B.x, B.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          drawMeasureLabel(ctx, a, b, A, B, "#c084fc");
+        } else if (tool === "trendline" || tool === "ray" || tool === "extended") {
+          ctx.strokeStyle = "rgba(96, 165, 250, 0.95)";
+          ctx.lineWidth = 1.75;
+          ctx.setLineDash([8, 5]);
+          ctx.beginPath();
+          ctx.moveTo(A.x, A.y);
+          ctx.lineTo(B.x, B.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = "#60a5fa";
+          ctx.beginPath();
+          ctx.arc(A.x, A.y, 5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(B.x, B.y, 4, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (tool === "rectangle") {
+          const x = Math.min(A.x, B.x);
+          const y = Math.min(A.y, B.y);
+          const rw = Math.abs(B.x - A.x);
+          const rh = Math.abs(B.y - A.y);
+          ctx.fillStyle = "rgba(96, 165, 250, 0.1)";
+          ctx.strokeStyle = "rgba(96, 165, 250, 0.95)";
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([6, 4]);
+          ctx.fillRect(x, y, rw, rh);
+          ctx.strokeRect(x, y, rw, rh);
+          ctx.setLineDash([]);
+        } else if (tool === "fib") {
+          ctx.strokeStyle = "rgba(251, 191, 36, 0.95)";
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([6, 4]);
+          ctx.beginPath();
+          ctx.moveTo(A.x, A.y);
+          ctx.lineTo(B.x, B.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
       }
     }
   }
@@ -1202,7 +1285,11 @@ export function Chart({
     const steps = stepsRef.current;
     if (steps.length === 0) {
       stepsRef.current = [point];
-      setHint(tool === "measure" ? "Move, then click 2nd point" : "Click / double-click 2nd point");
+      setHint(
+        tool === "measure"
+          ? "Move cursor, then click 2nd point"
+          : "Point A set · move cursor for live preview · click Point B"
+      );
       scheduleRedraw();
       return;
     }
@@ -1614,6 +1701,22 @@ export function Chart({
         ev.preventDefault();
         return;
       }
+      // Keep crosshair in sync while placing multi-point tools so live preview
+      // follows mouse/finger even when chart crosshair events are sparse (touch).
+      if (stepsRef.current.length === 1) {
+        const tool = drawToolRef.current;
+        if (
+          tool === "trendline" ||
+          tool === "ray" ||
+          tool === "extended" ||
+          tool === "rectangle" ||
+          tool === "measure" ||
+          tool === "fib"
+        ) {
+          const pt = fromXY(x, y);
+          if (pt) crosshairRef.current = applyMagnet(pt, magnetModeRef.current);
+        }
+      }
       scheduleRedraw();
     };
 
@@ -1815,12 +1918,15 @@ export function Chart({
       },
     });
     stepsRef.current = [];
-    if (drawTool === "trendline") setHint("Double-click two points (or tap-tap on phone)");
-    else if (drawTool === "rectangle") setHint("Double-click two corners (or tap-tap on phone)");
-    else if (drawTool === "fib") setHint("Double-click swing low, then swing high (or tap-tap)");
-    else if (drawTool === "hline") setHint("Click a price level to draw the line");
+    if (drawTool === "trendline" || drawTool === "ray" || drawTool === "extended") {
+      setHint("Click Point A · move for live preview · click Point B");
+    } else if (drawTool === "rectangle") {
+      setHint("Click first corner · move for live preview · click opposite corner");
+    } else if (drawTool === "fib") {
+      setHint("Click swing low · move · click swing high");
+    } else if (drawTool === "hline") setHint("Click a price level to draw the line");
     else if (drawTool === "vline") setHint("Click a moment in time to draw the line");
-    else if (drawTool === "measure") setHint("Click a point, move, then click again to measure");
+    else if (drawTool === "measure") setHint("Click a point, move for live preview, then click again");
     else if (drawTool === "long" || drawTool === "short") {
       /* hint set in spawnDraft */
     } else setHint("");
