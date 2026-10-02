@@ -3,3 +3,9 @@ dist/
 *.log
 .DS_Store
 
+
+# Tauri updater private keys — NEVER commit
+*.key
+!**/icons/**
+**/updater*.key
+.tauri/

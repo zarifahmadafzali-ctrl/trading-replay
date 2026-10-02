@@ -160,3 +160,50 @@ This workflow does **not** configure code signing certificates or secrets.
 
 - PWA / browser build (`npm run build`) remains available.
 - Storage formats, backup, market data, and trading logic are unchanged by this workflow.
+
+## v3.42.0 — Native Windows Auto Update
+
+Official **Tauri 2** updater (`tauri-plugin-updater` + `@tauri-apps/plugin-updater`).
+
+### Endpoint (HTTPS only)
+
+```
+https://github.com/zarifahmadafzali-ctrl/trading-replay/releases/latest/download/latest.json
+```
+
+### Signing
+
+- Public key is embedded in `frontend/src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
+- Private key is **never** in the repository.
+- GitHub Actions secrets:
+
+| Secret | Purpose |
+|--------|---------|
+| `TAURI_SIGNING_PRIVATE_KEY` | Full private key file contents |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Key password (use empty if none) |
+
+Generate a keypair (once) with:
+
+```bash
+cd frontend
+npx @tauri-apps/cli signer generate -w ./trading-replay-updater.key
+```
+
+Put the **public** key into `tauri.conf.json`. Store the **private** key only in GitHub Secrets.
+
+### Workflow
+
+`Windows Tauri Build` (`workflow_dispatch`):
+
+1. Builds NSIS/MSI as before.
+2. With signing secrets: produces updater zip + `.sig` (`bundle.createUpdaterArtifacts`).
+3. Generates `latest.json`.
+4. Optional input `publish_release=true` publishes a GitHub Release with assets.
+
+### Data safety
+
+Updates replace application binaries only. SQLite, Journal, Sessions, Prop state, and market-data IndexedDB are **not** cleared by the updater.
+
+### UI
+
+Desktop NavBar shows version + **Check for Updates**. Background check after startup is non-blocking. Web/PWA has no updater UI.

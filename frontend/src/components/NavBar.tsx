@@ -1,5 +1,6 @@
 import type { ViewName } from "../lib/types";
 import { FullscreenToggle } from "./FullscreenToggle";
+import { UpdatePanel } from "./UpdatePanel";
 
 const TABS: { id: ViewName; label: string }[] = [
   { id: "replay", label: "Replay" },
@@ -36,6 +37,7 @@ export function NavBar({
         ))}
       </nav>
       <div className="topbar-end">
+        <UpdatePanel />
         <FullscreenToggle />
         <span
           className={`status ${backendOnline ? "status-on" : "status-off"}`}

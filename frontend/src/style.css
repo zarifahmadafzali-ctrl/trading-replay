@@ -1631,6 +1631,76 @@ footer {
   margin-left: auto;
   flex-shrink: 0;
 }
+
+/* v3.42.0 — desktop auto-update panel */
+.update-panel-wrap {
+  position: relative;
+  z-index: 50;
+}
+.update-panel-btn {
+  position: relative;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid #293542;
+  background: #111820;
+  color: #cdd7e3;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.update-panel-btn.on {
+  border-color: #3b82f6;
+  color: #93c5fd;
+}
+.update-badge {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+}
+.update-panel-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 6px;
+  min-width: 260px;
+  max-width: min(360px, 92vw);
+  padding: 12px;
+  background: #0f141b;
+  border: 1px solid #2a3544;
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  z-index: 80;
+}
+.update-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  gap: 8px;
+}
+.update-panel-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.update-panel-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.update-error {
+  color: #f87171;
+  font-size: 12px;
+  margin: 6px 0;
+}
 .fs-toggle {
   display: inline-flex;
   align-items: center;
