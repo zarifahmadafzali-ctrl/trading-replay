@@ -179,8 +179,10 @@ https://github.com/zarifahmadafzali-ctrl/trading-replay/releases/latest/download
 
 | Secret | Purpose |
 |--------|---------|
-| `TAURI_SIGNING_PRIVATE_KEY` | Full private key file contents |
+| `TAURI_SIGNING_PRIVATE_KEY` | Full private key **file contents** (minisign text including comment lines). Not a path. Not self-Base64-encoded. |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Key password (use empty if none) |
+
+The Windows workflow writes the secret to a runner-temp file and passes that **path** to Tauri CLI so multiline keys are not Base64-decoded incorrectly.
 
 Generate a keypair (once) with:
 

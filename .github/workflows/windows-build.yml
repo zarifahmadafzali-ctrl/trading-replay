@@ -3,9 +3,15 @@
 # App ID: com.tradingreplay.afzali  |  PWA remains independent of this job.
 #
 # Required GitHub Secrets for signed updater artifacts:
-#   TAURI_SIGNING_PRIVATE_KEY          — contents of the private key file
-#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — password (empty string if key has none)
+#   TAURI_SIGNING_PRIVATE_KEY          — FULL CONTENTS of the private key file
+#                                        (minisign text from `tauri signer generate`,
+#                                         including "untrusted comment:" lines).
+#                                        Do NOT put a file path in the secret.
+#                                        Do NOT Base64-encode the file yourself.
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — password (empty string if the key has none)
 #
+# Workflow writes the secret to a runner-temp file and passes that path to Tauri
+# (avoids Base64-decode errors on multiline minisign keys).
 # Without those secrets the Windows installer still builds (unsigned updater
 # artifacts may be missing). Never commit the private key.
 
@@ -73,11 +79,50 @@ jobs:
           Write-Host "APP_VERSION=$v"
           echo "version=$v" >> $env:GITHUB_OUTPUT
 
-      - name: Build Tauri Windows bundle (signed when secrets present)
+      # Tauri CLI accepts TAURI_SIGNING_PRIVATE_KEY as either raw key text or a
+      # filesystem path. Passing the multiline minisign key as a GitHub Actions
+      # env string is decoded as Base64 and fails (e.g. "_" at offset 5).
+      # Write the secret to a runner-temp file and pass the PATH instead.
+      - name: Prepare updater signing key file
+        id: signing_key
+        shell: pwsh
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # Keep secret only in this step env — never echo/print it.
+          SIGNING_KEY_BODY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_KEY_BODY)) {
+            Write-Host "TAURI_SIGNING_PRIVATE_KEY secret is empty — build will produce installers without updater signatures."
+            echo "key_path=" >> $env:GITHUB_OUTPUT
+            echo "has_key=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $keyPath = Join-Path $env:RUNNER_TEMP "tauri_updater_signing.key"
+          # Write UTF-8 without BOM; do not log key body
+          [System.IO.File]::WriteAllText($keyPath, $env:SIGNING_KEY_BODY)
+          if (-not (Test-Path $keyPath)) { throw "Failed to write signing key file" }
+          $len = (Get-Item $keyPath).Length
+          Write-Host "Signing key file prepared ($len bytes). Path is not logged."
+          echo "key_path=$keyPath" >> $env:GITHUB_OUTPUT
+          echo "has_key=true" >> $env:GITHUB_OUTPUT
+
+      - name: Build Tauri Windows bundle (signed when key file present)
+        env:
+          # Prefer path form so CLI reads the file instead of Base64-decoding the secret string.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ steps.signing_key.outputs.key_path }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri:build
+
+      - name: Remove temporary signing key
+        if: always()
+        shell: pwsh
+        run: |
+          $keyPath = "${{ steps.signing_key.outputs.key_path }}"
+          if ($keyPath -and (Test-Path $keyPath)) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $keyPath
+            Write-Host "Temporary signing key file removed."
+          } else {
+            Write-Host "No temporary signing key file to remove."
+          }
 
       - name: List bundle outputs
         if: always()
