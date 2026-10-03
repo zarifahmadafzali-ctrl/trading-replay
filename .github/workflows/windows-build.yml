@@ -10,6 +10,11 @@
 #                                        Do NOT Base64-encode the file yourself.
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — password (empty string if the key has none)
 #
+# Optional GitHub Actions Variable (Settings → Variables → Actions):
+#   VITE_API_BASE — FastAPI backend origin, NO trailing slash
+#                   e.g. https://trading-replay.onrender.com
+#                   If unset, the workflow uses the known production backend URL.
+#
 # Workflow writes the secret to a runner-temp file and passes that path to Tauri
 # (avoids Base64-decode errors on multiline minisign keys).
 # Without those secrets the Windows installer still builds (unsigned updater
@@ -105,12 +110,45 @@ jobs:
           echo "key_path=$keyPath" >> $env:GITHUB_OUTPUT
           echo "has_key=true" >> $env:GITHUB_OUTPUT
 
+      # Bake production API origin into the Vite frontend (tauri beforeBuildCommand).
+      # Desktop has no Vite proxy; empty VITE_API_BASE makes /health hit the app origin.
+      - name: Resolve VITE_API_BASE for desktop frontend build
+        id: api_base
+        shell: pwsh
+        env:
+          VAR_API_BASE: ${{ vars.VITE_API_BASE }}
+        run: |
+          $base = ($env:VAR_API_BASE ?? "").Trim().TrimEnd('/')
+          if ([string]::IsNullOrWhiteSpace($base)) {
+            # Known production Data Engine (confirmed /health → ok). Public URL, not a secret.
+            $base = "https://trading-replay.onrender.com"
+            Write-Host "VITE_API_BASE variable unset — using production default host."
+          } else {
+            Write-Host "VITE_API_BASE taken from repository Actions variable."
+          }
+          if ($base -notmatch '^https?://') { throw "VITE_API_BASE must be an http(s) origin: $base" }
+          # Log host only (no query/path secrets expected)
+          try {
+            $u = [Uri]$base
+            Write-Host ("Resolved API host: {0}" -f $u.Host)
+          } catch {
+            Write-Host "Resolved API base (host parse failed; value not printed)."
+          }
+          echo "value=$base" >> $env:GITHUB_OUTPUT
+
       - name: Build Tauri Windows bundle (signed when key file present)
         env:
           # Prefer path form so CLI reads the file instead of Base64-decoding the secret string.
           TAURI_SIGNING_PRIVATE_KEY: ${{ steps.signing_key.outputs.key_path }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri:build
+          # Available to `npm run build` via tauri beforeBuildCommand
+          VITE_API_BASE: ${{ steps.api_base.outputs.value }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:VITE_API_BASE)) {
+            throw "VITE_API_BASE is empty — refusing desktop build (backend would stay offline)."
+          }
+          Write-Host "Building with VITE_API_BASE host configured (value not echoed)."
+          npm run tauri:build
 
       - name: Remove temporary signing key
         if: always()
@@ -154,21 +192,64 @@ jobs:
             echo "has_manifest=false" >> $env:GITHUB_OUTPUT
             exit 0
           }
+          Write-Host "NSIS directory contents:"
+          Get-ChildItem -Path $nsisDir -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  {0} ({1} bytes)" -f $_.Name, $_.Length) }
+
+          # Prefer Tauri updater zip when present; otherwise use signed NSIS setup.exe
+          # (Tauri 2 createUpdaterArtifacts often emits setup.exe + setup.exe.sig).
+          $artifact = $null
+          $sig = $null
+
           $zip = Get-ChildItem -Path $nsisDir -Filter "*.nsis.zip" -File -ErrorAction SilentlyContinue | Select-Object -First 1
-          $sig = Get-ChildItem -Path $nsisDir -Filter "*.sig" -File -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $zip) {
             $zip = Get-ChildItem -Path $nsisDir -Filter "*.zip" -File -ErrorAction SilentlyContinue | Select-Object -First 1
           }
-          if (-not $zip -or -not $sig) {
-            Write-Host "Updater zip/sig not found (signing secrets may be missing)."
+          if ($zip) {
+            $candidateSig = Get-ChildItem -Path $nsisDir -Filter ($zip.Name + ".sig") -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $candidateSig) {
+              $candidateSig = Get-ChildItem -Path $nsisDir -Filter "*.sig" -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -like ($zip.BaseName + "*") -or $_.Name -eq ($zip.Name + ".sig") } |
+                Select-Object -First 1
+            }
+            if ($candidateSig) {
+              $artifact = $zip
+              $sig = $candidateSig
+              Write-Host "Using updater zip artifact: $($artifact.Name)"
+            }
+          }
+
+          if (-not $artifact) {
+            $exe = Get-ChildItem -Path $nsisDir -Filter "*-setup.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $exe) {
+              $exe = Get-ChildItem -Path $nsisDir -Filter "*.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            }
+            if ($exe) {
+              $exeSig = Get-ChildItem -Path $nsisDir -Filter ($exe.Name + ".sig") -File -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($exeSig) {
+                $artifact = $exe
+                $sig = $exeSig
+                Write-Host "Using signed NSIS setup.exe artifact: $($artifact.Name)"
+              }
+            }
+          }
+
+          if (-not $artifact -or -not $sig) {
+            Write-Host "Updater artifact/sig not found (signing secrets may be missing or Tauri did not emit .sig)."
             echo "has_manifest=false" >> $env:GITHUB_OUTPUT
             exit 0
           }
+
           $sigText = (Get-Content -Path $sig.FullName -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($sigText)) {
+            Write-Host "Signature file is empty — skip latest.json"
+            echo "has_manifest=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
           $repo = "${{ github.repository }}"
           $tag = "${{ inputs.release_tag }}"
           if (-not $tag -or $tag.Trim() -eq "") { $tag = "v$version" }
-          $url = "https://github.com/$repo/releases/download/$tag/$($zip.Name)"
+          $url = "https://github.com/$repo/releases/download/$tag/$($artifact.Name)"
           $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
           $manifest = @{
             version = $version
@@ -181,13 +262,17 @@ jobs:
               }
             }
           } | ConvertTo-Json -Depth 6
-          $out = "src-tauri/target/release/bundle/latest.json"
-          Set-Content -Path $out -Value $manifest -Encoding utf8
+          $outDir = "src-tauri/target/release/bundle"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $out = Join-Path $outDir "latest.json"
+          # UTF-8 without BOM (Tauri updater expects clean JSON)
+          [System.IO.File]::WriteAllText((Resolve-Path $outDir | Join-Path -ChildPath "latest.json"), $manifest)
           Write-Host "Wrote $out"
-          Write-Host $manifest
+          Write-Host "Manifest version=$version platform=windows-x86_64 url=$url"
+          Write-Host "Signature length=$($sigText.Length)"
           echo "has_manifest=true" >> $env:GITHUB_OUTPUT
           echo "tag=$tag" >> $env:GITHUB_OUTPUT
-          echo "zip_name=$($zip.Name)" >> $env:GITHUB_OUTPUT
+          echo "artifact_name=$($artifact.Name)" >> $env:GITHUB_OUTPUT
 
       - name: Upload Windows installer artifacts
         uses: actions/upload-artifact@v4
@@ -202,19 +287,35 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Require latest.json when publishing a release
+        if: ${{ inputs.publish_release == true || inputs.publish_release == 'true' }}
+        shell: pwsh
+        run: |
+          $path = "src-tauri/target/release/bundle/latest.json"
+          if (-not (Test-Path $path)) {
+            throw "publish_release=true but latest.json was not generated. Check updater signing secrets and NSIS .sig artifacts."
+          }
+          Write-Host "latest.json present for release publish."
+          Get-Content $path | Write-Host
+
       - name: Publish GitHub Release
         if: ${{ inputs.publish_release == true || inputs.publish_release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.manifest.outputs.tag || format('v{0}', steps.ver.outputs.version) }}
           name: Trading Replay ${{ steps.ver.outputs.version }}
+          make_latest: true
           body: |
             ## Trading Replay ${{ steps.ver.outputs.version }}
 
             Windows desktop package (Tauri).
 
             ### Install
-            Download the NSIS installer (`.exe`) and run it.
+            Download the NSIS installer (`*-setup.exe`) and run it.
+
+            ### Backend
+            Desktop builds use `VITE_API_BASE` baked at compile time
+            (production Data Engine on Render).
 
             ### Auto-update
             Installed desktop builds check:
@@ -227,7 +328,7 @@ jobs:
             frontend/src-tauri/target/release/bundle/nsis/*
             frontend/src-tauri/target/release/bundle/msi/*
             frontend/src-tauri/target/release/bundle/latest.json
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

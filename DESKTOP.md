@@ -209,3 +209,27 @@ Updates replace application binaries only. SQLite, Journal, Sessions, Prop state
 ### UI
 
 Desktop NavBar shows version + **Check for Updates**. Background check after startup is non-blocking. Web/PWA has no updater UI.
+
+## v3.42.1 — Desktop API origin + updater manifest
+
+### Desktop backend URL
+
+Tauri builds **must** bake `VITE_API_BASE` at compile time (no Vite proxy).
+
+| Source | Value |
+|--------|--------|
+| GitHub Actions variable `VITE_API_BASE` (optional) | Override production API origin (no trailing slash) |
+| Workflow default when variable unset | `https://trading-replay.onrender.com` |
+
+Confirmed production health: `GET {VITE_API_BASE}/health` → `{"ok":true,...}`.
+
+### latest.json
+
+Generate step accepts either:
+
+1. `*.nsis.zip` + matching `.sig`, or
+2. `*-setup.exe` + `*-setup.exe.sig` (Tauri 2 common output)
+
+When `publish_release=true`, the job **fails** if `latest.json` is missing so releases never ship without a working updater endpoint:
+
+`https://github.com/zarifahmadafzali-ctrl/trading-replay/releases/latest/download/latest.json`
