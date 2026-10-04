@@ -404,7 +404,12 @@ export function calculateRisk(input: RiskCalcInput): RiskCalcResult {
   } else if (riskMode === "fixed_lot") {
     // Informational only — actual risk computed after finalLot is known
     riskAmount = 0;
+  } else if (riskMode === "percent_balance") {
+    // Balance-only basis (open equity swing ignored)
+    const bal = Math.max(0, account.balance);
+    riskAmount = bal * (riskPct / 100);
   } else {
+    // percent_equity (default)
     riskAmount = equity * (riskPct / 100);
   }
 

@@ -1911,3 +1911,54 @@ html:fullscreen body {
   -webkit-overflow-scrolling: touch;
   max-height: none;
 }
+
+
+/* ===== v3.43.0 — Fullscreen chart must fill remaining viewport height =====
+ * Problem: chart stayed ~half height with large empty region below.
+ * Fix: replay layout uses flex column; chartbox flex:1 with min-height:0;
+ * Lightweight Charts container stretches to 100% of chartbox.
+ */
+html.tr-fullscreen .replay-view,
+.app:fullscreen .replay-view,
+:fullscreen .replay-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+html.tr-fullscreen .replay-view .chartbox,
+.app:fullscreen .replay-view .chartbox,
+:fullscreen .replay-view .chartbox {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto !important;
+  max-height: none !important;
+  position: relative;
+}
+html.tr-fullscreen .replay-view .chartbox > div,
+.app:fullscreen .replay-view .chartbox > div,
+:fullscreen .replay-view .chartbox > div {
+  height: 100% !important;
+  min-height: 0;
+}
+/* Floating replay controls — do not reserve chart height */
+.replay.mobile-scroll {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: max(12px, env(safe-area-inset-bottom, 0px) + 8px);
+  z-index: 45;
+  width: min(960px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  background: rgba(18, 24, 32, 0.94);
+  backdrop-filter: blur(8px);
+  margin: 0;
+}
+html.tr-fullscreen .replay.mobile-scroll,
+.app:fullscreen .replay.mobile-scroll {
+  bottom: max(12px, env(safe-area-inset-bottom, 0px) + 8px);
+}

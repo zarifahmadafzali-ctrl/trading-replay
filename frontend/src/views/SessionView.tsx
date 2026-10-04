@@ -302,12 +302,33 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
           const levRaw = createLevDraft[a.accountId] ?? String(a.leverage);
           const bal = commitBalance(balRaw, a.balance) ?? a.balance ?? a.initialBalance;
           const lev = commitLeverage(levRaw, a.leverage) ?? a.leverage;
-          return {
+          // NEW prop sessions always start Phase 1 — never inherit UI phase from a prior edit.
+          let next: typeof a = {
             ...a,
             balance: bal,
             initialBalance: bal,
             leverage: lev,
           };
+          if ((sessionType === "prop" || next.accountType === "prop") && next.propProgram?.phases?.length) {
+            const phase1 = next.propProgram.phases[0];
+            next = {
+              ...next,
+              accountType: "prop",
+              activePropPhaseId: phase1.id,
+              lifecycleEvents: [
+                {
+                  id: `ev_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+                  accountId: next.accountId,
+                  type: "PHASE_STARTED" as const,
+                  timestamp: Math.floor(Date.now() / 1000),
+                  phaseId: phase1.id,
+                  phaseName: phase1.name,
+                  note: "New session — Phase 1",
+                },
+              ],
+            };
+          }
+          return next;
         }),
         activeAccountId: activeAccountId || accounts[0].accountId,
         instrument: { ...instrument, symbol },

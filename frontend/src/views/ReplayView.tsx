@@ -203,6 +203,10 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [propTrades, setPropTrades] = useState<PropTradeLike[]>([]);
   const [riskPercent, setRiskPercent] = useState(2);
   const [riskPercentInput, setRiskPercentInput] = useState("2");
+  /** Per-order risk mode (does not permanently rewrite account profile). */
+  const [orderRiskMode, setOrderRiskMode] = useState<"percent_equity" | "percent_balance" | "fixed_money" | "fixed_lot">("percent_equity");
+  const [fixedRiskInput, setFixedRiskInput] = useState("100");
+  const [fixedLotInput, setFixedLotInput] = useState("0.10");
   const [sessionMeta, setSessionMeta] = useState<SessionMeta | null>(null);
   const lastRiskSnapshotRef = useRef<RiskCalcResult | null>(null);
   const [followPrice, setFollowPrice] = useState(() => saved?.followPrice ?? false);
@@ -1346,9 +1350,15 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         takeProfitPrice: pos.takeProfit.price,
         side: pos.side,
         usedMargin,
-        riskMode: mode,
-        fixedRiskAmount: account.fixedRiskAmount,
-        fixedLot: account.fixedLot,
+        riskMode: orderRiskMode || mode,
+        fixedRiskAmount:
+          orderRiskMode === "fixed_money"
+            ? Number(fixedRiskInput) || account.fixedRiskAmount
+            : account.fixedRiskAmount,
+        fixedLot:
+          orderRiskMode === "fixed_lot"
+            ? Number(fixedLotInput) || account.fixedLot
+            : account.fixedLot,
       });
       const propSnap = buildPropRuleSnapshot(account);
       return {
@@ -1363,9 +1373,15 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         leverage: result.leverage,
         riskPercent: result.riskPercent,
         riskAmount: result.riskAmount,
-        riskMode: mode,
-        fixedRiskAmount: account.fixedRiskAmount,
-        fixedLot: account.fixedLot,
+        riskMode: orderRiskMode || mode,
+        fixedRiskAmount:
+          orderRiskMode === "fixed_money"
+            ? Number(fixedRiskInput) || account.fixedRiskAmount
+            : account.fixedRiskAmount,
+        fixedLot:
+          orderRiskMode === "fixed_lot"
+            ? Number(fixedLotInput) || account.fixedLot
+            : account.fixedLot,
         entryPrice: pos.entry.price,
         stopLoss: pos.stop.price,
         takeProfit: pos.takeProfit.price,
@@ -1404,7 +1420,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         ...(propSnap ? { propRuleSnapshot: propSnap } : {}),
       };
     },
-    [sessionMeta, riskPercent, symbol, shapes]
+    [sessionMeta, riskPercent, symbol, shapes, orderRiskMode, fixedRiskInput, fixedLotInput]
   );
 
   const openPositions = useMemo(
@@ -1470,7 +1486,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     });
     lastRiskSnapshotRef.current = result;
     return result;
-  }, [sessionMeta, shapes, selectedShapeId, riskPercent, symbol]);
+  }, [sessionMeta, shapes, selectedShapeId, riskPercent, symbol, orderRiskMode, fixedRiskInput, fixedLotInput]);
 
   return (
     <section className="replay-view">
@@ -1669,6 +1685,20 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                 </div>
               )}
               <label className="risk-label">
+                Risk mode
+                <select
+                  value={orderRiskMode}
+                  onChange={(e) => setOrderRiskMode(e.target.value as typeof orderRiskMode)}
+                >
+                  <option value="percent_equity">% Equity</option>
+                  <option value="percent_balance">% Balance</option>
+                  <option value="fixed_money">Fixed $</option>
+                  <option value="fixed_lot">Fixed Lot</option>
+                </select>
+              </label>
+              {(orderRiskMode === "percent_equity" || orderRiskMode === "percent_balance") && (
+              <>
+              <label className="risk-label">
                 Risk %
                 <input
                   type="number"
@@ -1707,6 +1737,32 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                   </button>
                 ))}
               </div>
+              </>
+              )}
+              {orderRiskMode === "fixed_money" && (
+                <label className="risk-label">
+                  Fixed risk ($)
+                  <input
+                    type="number"
+                    min={0.01}
+                    step={1}
+                    value={fixedRiskInput}
+                    onChange={(e) => setFixedRiskInput(e.target.value)}
+                  />
+                </label>
+              )}
+              {orderRiskMode === "fixed_lot" && (
+                <label className="risk-label">
+                  Fixed lot
+                  <input
+                    type="number"
+                    min={0.01}
+                    step={0.01}
+                    value={fixedLotInput}
+                    onChange={(e) => setFixedLotInput(e.target.value)}
+                  />
+                </label>
+              )}
               <button type="button" className="on" onClick={confirmOrder}>Confirm</button>
               <button type="button" onClick={() => window.dispatchEvent(new Event("tr-cancel-draft"))}>Cancel draft</button>
               <button type="button" onClick={() => { setShapes([]); setSelectedShapeId(null); }}>Clear drawings</button>

@@ -1541,6 +1541,11 @@ export function Chart({
         horzLines: { color: "#17202a" },
       },
       timeScale: {
+        // Hide the bottom horizontal navigation/scroll strip (not the time axis labels).
+        // User still pans via drag / wheel; replay owns timeline control.
+        fixLeftEdge: false,
+        fixRightEdge: false,
+        lockVisibleTimeRangeOnResize: false,
         timeVisible: true,
         secondsVisible: true,
         rightOffset: 16,
@@ -1643,11 +1648,12 @@ export function Chart({
       const y = ev.clientY - rect.top;
       downRef.current = { x, y, time: Date.now() };
 
-      // v3.40.2: drawing tools own the pointer so mobile page scroll does not
-      // fight the rubber-band preview / placement. Crosshair/none still allow
-      // normal LWC chart pan (handleScroll stays enabled).
+      // Drawing geometry tools own the pointer so mobile page scroll does not
+      // fight rubber-band placement. Order tools (long/short) must NOT capture
+      // or disable pan/zoom — only handle drags do (below). Chart stays free
+      // while configuring SL/TP on a draft/open position.
       const toolNow = drawToolRef.current;
-      const isDrawToolActive =
+      const isGeometryDrawTool =
         toolNow === "trendline" ||
         toolNow === "ray" ||
         toolNow === "extended" ||
@@ -1655,10 +1661,8 @@ export function Chart({
         toolNow === "measure" ||
         toolNow === "fib" ||
         toolNow === "hline" ||
-        toolNow === "vline" ||
-        toolNow === "long" ||
-        toolNow === "short";
-      if (isDrawToolActive) {
+        toolNow === "vline";
+      if (isGeometryDrawTool) {
         setChartInteraction(false);
         try {
           el.setPointerCapture(ev.pointerId);
@@ -1960,8 +1964,9 @@ export function Chart({
       },
     });
     stepsRef.current = [];
-    // Restore chart pan when leaving a drawing tool; disable while actively drawing.
-    const drawing =
+    // Geometry tools disable pan while active; order tools (long/short) keep
+    // pan/zoom so SL/TP can be adjusted without freezing the chart.
+    const geometryDrawing =
       drawTool === "trendline" ||
       drawTool === "ray" ||
       drawTool === "extended" ||
@@ -1969,10 +1974,8 @@ export function Chart({
       drawTool === "measure" ||
       drawTool === "fib" ||
       drawTool === "hline" ||
-      drawTool === "vline" ||
-      drawTool === "long" ||
-      drawTool === "short";
-    setChartInteraction(!drawing);
+      drawTool === "vline";
+    setChartInteraction(!geometryDrawing);
     if (drawTool === "trendline" || drawTool === "ray" || drawTool === "extended") {
       setHint("Click Point A · move for live preview · click Point B");
     } else if (drawTool === "rectangle") {

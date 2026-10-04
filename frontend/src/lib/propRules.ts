@@ -19,6 +19,11 @@ export type PropRuleSet = {
   dailyLossLimitPct?: number;
   maxOverallLossPct?: number;
   minimumTradingDays?: number;
+  /**
+   * Optional hard cap on unique trading days.
+   * null / undefined / <=0 → NOT enforced (never fails solely because days > N).
+   */
+  maximumTradingDays?: number | null;
   /** v3.41.0 — activity rule for counting trading days. Default: fill_and_close. */
   tradingDayDefinition?: TradingDayDefinition;
   consistencyPct?: number;
@@ -486,8 +491,10 @@ export function isDailyLossBreached(
 ): boolean {
   if (dailyLossLimitPct == null || !(referenceBalance > 0)) return false;
   const limit = (referenceBalance * dailyLossLimitPct) / 100;
-  // Breach when day's combined realized+unrealized loss exceeds limit
-  const dayTotal = dayPnL + unrealizedPnL;
+  // dayPnL = realized closed trades only for the calendar day.
+  // unrealizedPnL must be mark-to-market vs current price — NEVER planned SL distance
+  // and NEVER risk-at-entry. Moving SL must not invent realized loss.
+  const dayTotal = dayPnL + (Number.isFinite(unrealizedPnL) ? unrealizedPnL : 0);
   return dayTotal <= -limit + 1e-9;
 }
 
@@ -509,6 +516,18 @@ export function isOverallLossBreached(
 export function hasMinimumTradingDays(tradingDays: number, minimum?: number | null): boolean {
   if (minimum == null || !Number.isFinite(Number(minimum)) || Number(minimum) <= 0) return true;
   return tradingDays >= Number(minimum);
+}
+
+/**
+ * Optional maximum trading days.
+ * Unset / null / NaN / <= 0 → never breaches (passes).
+ */
+export function hasExceededMaximumTradingDays(
+  tradingDays: number,
+  maximum?: number | null
+): boolean {
+  if (maximum == null || !Number.isFinite(Number(maximum)) || Number(maximum) <= 0) return false;
+  return tradingDays > Number(maximum);
 }
 
 /**
@@ -708,6 +727,27 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
     }
   }
 
+  const maxDaysRaw = rules.maximumTradingDays;
+  const maximumTradingDaysConfigured =
+    maxDaysRaw != null && Number.isFinite(Number(maxDaysRaw)) && Number(maxDaysRaw) > 0
+      ? Number(maxDaysRaw)
+      : null;
+  const maximumTradingDaysBreached = hasExceededMaximumTradingDays(
+    progress.tradingDays,
+    maximumTradingDaysConfigured
+  );
+  if (maximumTradingDaysConfigured != null) {
+    if (maximumTradingDaysBreached) {
+      reasons.push(
+        `Maximum trading days exceeded (${progress.tradingDays}/${maximumTradingDaysConfigured})`
+      );
+    } else {
+      reasons.push(
+        `Within maximum trading days (${progress.tradingDays}/${maximumTradingDaysConfigured})`
+      );
+    }
+  }
+
   const consistency = calculateConsistencyMetric(
     state.trades,
     state.account.accountId,
@@ -724,7 +764,7 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
     );
   }
 
-  const failed = dailyLossBreached || maxOverallLossBreached;
+  const failed = dailyLossBreached || maxOverallLossBreached || maximumTradingDaysBreached;
   const eligibleForPhasePass =
     profitTargetReached &&
     minimumTradingDaysReached &&
