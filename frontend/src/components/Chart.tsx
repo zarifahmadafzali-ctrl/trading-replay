@@ -1550,9 +1550,6 @@ export function Chart({
         rightOffset: 6,
         borderVisible: false,
         ticksVisible: false,
-        // Min height of time axis strip (labels only).
-        // @ts-expect-error — supported in LWC v4+/v5 runtime
-        minimumHeight: 0,
       },
       crosshair: {
         mode: CrosshairMode.Normal,
