@@ -35,7 +35,7 @@ import {
   getActiveAccount,
   type SessionMeta,
 } from "../lib/sessionStore";
-import {
+import { isRiskMode, type RiskMode,
   applyRealizedPnL,
   calculateRisk,
   calculateLivePositionMetrics,
@@ -204,7 +204,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [riskPercent, setRiskPercent] = useState(2);
   const [riskPercentInput, setRiskPercentInput] = useState("2");
   /** Per-order risk mode (does not permanently rewrite account profile). */
-  const [orderRiskMode, setOrderRiskMode] = useState<"percent_equity" | "percent_balance" | "fixed_money" | "fixed_lot">("percent_equity");
+  const [orderRiskMode, setOrderRiskMode] = useState<RiskMode>("percent_equity");
   const [fixedRiskInput, setFixedRiskInput] = useState("100");
   const [fixedLotInput, setFixedLotInput] = useState("0.10");
   const [sessionMeta, setSessionMeta] = useState<SessionMeta | null>(null);
@@ -1688,7 +1688,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                 Risk mode
                 <select
                   value={orderRiskMode}
-                  onChange={(e) => setOrderRiskMode(e.target.value as typeof orderRiskMode)}
+                  onChange={(e) => { const v = e.target.value; if (isRiskMode(v)) setOrderRiskMode(v); }}
                 >
                   <option value="percent_equity">% Equity</option>
                   <option value="percent_balance">% Balance</option>

@@ -251,7 +251,9 @@ export function PropAccountStatus({
             ? `Fixed ${account.fixedLot ?? 0} lot`
             : (account.riskMode || "percent_equity") === "fixed_money"
               ? `$${account.fixedRiskAmount ?? 0}`
-              : `${account.riskPercent ?? "—"}% equity`}
+              : (account.riskMode || "percent_equity") === "percent_balance"
+                ? `${account.riskPercent ?? "—"}% balance`
+                : `${account.riskPercent ?? "—"}% equity`}
         </span>
       </div>
 

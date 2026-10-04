@@ -13,9 +13,11 @@ import {
   defaultAccount,
   defaultInstrument,
   defaultPropFirm,
+  isRiskMode,
   type AccountProfile,
   type InstrumentSpec,
   type PropFirmConfig,
+  type RiskMode,
 } from "../lib/riskModel";
 
 import {
@@ -710,16 +712,17 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                   value={a.riskMode || "percent_equity"}
                   onChange={(e) =>
                     updateAccount(a.accountId, {
-                      riskMode: e.target.value as "percent_equity" | "fixed_money" | "fixed_lot",
+                      riskMode: isRiskMode(e.target.value) ? e.target.value : "percent_equity",
                     })
                   }
                 >
                   <option value="percent_equity">% of Equity</option>
+                  <option value="percent_balance">% of Balance</option>
                   <option value="fixed_money">Fixed Money Risk</option>
                   <option value="fixed_lot">Fixed Lot</option>
                 </select>
               </label>
-              {(a.riskMode || "percent_equity") === "percent_equity" && (
+              {((a.riskMode || "percent_equity") === "percent_equity" || a.riskMode === "percent_balance") && (
                 <label>
                   Risk %
                   <input

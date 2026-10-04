@@ -10,10 +10,32 @@
 /**
  * Position sizing mode (generic — not firm-specific).
  * - percent_equity: riskAmount = equity × riskPercent/100 (default, pre-v3.41)
+ * - percent_balance: riskAmount = balance × riskPercent/100
  * - fixed_money: riskAmount = fixedRiskAmount (account currency)
  * - fixed_lot: riskBasedLot = fixedLot (still clamped by margin + caps)
  */
-export type RiskMode = "percent_equity" | "fixed_money" | "fixed_lot";
+export type RiskMode =
+  | "percent_equity"
+  | "percent_balance"
+  | "fixed_money"
+  | "fixed_lot";
+
+/** Runtime guard for persisted / form values. */
+export function isRiskMode(v: unknown): v is RiskMode {
+  return (
+    v === "percent_equity" ||
+    v === "percent_balance" ||
+    v === "fixed_money" ||
+    v === "fixed_lot"
+  );
+}
+
+export const RISK_MODES: readonly RiskMode[] = [
+  "percent_equity",
+  "percent_balance",
+  "fixed_money",
+  "fixed_lot",
+] as const;
 
 export type AccountProfile = {
   accountId: string;
