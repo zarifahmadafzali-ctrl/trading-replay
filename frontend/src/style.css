@@ -1962,3 +1962,68 @@ html.tr-fullscreen .replay.mobile-scroll,
 .app:fullscreen .replay.mobile-scroll {
   bottom: max(12px, env(safe-area-inset-bottom, 0px) + 8px);
 }
+
+
+/* v3.43.0 — Draggable floating replay panel handle */
+.replay-float {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  touch-action: none;
+}
+.replay-drag-handle {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  padding: 6px 8px;
+  margin-right: 2px;
+  border-radius: 6px;
+  color: #8b9bb0;
+  font-size: 12px;
+  letter-spacing: -2px;
+  line-height: 1;
+  background: rgba(255, 255, 255, 0.04);
+  flex: 0 0 auto;
+}
+.replay-drag-handle:active {
+  cursor: grabbing;
+  color: #c5d0dc;
+  background: rgba(255, 255, 255, 0.08);
+}
+/* Compact LWC time-axis strip — labels only, no tall nav area */
+.tr-chart-no-nav-strip table tr:last-child {
+  height: 22px !important;
+  max-height: 22px !important;
+}
+.chartbox .tv-lightweight-charts {
+  height: 100% !important;
+}
+
+/* Session list always scrollable in fullscreen / short viewports */
+html.tr-fullscreen .session-list-scroll,
+.app:fullscreen .session-list-scroll,
+.session-list-scroll {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  max-height: min(55vh, 520px);
+  min-height: 0;
+}
+html.tr-fullscreen .session-view,
+.app:fullscreen .session-view {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  min-height: 0;
+  max-height: 100%;
+  padding-bottom: 96px;
+}
+.session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.session-actions button {
+  min-height: 36px;
+  padding: 6px 12px;
+}

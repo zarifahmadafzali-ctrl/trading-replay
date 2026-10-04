@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Chart, type ClosedPosition, type DrawTool, type IndicatorSpec, type MagnetMode, type OrderType, type Shape } from "../components/Chart";
 import { Toolbar } from "../components/Toolbar";
 import {
@@ -210,6 +210,17 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [sessionMeta, setSessionMeta] = useState<SessionMeta | null>(null);
   const lastRiskSnapshotRef = useRef<RiskCalcResult | null>(null);
   const [followPrice, setFollowPrice] = useState(() => saved?.followPrice ?? false);
+  /** Floating replay panel position (px from viewport top-left). null = CSS default bottom-center. */
+  const [replayBarPos, setReplayBarPos] = useState<{ x: number; y: number } | null>(null);
+  const replayBarRef = useRef<HTMLDivElement | null>(null);
+  const replayDragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+  } | null>(null);
+
   const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
   const [activeIndicatorIds, setActiveIndicatorIds] = useState<string[]>(() => {
     try {
@@ -1488,6 +1499,64 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     return result;
   }, [sessionMeta, shapes, selectedShapeId, riskPercent, symbol, orderRiskMode, fixedRiskInput, fixedLotInput]);
 
+
+  function clampReplayBar(x: number, y: number) {
+    const el = replayBarRef.current;
+    const w = el?.offsetWidth || 320;
+    const h = el?.offsetHeight || 48;
+    const maxX = Math.max(0, window.innerWidth - w - 8);
+    const maxY = Math.max(0, window.innerHeight - h - 8);
+    return {
+      x: Math.min(maxX, Math.max(8, x)),
+      y: Math.min(maxY, Math.max(8, y)),
+    };
+  }
+
+  function onReplayHandlePointerDown(ev: ReactPointerEvent) {
+    if (ev.button !== 0 && ev.pointerType === "mouse") return;
+    const el = replayBarRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const origX = replayBarPos?.x ?? rect.left;
+    const origY = replayBarPos?.y ?? rect.top;
+    replayDragRef.current = {
+      pointerId: ev.pointerId,
+      startX: ev.clientX,
+      startY: ev.clientY,
+      origX,
+      origY,
+    };
+    try {
+      (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
+    } catch {
+      /* */
+    }
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+
+  function onReplayHandlePointerMove(ev: ReactPointerEvent) {
+    const d = replayDragRef.current;
+    if (!d || d.pointerId !== ev.pointerId) return;
+    const next = clampReplayBar(
+      d.origX + (ev.clientX - d.startX),
+      d.origY + (ev.clientY - d.startY)
+    );
+    setReplayBarPos(next);
+    ev.preventDefault();
+  }
+
+  function onReplayHandlePointerUp(ev: ReactPointerEvent) {
+    const d = replayDragRef.current;
+    if (!d || d.pointerId !== ev.pointerId) return;
+    replayDragRef.current = null;
+    try {
+      (ev.currentTarget as HTMLElement).releasePointerCapture(ev.pointerId);
+    } catch {
+      /* */
+    }
+  }
+
   return (
     <section className="replay-view">
       {/* Compact top: symbol + TF dropdown + Orders + data */}
@@ -2319,7 +2388,25 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         />
       </div>
 
-      <div className="replay mobile-scroll">
+      <div
+        className="replay mobile-scroll replay-float"
+        ref={replayBarRef}
+        style={
+          replayBarPos
+            ? { left: replayBarPos.x, top: replayBarPos.y, bottom: "auto", transform: "none" }
+            : undefined
+        }
+      >
+        <div
+          className="replay-drag-handle"
+          title="Drag to move"
+          onPointerDown={onReplayHandlePointerDown}
+          onPointerMove={onReplayHandlePointerMove}
+          onPointerUp={onReplayHandlePointerUp}
+          onPointerCancel={onReplayHandlePointerUp}
+        >
+          ⋮⋮
+        </div>
         <button
           type="button"
           className="on"

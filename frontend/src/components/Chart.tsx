@@ -1541,15 +1541,18 @@ export function Chart({
         horzLines: { color: "#17202a" },
       },
       timeScale: {
-        // Hide the bottom horizontal navigation/scroll strip (not the time axis labels).
-        // User still pans via drag / wheel; replay owns timeline control.
+        // Keep time labels; suppress extra navigator chrome where supported.
         fixLeftEdge: false,
         fixRightEdge: false,
         lockVisibleTimeRangeOnResize: false,
         timeVisible: true,
         secondsVisible: true,
-        rightOffset: 16,
+        rightOffset: 6,
         borderVisible: false,
+        ticksVisible: false,
+        // Min height of time axis strip (labels only).
+        // @ts-expect-error — supported in LWC v4+/v5 runtime
+        minimumHeight: 0,
       },
       crosshair: {
         mode: CrosshairMode.Normal,
@@ -1586,8 +1589,21 @@ export function Chart({
       priceFormat: { type: "volume" },
       priceScaleId: "vol",
     });
-    volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    volume.priceScale().applyOptions({ scaleMargins: { top: 0.88, bottom: 0 }, visible: false });
     handlesRef.current = { chart, candles, volume };
+    // Remove LWC internal time-axis scroll/nav strip if the library renders one
+    try {
+      const root = containerRef.current;
+      if (root) {
+        root.querySelectorAll(".tv-lightweight-charts table tr:last-child td").forEach((td) => {
+          (td as HTMLElement).style.maxHeight = "22px";
+        });
+        root.classList.add("tr-chart-no-nav-strip");
+      }
+    } catch {
+      /* */
+    }
+
 
     const onMove = (param: MouseEventParams) => {
       scheduleRedraw();

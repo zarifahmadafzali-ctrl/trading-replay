@@ -46,6 +46,12 @@ export type PropProgramConfig = {
   firmName: string;
   programName: string;
   phases: PropPhaseConfig[];
+  /**
+   * Business days after final challenge phase pass before FUNDED activates.
+   * Default when unset: 2. Set 0 for immediate funding after Phase 2 pass.
+   * Weekends (Sat/Sun UTC) do not count.
+   */
+  fundedActivationBusinessDays?: number | null;
 };
 
 export type PropRuleSnapshot = {

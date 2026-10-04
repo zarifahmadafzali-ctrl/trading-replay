@@ -22,6 +22,7 @@ import {
 export type LifecycleState =
   | "ACTIVE"
   | "FAILED"
+  | "PENDING_FUNDED"
   | "FUNDED"
   | "PAYOUT_ELIGIBLE"
   | "PAYOUT_COOLDOWN"
@@ -89,6 +90,36 @@ export function makeLifecycleEvent(
 }
 
 /** Events at or before replayTime, sorted ascending. */
+
+/** Count Mon–Fri days strictly after fromSec up to and including toSec (unix seconds). */
+export function countBusinessDaysBetween(fromSec: number, toSec: number): number {
+  const a = Math.min(toUnixSec(fromSec), toUnixSec(toSec));
+  const b = Math.max(toUnixSec(fromSec), toUnixSec(toSec));
+  if (b <= a) return 0;
+  // Walk calendar days starting the day after `a`
+  const start = new Date(a * 1000);
+  start.setUTCHours(0, 0, 0, 0);
+  start.setUTCDate(start.getUTCDate() + 1);
+  const end = new Date(b * 1000);
+  end.setUTCHours(0, 0, 0, 0);
+  let n = 0;
+  for (let d = new Date(start); d.getTime() <= end.getTime(); d.setUTCDate(d.getUTCDate() + 1)) {
+    const wd = d.getUTCDay(); // 0=Sun … 6=Sat
+    if (wd !== 0 && wd !== 6) n++;
+  }
+  return n;
+}
+
+/** Default funded activation delay (business days) when program does not override. */
+export function getFundedActivationBusinessDays(account: AccountProfile): number {
+  const prog = ensurePropProgram(account) as
+    | (ReturnType<typeof ensurePropProgram> & { fundedActivationBusinessDays?: number | null })
+    | null;
+  const raw = prog && (prog as { fundedActivationBusinessDays?: number | null }).fundedActivationBusinessDays;
+  if (raw == null || !Number.isFinite(Number(raw)) || Number(raw) < 0) return 2;
+  return Math.floor(Number(raw));
+}
+
 export function eventsUpTo(events: LifecycleEvent[] | undefined, replayTime: number): LifecycleEvent[] {
   const t = toUnixSec(replayTime);
   return (events || [])
@@ -128,6 +159,8 @@ export function deriveLifecycleFromEvents(
         break;
       case "PHASE_PASSED":
         if (e.phaseId) activePhaseId = e.phaseId;
+        // Final challenge phase pass without FUNDED → pending funded (no trading).
+        // Intermediate passes leave state ACTIVE (next PHASE_STARTED will follow).
         break;
       case "PHASE_FAILED":
         state = "FAILED";
@@ -161,6 +194,25 @@ export function deriveLifecycleFromEvents(
   if (state === "PAYOUT_COOLDOWN" && reenableAt != null && toUnixSec(replayTime) >= reenableAt) {
     state = "ACTIVE";
     reasons.push("Cooldown ended (replay time)");
+  }
+
+  // If final challenge phase has PHASE_PASSED and no FUNDED yet → PENDING_FUNDED
+  if (state === "ACTIVE" && (account.accountType || "personal") === "prop") {
+    const hasFunded = seq.some((e) => e.type === "FUNDED");
+    if (!hasFunded) {
+      const prog = ensurePropProgram(account);
+      const phases = (prog?.phases || []).filter((p) => p.type !== "funded");
+      const lastChallenge = phases.length ? phases[phases.length - 1] : null;
+      if (lastChallenge) {
+        const finalPassed = seq.some(
+          (e) => e.type === "PHASE_PASSED" && e.phaseId === lastChallenge.id
+        );
+        if (finalPassed) {
+          state = "PENDING_FUNDED";
+          reasons.push("Challenge complete — pending funded activation");
+        }
+      }
+    }
   }
 
   const canOpenTrades =
@@ -294,16 +346,48 @@ export function suggestLifecycleTransitions(opts: {
           })
         );
       } else if (phase.type === "challenge" || phase.type === "custom") {
-        out.push(
-          makeLifecycleEvent({
-            accountId: account.accountId,
-            type: "FUNDED",
-            timestamp: t,
-            phaseId: phase.id,
-            phaseName: phase.name,
-            note: "Final challenge phase passed",
-          })
-        );
+        // Final phase pass only — FUNDED is emitted after business-day delay
+        // (PENDING_FUNDED is derived from PHASE_PASSED without FUNDED).
+        // No immediate FUNDED event here.
+      }
+    }
+  }
+
+
+  // PENDING_FUNDED → FUNDED after configured business-day delay (default 2)
+  {
+    const derivedNow = deriveLifecycleFromEvents(account, events, t);
+    if (derivedNow.state === "PENDING_FUNDED") {
+      const alreadyFunded = eventsUpTo(events, t).some((e) => e.type === "FUNDED");
+      if (!alreadyFunded) {
+        const prog = ensurePropProgram(account);
+        const phases = (prog?.phases || []).filter((p) => p.type !== "funded");
+        const lastChallenge = phases.length ? phases[phases.length - 1] : null;
+        const passEv = lastChallenge
+          ? [...eventsUpTo(events, t)].reverse().find(
+              (e) => e.type === "PHASE_PASSED" && e.phaseId === lastChallenge.id
+            )
+          : undefined;
+        if (passEv) {
+          const need = getFundedActivationBusinessDays(account);
+          const elapsed = countBusinessDaysBetween(passEv.timestamp, t);
+          if (need <= 0 || elapsed >= need) {
+            const fundedPhase = (prog?.phases || []).find((p) => p.type === "funded");
+            out.push(
+              makeLifecycleEvent({
+                accountId: account.accountId,
+                type: "FUNDED",
+                timestamp: t,
+                phaseId: fundedPhase?.id || lastChallenge?.id,
+                phaseName: fundedPhase?.name || "Funded",
+                note:
+                  need <= 0
+                    ? "Funded immediately (0 business-day delay)"
+                    : `Funded after ${need} business day(s)`,
+              })
+            );
+          }
+        }
       }
     }
   }
