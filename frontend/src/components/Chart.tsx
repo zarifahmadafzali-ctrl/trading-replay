@@ -1540,16 +1540,24 @@ export function Chart({
         vertLines: { color: "#17202a" },
         horzLines: { color: "#17202a" },
       },
+      rightPriceScale: {
+        visible: true,
+        borderVisible: true,
+        borderColor: "#202a35",
+        scaleMargins: { top: 0.06, bottom: 0.08 },
+      },
+      leftPriceScale: { visible: false },
       timeScale: {
-        // Keep time labels; suppress extra navigator chrome where supported.
+        // Time labels only — no tall navigator/scrub strip.
         fixLeftEdge: false,
         fixRightEdge: false,
         lockVisibleTimeRangeOnResize: false,
         timeVisible: true,
         secondsVisible: true,
-        rightOffset: 6,
-        borderVisible: false,
-        ticksVisible: false,
+        rightOffset: 8,
+        borderVisible: true,
+        borderColor: "#202a35",
+        ticksVisible: true,
       },
       crosshair: {
         mode: CrosshairMode.Normal,
@@ -1939,18 +1947,36 @@ export function Chart({
     };
     window.addEventListener("keydown", onKeyDown);
 
-    const resizeObserver = new ResizeObserver(() => {
+    const forceChartResize = () => {
       if (!containerRef.current) return;
-      chart.applyOptions({
-        width: containerRef.current.clientWidth,
-        height: containerRef.current.clientHeight,
-      });
-      scheduleRedraw();
-    });
+      const w = containerRef.current.clientWidth;
+      const h = containerRef.current.clientHeight;
+      if (w > 0 && h > 0) {
+        chart.applyOptions({ width: w, height: h });
+        scheduleRedraw();
+      }
+    };
+    const resizeObserver = new ResizeObserver(() => forceChartResize());
     resizeObserver.observe(containerRef.current);
+    // Fullscreen / orientation changes often resize without a stable RO tick on mobile.
+    const onFsOrOrient = () => {
+      requestAnimationFrame(() => {
+        forceChartResize();
+        setTimeout(forceChartResize, 50);
+        setTimeout(forceChartResize, 200);
+      });
+    };
+    document.addEventListener("fullscreenchange", onFsOrOrient);
+    document.addEventListener("webkitfullscreenchange", onFsOrOrient as EventListener);
+    window.addEventListener("orientationchange", onFsOrOrient);
+    window.addEventListener("resize", onFsOrOrient);
 
     return () => {
       resizeObserver.disconnect();
+      document.removeEventListener("fullscreenchange", onFsOrOrient);
+      document.removeEventListener("webkitfullscreenchange", onFsOrOrient as EventListener);
+      window.removeEventListener("orientationchange", onFsOrOrient);
+      window.removeEventListener("resize", onFsOrOrient);
       el.removeEventListener("pointerdown", onPointerDown);
       el.removeEventListener("pointermove", onPointerMove);
       el.removeEventListener("pointerup", onPointerUp);

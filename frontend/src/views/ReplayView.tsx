@@ -1259,7 +1259,6 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     [activeIndicatorIds]
   );
   const currentBase = baseBars[Math.max(0, cursor - 1)];
-  const max = Math.max(1, baseBars.length);
   const atEnd = cursor >= baseBars.length;
 
   // 1s bars from previous cursor → current for SL/TP (covers Replay Step jumps).
@@ -2477,7 +2476,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
             <option key={s} value={s}>{s}x</option>
           ))}
         </select>
-        <input type="range" min={1} max={max} value={Math.min(cursor, max)} onChange={(e) => setCursor(Number(e.target.value))} />
+        {/* Range scrubber removed — only floating control buttons remain. */}
         <span className="cursor-count">{cursor.toLocaleString()}/{baseBars.length.toLocaleString()}s</span>
       </div>
 
