@@ -249,7 +249,13 @@ jobs:
           $repo = "${{ github.repository }}"
           $tag = "${{ inputs.release_tag }}"
           if (-not $tag -or $tag.Trim() -eq "") { $tag = "v$version" }
-          $url = "https://github.com/$repo/releases/download/$tag/$($artifact.Name)"
+          # softprops/action-gh-release uploads names with spaces rewritten to '.'.
+          # latest.json MUST use that GitHub-safe name or the updater gets HTTP 404.
+          $githubAssetName = $artifact.Name -replace ' ', '.'
+          if ($githubAssetName -ne $artifact.Name) {
+            Write-Host "GitHub asset name: '$($artifact.Name)' -> '$githubAssetName'"
+          }
+          $url = "https://github.com/$repo/releases/download/$tag/$githubAssetName"
           $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
           $manifest = @{
             version = $version
@@ -272,7 +278,7 @@ jobs:
           Write-Host "Signature length=$($sigText.Length)"
           echo "has_manifest=true" >> $env:GITHUB_OUTPUT
           echo "tag=$tag" >> $env:GITHUB_OUTPUT
-          echo "artifact_name=$($artifact.Name)" >> $env:GITHUB_OUTPUT
+          echo "artifact_name=$githubAssetName" >> $env:GITHUB_OUTPUT
 
       - name: Upload Windows installer artifacts
         uses: actions/upload-artifact@v4
@@ -295,8 +301,22 @@ jobs:
           if (-not (Test-Path $path)) {
             throw "publish_release=true but latest.json was not generated. Check updater signing secrets and NSIS .sig artifacts."
           }
+          $raw = Get-Content $path -Raw
           Write-Host "latest.json present for release publish."
-          Get-Content $path | Write-Host
+          Write-Host $raw
+          $j = $raw | ConvertFrom-Json
+          if (-not $j.version) { throw "latest.json missing version" }
+          $plat = $j.platforms.'windows-x86_64'
+          if (-not $plat) { throw "latest.json missing platforms.windows-x86_64" }
+          if (-not $plat.url) { throw "latest.json missing windows-x86_64.url" }
+          if (-not $plat.signature) { throw "latest.json missing windows-x86_64.signature" }
+          if ($plat.url -match ' ') {
+            throw "latest.json url contains a space (GitHub 404). Got: $($plat.url)"
+          }
+          if ($plat.url -notmatch 'github\.com/.+/releases/download/') {
+            throw "latest.json url is not a GitHub release download URL: $($plat.url)"
+          }
+          Write-Host "latest.json validation OK: version=$($j.version) url=$($plat.url)"
 
       - name: Publish GitHub Release
         if: ${{ inputs.publish_release == true || inputs.publish_release == 'true' }}
