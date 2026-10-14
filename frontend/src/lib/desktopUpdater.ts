@@ -1,9 +1,13 @@
 /**
- * v3.42.0 — Native Windows auto-update (Tauri 2 plugin-updater).
+ * Native Windows auto-update (Tauri 2 plugin-updater).
  *
  * Only active on desktop (isTauri). Web/PWA ignores this module.
  * Never blocks startup; never requires network for trading features.
  * Updater replaces application binaries only — SQLite / IndexedDB data stay intact.
+ *
+ * Displayed "current version" MUST come from @tauri-apps/api/app getVersion()
+ * (the installed binary), not from the compile-time APP_VERSION string alone.
+ * A mismatch between baked APP_VERSION and the real binary is a build bug.
  */
 
 import { APP_VERSION } from "./storageVersions";
@@ -37,6 +41,22 @@ export function initialUpdateState(): UpdateState {
   };
 }
 
+/**
+ * Runtime app version from the installed Tauri binary.
+ * Falls back to compile-time APP_VERSION on web or if the API is missing.
+ */
+export async function resolveInstalledVersion(): Promise<string> {
+  if (!isDesktopPlatform()) return APP_VERSION;
+  try {
+    const mod = await import("@tauri-apps/api/app");
+    const v = await mod.getVersion();
+    if (typeof v === "string" && v.trim()) return v.trim();
+  } catch {
+    // web bundle or missing API
+  }
+  return APP_VERSION;
+}
+
 type UpdaterUpdate = {
   version: string;
   downloadAndInstall: (
@@ -52,7 +72,6 @@ type CheckFn = () => Promise<UpdaterUpdate | null>;
 async function loadCheck(): Promise<CheckFn | null> {
   if (!isDesktopPlatform()) return null;
   try {
-    // Dynamic import so the web/PWA bundle does not hard-depend on Tauri plugins.
     const mod = await import("@tauri-apps/plugin-updater");
     return mod.check as CheckFn;
   } catch {
@@ -73,9 +92,20 @@ async function relaunchApp(): Promise<void> {
  * Background / manual check. Returns next state; does not throw.
  */
 export async function checkForDesktopUpdate(): Promise<UpdateState> {
-  const base = initialUpdateState();
+  const currentVersion = await resolveInstalledVersion();
+  const base: UpdateState = {
+    status: "idle",
+    currentVersion,
+    availableVersion: null,
+    progress: null,
+    error: null,
+  };
   if (!isDesktopPlatform()) {
-    return { ...base, status: "unavailable", error: "Updates are only available in the Windows desktop app." };
+    return {
+      ...base,
+      status: "unavailable",
+      error: "Updates are only available in the Windows desktop app.",
+    };
   }
   const check = await loadCheck();
   if (!check) {
@@ -88,22 +118,38 @@ export async function checkForDesktopUpdate(): Promise<UpdateState> {
   try {
     const update = await check();
     if (!update) {
-      return { ...base, status: "up_to_date" };
+      // Log for support / DevTools diagnosis
+      console.info(
+        "[updater] up_to_date currentVersion=%s (compile APP_VERSION=%s)",
+        currentVersion,
+        APP_VERSION
+      );
+      return { ...base, status: "up_to_date", currentVersion };
     }
+    const availableVersion = update.version || null;
+    console.info(
+      "[updater] available currentVersion=%s availableVersion=%s",
+      currentVersion,
+      availableVersion
+    );
     return {
       ...base,
       status: "available",
-      availableVersion: update.version || null,
+      currentVersion,
+      availableVersion,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    // Offline / DNS / 404 → non-fatal
+    console.warn("[updater] check failed currentVersion=%s error=%s", currentVersion, msg);
     const offline =
       /network|fetch|offline|failed to fetch|dns|ENOTFOUND|timeout/i.test(msg);
     return {
       ...base,
       status: offline ? "unavailable" : "error",
-      error: offline ? "Could not reach update server (offline or unavailable)." : msg,
+      currentVersion,
+      error: offline
+        ? "Could not reach update server (offline or unavailable)."
+        : msg,
     };
   }
 }
@@ -123,6 +169,7 @@ export async function downloadAndInstallDesktopUpdate(
   try {
     const update = await check();
     if (!update) return { ok: false, error: "No update available." };
+    console.info("[updater] downloadAndInstall version=%s", update.version);
 
     let total = 0;
     let received = 0;
@@ -134,7 +181,11 @@ export async function downloadAndInstallDesktopUpdate(
         onProgress?.(total > 0 ? 0 : null, "downloading");
       } else if (event.event === "Progress") {
         received += event.data?.chunkLength ?? 0;
-        if (total > 0) onProgress?.(Math.min(100, Math.round((received / total) * 100)), "downloading");
+        if (total > 0)
+          onProgress?.(
+            Math.min(100, Math.round((received / total) * 100)),
+            "downloading"
+          );
         else onProgress?.(null, "downloading");
       } else if (event.event === "Finished") {
         onProgress?.(100, "installing");
@@ -145,6 +196,7 @@ export async function downloadAndInstallDesktopUpdate(
     return { ok: true };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    console.warn("[updater] install failed: %s", msg);
     return { ok: false, error: msg };
   }
 }

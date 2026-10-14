@@ -233,3 +233,13 @@ Generate step accepts either:
 When `publish_release=true`, the job **fails** if `latest.json` is missing so releases never ship without a working updater endpoint:
 
 `https://github.com/zarifahmadafzali-ctrl/trading-replay/releases/latest/download/latest.json`
+
+
+## Auto-update (Windows)
+
+- Endpoint: `https://github.com/zarifahmadafzali-ctrl/trading-replay/releases/latest/download/latest.json`
+- Always publish Windows releases via **GitHub Actions → Windows Tauri Build** with `publish_release=true` (sets `make_latest: true`). Do **not** create the Latest release by hand.
+- After publish, CI verifies `latest.json` version matches the built app version and that the artifact URL returns HTTP 2xx.
+- Installed app version is read at runtime via Tauri `getVersion()` (not only the compile-time string).
+- Version sources must stay in sync: `package.json`, `Cargo.toml`, `tauri.conf.json`, `APP_VERSION` (`npm run test:version-sync`).
+

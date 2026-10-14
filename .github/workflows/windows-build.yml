@@ -325,6 +325,8 @@ jobs:
           tag_name: ${{ steps.manifest.outputs.tag || format('v{0}', steps.ver.outputs.version) }}
           name: Trading Replay ${{ steps.ver.outputs.version }}
           make_latest: true
+          draft: false
+          prerelease: false
           body: |
             ## Trading Replay ${{ steps.ver.outputs.version }}
 
@@ -352,3 +354,47 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify published latest.json (version + URL)
+        if: ${{ inputs.publish_release == true || inputs.publish_release == 'true' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          $repo = "${{ github.repository }}"
+          $url = "https://github.com/$repo/releases/latest/download/latest.json"
+          Write-Host "Fetching $url"
+          # Avoid stale CDN: use API for the latest release asset when possible
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "trading-replay-ci" }
+          $api = "https://api.github.com/repos/$repo/releases/latest"
+          $rel = Invoke-RestMethod -Uri $api -Headers $headers
+          if ($rel.draft -eq $true) { throw "Latest release is still a draft — cannot be used by updater." }
+          if ($rel.prerelease -eq $true) { throw "Latest release is prerelease — updater endpoint would be wrong for production." }
+          Write-Host "Latest release tag=$($rel.tag_name) name=$($rel.name)"
+          $asset = $rel.assets | Where-Object { $_.name -eq "latest.json" } | Select-Object -First 1
+          if (-not $asset) { throw "latest.json asset missing on release $($rel.tag_name)" }
+          $tmp = Join-Path $env:RUNNER_TEMP "latest-published.json"
+          Invoke-WebRequest -Uri $asset.browser_download_url -Headers $headers -OutFile $tmp
+          $j = Get-Content $tmp -Raw | ConvertFrom-Json
+          if (-not $j.version) { throw "Published latest.json missing version" }
+          if ($j.version -ne $ver) {
+            throw "Published latest.json version='$($j.version)' != built version='$ver'"
+          }
+          $plat = $j.platforms.'windows-x86_64'
+          if (-not $plat -or -not $plat.url) { throw "Published latest.json missing windows-x86_64.url" }
+          if ($plat.url -match ' ') {
+            throw "Published latest.json url contains a space (GitHub 404 risk): $($plat.url)"
+          }
+          Write-Host "HEAD $($plat.url)"
+          try {
+            $head = Invoke-WebRequest -Uri $plat.url -Method Head -Headers $headers -MaximumRedirection 5
+            $code = [int]$head.StatusCode
+          } catch {
+            $resp = $_.Exception.Response
+            if ($resp) { $code = [int]$resp.StatusCode } else { throw $_ }
+          }
+          if ($code -lt 200 -or $code -ge 300) {
+            throw "Updater artifact URL returned HTTP $code — $($plat.url)"
+          }
+          Write-Host "PASS published latest.json version=$($j.version) url_ok=$code"

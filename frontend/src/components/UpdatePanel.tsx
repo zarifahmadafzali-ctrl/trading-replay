@@ -10,7 +10,6 @@ import {
   type UpdateState,
 } from "../lib/desktopUpdater";
 import { isDesktopPlatform } from "../lib/platform";
-import { APP_VERSION } from "../lib/storageVersions";
 
 export function UpdatePanel() {
   const [state, setState] = useState<UpdateState>(initialUpdateState);
@@ -70,7 +69,7 @@ export function UpdatePanel() {
         title="Application updates"
         onClick={() => setOpen((v) => !v)}
       >
-        v{APP_VERSION}
+        v{state.currentVersion}
         {badge ? <span className="update-badge">{badge}</span> : null}
       </button>
       {open && (
@@ -84,7 +83,9 @@ export function UpdatePanel() {
             <span className="risk-calc-v">v{state.currentVersion}</span>
           </div>
           {state.status === "checking" && <p className="muted">Checking for updates…</p>}
-          {state.status === "up_to_date" && <p className="muted">You&apos;re up to date.</p>}
+          {state.status === "up_to_date" && (
+            <p className="muted">You&apos;re up to date (v{state.currentVersion}).</p>
+          )}
           {state.status === "unavailable" && (
             <p className="muted">{state.error || "Update server unavailable."}</p>
           )}
