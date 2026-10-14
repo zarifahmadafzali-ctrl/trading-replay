@@ -381,6 +381,164 @@ export function downloadJournalCsv(trades: JournalTrade[], filename = "journal-e
   URL.revokeObjectURL(url);
 }
 
+/** Parse a CSV previously produced by exportJournalCsv (or compatible headers). */
+export function parseJournalCsv(text: string): JournalTrade[] {
+  const raw = text.replace(/^\uFEFF/, "").trim();
+  if (!raw) return [];
+  const lines: string[] = [];
+  let cur = "";
+  let inQ = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inQ) {
+      if (ch === '"') {
+        if (raw[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQ = false;
+        }
+      } else {
+        cur += ch;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inQ = true;
+      continue;
+    }
+    if (ch === "\n") {
+      lines.push(cur);
+      cur = "";
+      continue;
+    }
+    if (ch === "\r") continue;
+    cur += ch;
+  }
+  if (cur.length) lines.push(cur);
+  if (lines.length < 2) return [];
+
+  const splitRow = (line: string): string[] => {
+    const cols: string[] = [];
+    let c = "";
+    let q = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (q) {
+        if (ch === '"') {
+          if (line[i + 1] === '"') {
+            c += '"';
+            i++;
+          } else q = false;
+        } else c += ch;
+        continue;
+      }
+      if (ch === '"') {
+        q = true;
+        continue;
+      }
+      if (ch === ",") {
+        cols.push(c);
+        c = "";
+        continue;
+      }
+      c += ch;
+    }
+    cols.push(c);
+    return cols;
+  };
+
+  const headers = splitRow(lines[0]).map((h) => h.trim());
+  const idx = (name: string) => headers.indexOf(name);
+  const num = (v: string): number | undefined => {
+    if (v == null || v === "") return undefined;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const out: JournalTrade[] = [];
+  for (let r = 1; r < lines.length; r++) {
+    const cols = splitRow(lines[r]);
+    if (!cols.length || cols.every((c) => !c)) continue;
+    const get = (name: string) => {
+      const i = idx(name);
+      return i >= 0 ? (cols[i] ?? "") : "";
+    };
+    const id = get("id") || get("tradeId") || `imp-${Date.now()}-${r}`;
+    const sideRaw = (get("side") || "long").toLowerCase();
+    const side = sideRaw === "short" || sideRaw === "sell" ? "short" : "long";
+    const reasonRaw = (get("reason") || "manual").toLowerCase();
+    const reason: CloseReason =
+      reasonRaw === "sl" || reasonRaw === "tp" || reasonRaw === "manual" ? reasonRaw : "manual";
+    out.push(
+      normalizeJournalTrade({
+        id,
+        tradeId: get("tradeId") || id,
+        sessionId: get("sessionId") || undefined,
+        accountId: get("accountId") || undefined,
+        symbol: get("symbol") || "UNKNOWN",
+        side,
+        orderType: get("orderType") || "market",
+        entryTime: num(get("entryTime")) ?? 0,
+        entryPrice: num(get("entryPrice")) ?? 0,
+        exitTime: num(get("exitTime")) ?? 0,
+        exitPrice: num(get("exitPrice")) ?? 0,
+        reason,
+        stopPrice: num(get("stopLoss")) ?? num(get("stopPrice")),
+        takeProfitPrice: num(get("takeProfit")) ?? num(get("takeProfitPrice")),
+        pnlPoints: num(get("pnlPoints")),
+        currencyPnL: num(get("currencyPnL")),
+        rMultiple: num(get("rMultiple")),
+        riskPercent: num(get("riskPercent")),
+        actualRiskAmount: num(get("actualRiskAmount")),
+        riskAmount: num(get("actualRiskAmount")),
+        finalLot: num(get("finalLot")),
+        durationSeconds: num(get("durationSeconds")),
+        balanceBefore: num(get("balanceBefore")),
+        balanceAfter: num(get("balanceAfter")),
+      })
+    );
+  }
+  return out;
+}
+
+/**
+ * Merge CSV trades into the active session journal.
+ * Skips rows whose tradeId/id already exists (idempotent).
+ */
+export async function importJournalCsvToSession(
+  sessionId: string | null,
+  csvText: string
+): Promise<{ imported: number; skipped: number; total: number }> {
+  const parsed = parseJournalCsv(csvText);
+  if (!parsed.length) return { imported: 0, skipped: 0, total: 0 };
+  const existing = await loadJournalForSession(sessionId);
+  const seen = new Set(existing.map((t) => t.tradeId || t.id).filter(Boolean));
+  let imported = 0;
+  let skipped = 0;
+  const merged = [...existing];
+  for (const t of parsed) {
+    const key = t.tradeId || t.id;
+    if (key && seen.has(key)) {
+      skipped++;
+      continue;
+    }
+    const row = normalizeJournalTrade({
+      ...t,
+      sessionId: sessionId || t.sessionId || undefined,
+    });
+    if (key) seen.add(key);
+    merged.push(row);
+    imported++;
+  }
+  if (imported > 0) {
+    await saveJournalForSession(sessionId, merged);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(JOURNAL_CHANGED_EVENT));
+    }
+  }
+  return { imported, skipped, total: parsed.length };
+}
+
 /** v3.29.0 — detect malformed closed-trade rows without rewriting them. */
 export type JournalAuditIssue = {
   tradeId: string;

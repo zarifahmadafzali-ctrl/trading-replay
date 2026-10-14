@@ -330,22 +330,14 @@ main h3 {
   flex-direction: column;
   gap: 8px;
 }
-/* Session list: page-level scroll first so Edit/Delete never hide under nested
-   overflow/fullscreen traps. Tall viewports may still use an inner scroll. */
+/* Session list: no nested max-height trap — page scrolls as a whole */
 .session-list-scroll {
-  max-height: none;
+  max-height: none !important;
   overflow: visible;
   padding-right: 4px;
   padding-bottom: 72px;
   margin-top: 8px;
   -webkit-overflow-scrolling: touch;
-}
-@media (min-height: 900px) {
-  .session-list-scroll {
-    max-height: min(55vh, 560px);
-    overflow-y: auto;
-    overflow-x: hidden;
-  }
 }
 .session-list-scroll .session-items {
   margin: 0;
@@ -1945,20 +1937,22 @@ html.tr-fullscreen .replay-view .chartbox > div,
   height: 100% !important;
   min-height: 0;
 }
-/* Floating replay controls — do not reserve chart height */
+/* Floating replay controls — hug the control buttons (no empty long strip) */
 .replay.mobile-scroll {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
   bottom: max(12px, env(safe-area-inset-bottom, 0px) + 8px);
   z-index: 45;
-  width: min(960px, calc(100vw - 16px));
+  width: auto;
   max-width: calc(100vw - 16px);
+  height: auto;
   border-radius: 10px;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
   background: rgba(18, 24, 32, 0.94);
   backdrop-filter: blur(8px);
   margin: 0;
+  padding: 6px 10px;
 }
 html.tr-fullscreen .replay.mobile-scroll,
 .app:fullscreen .replay.mobile-scroll {
@@ -1976,11 +1970,21 @@ html.tr-fullscreen .replay.mobile-scroll,
   border: 0 !important;
 }
 .replay-float {
-  display: flex;
+  display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: 6px;
+  width: auto;
+  max-width: 100%;
+  height: auto;
   touch-action: none;
+}
+.replay-float > button,
+.replay-float > select,
+.replay-float > .tools-wrap,
+.replay-float > .cursor-count {
+  flex: 0 0 auto;
 }
 .replay-drag-handle {
   cursor: grab;
@@ -2001,11 +2005,7 @@ html.tr-fullscreen .replay.mobile-scroll,
   color: #c5d0dc;
   background: rgba(255, 255, 255, 0.08);
 }
-/* Compact LWC time-axis strip — labels only, no tall nav area */
-.tr-chart-no-nav-strip table tr:last-child {
-  height: 22px !important;
-  max-height: 22px !important;
-}
+/* Chart must fill chartbox; never force tiny time-axis rows (that blacks out scales). */
 .chartbox .tv-lightweight-charts {
   width: 100% !important;
   height: 100% !important;
@@ -2015,37 +2015,40 @@ html.tr-fullscreen .chartbox .tv-lightweight-charts,
   width: 100% !important;
   height: 100% !important;
 }
-/* Do not clip price scale / time axis */
+/* Keep overflow hidden so flex height resolves and LWC can measure axes */
 html.tr-fullscreen .chart-wrap,
 .app:fullscreen .chart-wrap,
 html.tr-fullscreen .chartbox,
 .app:fullscreen .chartbox {
-  overflow: visible;
+  overflow: hidden;
 }
 
-/* Session list: nested max-height only on tall desktop; fullscreen uses page scroll */
+/* Session: whole page is the scrollport — never trap Edit/Delete under nested max-height */
+.session-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+  padding: 12px 12px 120px;
+  max-height: none;
+}
 .session-list-scroll {
   overflow: visible;
-  max-height: none;
+  max-height: none !important;
   min-height: 0;
-  padding-bottom: 72px;
+  padding-bottom: 48px;
   -webkit-overflow-scrolling: touch;
 }
-@media (min-height: 900px) {
-  .session-list-scroll {
-    max-height: min(55vh, 520px);
-    overflow-y: auto;
-    overflow-x: hidden;
-  }
-}
-/* Fullscreen: Session page itself is the scrollport (no nested 55vh trap) */
-html.tr-fullscreen main > section.session-view,
-.app:fullscreen main > section.session-view,
 html.tr-fullscreen .session-view,
-.app:fullscreen .session-view {
+.app:fullscreen .session-view,
+html.tr-fullscreen main > section.session-view,
+.app:fullscreen main > section.session-view {
   flex: 1 1 auto !important;
   min-height: 0 !important;
-  height: auto !important;
+  height: 100% !important;
   max-height: none !important;
   overflow-x: hidden !important;
   overflow-y: auto !important;
@@ -2059,7 +2062,7 @@ html.tr-fullscreen .session-list-scroll,
   max-height: none !important;
   overflow: visible !important;
 }
-/* Data Engine / Journal / Analytics same page-scroll pattern in fullscreen */
+/* Non-replay pages: page-level scroll in fullscreen */
 html.tr-fullscreen main > section:not(.replay-view),
 .app:fullscreen main > section:not(.replay-view) {
   flex: 1 1 auto;
@@ -2070,6 +2073,27 @@ html.tr-fullscreen main > section:not(.replay-view),
   touch-action: pan-y;
   overscroll-behavior-y: contain;
   padding-bottom: 96px;
+}
+.session-items li {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #202a35;
+  border-radius: 8px;
+  background: #0d1218;
+}
+.session-actions {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+.session-actions button {
+  min-height: 36px;
+  padding: 6px 12px;
 }
 .session-actions {
   display: flex;

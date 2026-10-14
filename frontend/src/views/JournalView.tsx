@@ -4,6 +4,7 @@ import {
   deleteJournalTrade,
   resolveCurrencyPnL,
   downloadJournalCsv,
+  importJournalCsvToSession,
   JOURNAL_CHANGED_EVENT,
   type JournalTrade,
   type CloseReason,
@@ -263,6 +264,31 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
         <button type="button" onClick={() => downloadJournalCsv(filtered, "journal-export.csv")}>
           Export CSV
         </button>
+        <label className="import-btn" style={{ cursor: "pointer", display: "inline-flex", alignItems: "center" }}>
+          Import CSV
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (!file) return;
+              void (async () => {
+                try {
+                  const text = await file.text();
+                  const result = await importJournalCsvToSession(sessionId, text);
+                  await reload();
+                  alert(
+                    `Import complete: ${result.imported} added, ${result.skipped} skipped (already present), ${result.total} rows in file.`
+                  );
+                } catch (err) {
+                  alert(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+                }
+              })();
+            }}
+          />
+        </label>
 
       </div>
 

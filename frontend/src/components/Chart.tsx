@@ -1596,18 +1596,7 @@ export function Chart({
     });
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.88, bottom: 0 }, visible: false });
     handlesRef.current = { chart, candles, volume };
-    // Remove LWC internal time-axis scroll/nav strip if the library renders one
-    try {
-      const root = containerRef.current;
-      if (root) {
-        root.querySelectorAll(".tv-lightweight-charts table tr:last-child td").forEach((td) => {
-          (td as HTMLElement).style.maxHeight = "22px";
-        });
-        root.classList.add("tr-chart-no-nav-strip");
-      }
-    } catch {
-      /* */
-    }
+    // Do NOT force tiny heights on LWC internal table rows — that hides price/time axes.
 
 
     const onMove = (param: MouseEventParams) => {
@@ -1949,10 +1938,22 @@ export function Chart({
 
     const forceChartResize = () => {
       if (!containerRef.current) return;
-      const w = containerRef.current.clientWidth;
-      const h = containerRef.current.clientHeight;
-      if (w > 0 && h > 0) {
+      const elc = containerRef.current;
+      const w = Math.max(elc.clientWidth || elc.offsetWidth || 0, 0);
+      const h = Math.max(elc.clientHeight || elc.offsetHeight || 0, 0);
+      if (w >= 40 && h >= 40) {
         chart.applyOptions({ width: w, height: h });
+        try {
+          candles.priceScale().applyOptions({ visible: true, autoScale: true });
+          chart.timeScale().applyOptions({
+            visible: true,
+            timeVisible: true,
+            secondsVisible: true,
+            borderVisible: true,
+          });
+        } catch {
+          /* */
+        }
         scheduleRedraw();
       }
     };
