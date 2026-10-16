@@ -2105,3 +2105,190 @@ html.tr-fullscreen main > section:not(.replay-view),
   min-height: 36px;
   padding: 6px 12px;
 }
+
+
+/* =============================================================================
+ * v3.43.3 — Fullscreen workspace: ALL pages visible + scrollable on desktop
+ * ----------------------------------------------------------------------------
+ * Problems addressed:
+ * - Session / Data Engine / Journal / Analytics: options cut off, no scroll
+ * - Nested max-height traps hiding Edit / Delete / forms
+ * - Dropdown panels clipped or jumping under the chart
+ * - Chart axes disappearing when entering fullscreen (needs resize)
+ *
+ * Scroll chain in fullscreen:
+ *   html/body (overflow hidden, height 100%)
+ *   → .app (flex column, height 100%, overflow hidden)
+ *   → .topbar (flex-shrink 0, sticky)
+ *   → main (flex 1, min-height 0, overflow hidden)
+ *   → section:not(.replay-view) (flex 1, min-height 0, overflow-y auto)
+ *   → footer (flex-shrink 0)
+ * Replay keeps overflow hidden and chart fills remaining space.
+ * ============================================================================= */
+
+html.tr-fullscreen .topbar,
+.app:fullscreen .topbar,
+.app:-webkit-full-screen .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  flex-shrink: 0 !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+html.tr-fullscreen footer,
+.app:fullscreen footer,
+.app:-webkit-full-screen footer {
+  flex-shrink: 0 !important;
+  visibility: visible !important;
+}
+
+html.tr-fullscreen main,
+.app:fullscreen main,
+.app:-webkit-full-screen main {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Replay stays a fixed-height flex column (chart fills). */
+html.tr-fullscreen .view-panel:not(.view-panel-hidden),
+.app:fullscreen .view-panel:not(.view-panel-hidden) {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Every non-replay page: ONE scrollport = the section itself */
+html.tr-fullscreen main > section.session-view,
+html.tr-fullscreen main > section.data-engine-view,
+html.tr-fullscreen main > section.journal-view,
+html.tr-fullscreen main > section.journal-pro,
+html.tr-fullscreen main > section.analytics-view,
+html.tr-fullscreen main > section:not(.replay-view),
+.app:fullscreen main > section.session-view,
+.app:fullscreen main > section.data-engine-view,
+.app:fullscreen main > section.journal-view,
+.app:fullscreen main > section.analytics-view,
+.app:fullscreen main > section:not(.replay-view),
+.app:-webkit-full-screen main > section:not(.replay-view) {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: auto !important;
+  max-height: none !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y !important;
+  overscroll-behavior-y: contain;
+  padding-bottom: max(120px, env(safe-area-inset-bottom, 0px) + 96px) !important;
+  visibility: visible !important;
+}
+
+/* Kill nested height traps that hide Open / Edit / Delete / forms */
+html.tr-fullscreen .session-list-scroll,
+html.tr-fullscreen .session-items,
+html.tr-fullscreen .session-form,
+html.tr-fullscreen .session-backup-bar,
+html.tr-fullscreen .session-actions,
+html.tr-fullscreen .account-card,
+html.tr-fullscreen .prop-rules-box,
+.app:fullscreen .session-list-scroll,
+.app:fullscreen .session-items,
+.app:fullscreen .session-actions {
+  max-height: none !important;
+  overflow: visible !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+html.tr-fullscreen .session-actions,
+.app:fullscreen .session-actions {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+  position: relative !important;
+  z-index: 2 !important;
+}
+
+html.tr-fullscreen .session-actions button,
+.app:fullscreen .session-actions button {
+  min-height: 36px !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+
+/* Data Engine / Journal / Analytics content must not be clipped */
+html.tr-fullscreen .data-engine-view .card,
+html.tr-fullscreen .data-engine-view .sync-form,
+html.tr-fullscreen .journal-view,
+html.tr-fullscreen .journal-pro,
+html.tr-fullscreen .journal-filters,
+html.tr-fullscreen .journal-table-wrap,
+html.tr-fullscreen .analytics-view,
+html.tr-fullscreen .analytics-filters,
+.app:fullscreen .data-engine-view .card,
+.app:fullscreen .journal-table-wrap,
+.app:fullscreen .analytics-filters {
+  max-height: none !important;
+  overflow: visible !important;
+  visibility: visible !important;
+}
+
+/* Intentional small scroll areas (dropdowns / risk panel) keep internal scroll */
+html.tr-fullscreen .tools-panel,
+html.tr-fullscreen .tf-panel,
+html.tr-fullscreen .risk-panel,
+html.tr-fullscreen .tf-list,
+.app:fullscreen .tools-panel,
+.app:fullscreen .tf-panel,
+.app:fullscreen .risk-panel {
+  max-height: min(72vh, 520px) !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
+  z-index: 200 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+
+/* Topbar nav itself must remain usable */
+html.tr-fullscreen .topbar nav,
+.app:fullscreen .topbar nav {
+  overflow-x: auto !important;
+  overflow-y: visible !important;
+  max-width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Replay chart: force measurable box for price/time scales */
+html.tr-fullscreen .replay-view .chartbox,
+.app:fullscreen .replay-view .chartbox {
+  flex: 1 1 auto !important;
+  min-height: 120px !important;
+  overflow: hidden !important;
+}
+
+html.tr-fullscreen .replay-view .chartbox .tv-lightweight-charts,
+.app:fullscreen .replay-view .chartbox .tv-lightweight-charts {
+  width: 100% !important;
+  height: 100% !important;
+  visibility: visible !important;
+}
+
+/* Floating replay bar stays on top of chart, never stretched full width */
+html.tr-fullscreen .replay.mobile-scroll,
+.app:fullscreen .replay.mobile-scroll {
+  z-index: 120 !important;
+  max-width: calc(100vw - 16px) !important;
+  width: auto !important;
+}
+
