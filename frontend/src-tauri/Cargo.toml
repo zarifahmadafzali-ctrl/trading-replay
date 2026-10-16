@@ -1,6 +1,6 @@
 [package]
 name = "trading-replay"
-version = "3.43.5"
+version = "3.43.6"
 description = "Trading Replay desktop shell (Tauri + SQLite)"
 authors = ["Trading Replay"]
 edition = "2021"
@@ -26,7 +26,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-updater = "2.14"
+# zip 2.x/4.x are fully yanked on crates.io (2026-10); only zip 9.x remains.
+# Windows updater downloads signed NSIS setup.exe and does not require the zip feature.
+tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tauri-plugin-process = "2.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -7,7 +7,7 @@
  */
 
 /** Application product version (package.json). */
-export const APP_VERSION = "3.43.5";
+export const APP_VERSION = "3.43.6";
 
 /**
  * IndexedDB session schema version (trading-replay-sessions DB).
