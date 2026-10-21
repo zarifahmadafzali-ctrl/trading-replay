@@ -84,6 +84,21 @@ jobs:
           Write-Host "APP_VERSION=$v"
           echo "version=$v" >> $env:GITHUB_OUTPUT
 
+      # ---- Updater gate: binary version (tauri.conf/Cargo) must equal package.json ----
+      # latest.json uses the package.json version; the installed binary compares against
+      # tauri.conf.json. If they differ the updater says "up to date" or loops forever.
+      - name: Verify versions aligned (updater gate)
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $conf = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargo = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $app = (Select-String -Path src/lib/storageVersions.ts -Pattern 'APP_VERSION\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          Write-Host "package=$v tauri.conf=$conf Cargo=$cargo APP_VERSION=$app"
+          if ($conf -ne $v -or $cargo -ne $v -or $app -ne $v) {
+            throw "Version mismatch: package=$v tauri.conf=$conf Cargo=$cargo APP_VERSION=$app. Align all four before releasing."
+          }
+
       # Tauri CLI accepts TAURI_SIGNING_PRIVATE_KEY as either raw key text or a
       # filesystem path. Passing the multiline minisign key as a GitHub Actions
       # env string is decoded as Base64 and fails (e.g. "_" at offset 5).
@@ -325,8 +340,6 @@ jobs:
           tag_name: ${{ steps.manifest.outputs.tag || format('v{0}', steps.ver.outputs.version) }}
           name: Trading Replay ${{ steps.ver.outputs.version }}
           make_latest: true
-          draft: false
-          prerelease: false
           body: |
             ## Trading Replay ${{ steps.ver.outputs.version }}
 
@@ -355,46 +368,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Verify published latest.json (version + URL)
+      - name: Verify published updater endpoint
         if: ${{ inputs.publish_release == true || inputs.publish_release == 'true' }}
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $ver = "${{ steps.ver.outputs.version }}"
-          $repo = "${{ github.repository }}"
-          $url = "https://github.com/$repo/releases/latest/download/latest.json"
-          Write-Host "Fetching $url"
-          # Avoid stale CDN: use API for the latest release asset when possible
-          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "trading-replay-ci" }
-          $api = "https://api.github.com/repos/$repo/releases/latest"
-          $rel = Invoke-RestMethod -Uri $api -Headers $headers
-          if ($rel.draft -eq $true) { throw "Latest release is still a draft — cannot be used by updater." }
-          if ($rel.prerelease -eq $true) { throw "Latest release is prerelease — updater endpoint would be wrong for production." }
-          Write-Host "Latest release tag=$($rel.tag_name) name=$($rel.name)"
-          $asset = $rel.assets | Where-Object { $_.name -eq "latest.json" } | Select-Object -First 1
-          if (-not $asset) { throw "latest.json asset missing on release $($rel.tag_name)" }
-          $tmp = Join-Path $env:RUNNER_TEMP "latest-published.json"
-          Invoke-WebRequest -Uri $asset.browser_download_url -Headers $headers -OutFile $tmp
-          $j = Get-Content $tmp -Raw | ConvertFrom-Json
-          if (-not $j.version) { throw "Published latest.json missing version" }
-          if ($j.version -ne $ver) {
-            throw "Published latest.json version='$($j.version)' != built version='$ver'"
+          $v = "${{ steps.ver.outputs.version }}"
+          $endpoint = "https://github.com/${{ github.repository }}/releases/latest/download/latest.json"
+          $ok = $false
+          for ($i = 0; $i -lt 8; $i++) {
+            try {
+              $r = Invoke-WebRequest -Uri $endpoint -Headers @{ "Cache-Control" = "no-cache" } -UseBasicParsing
+              $m = $r.Content | ConvertFrom-Json
+              Write-Host "endpoint version=$($m.version) (want $v)"
+              if ($m.version -eq $v) { $ok = $true; break }
+            } catch { Write-Host "endpoint check failed: $_" }
+            Start-Sleep -Seconds 20
           }
-          $plat = $j.platforms.'windows-x86_64'
-          if (-not $plat -or -not $plat.url) { throw "Published latest.json missing windows-x86_64.url" }
-          if ($plat.url -match ' ') {
-            throw "Published latest.json url contains a space (GitHub 404 risk): $($plat.url)"
-          }
-          Write-Host "HEAD $($plat.url)"
-          try {
-            $head = Invoke-WebRequest -Uri $plat.url -Method Head -Headers $headers -MaximumRedirection 5
-            $code = [int]$head.StatusCode
-          } catch {
-            $resp = $_.Exception.Response
-            if ($resp) { $code = [int]$resp.StatusCode } else { throw $_ }
-          }
-          if ($code -lt 200 -or $code -ge 300) {
-            throw "Updater artifact URL returned HTTP $code — $($plat.url)"
-          }
-          Write-Host "PASS published latest.json version=$($j.version) url_ok=$code"
+          if (-not $ok) { throw "releases/latest/download/latest.json does not serve $v. Release is not marked Latest (draft/prerelease?)." }
+          $url = $m.platforms.'windows-x86_64'.url
+          $h = Invoke-WebRequest -Uri $url -Method Head -MaximumRedirection 5 -UseBasicParsing
+          if ($h.StatusCode -ne 200) { throw "Installer URL not downloadable: $url ($($h.StatusCode))" }
+          Write-Host "Updater endpoint OK: $v -> $url"

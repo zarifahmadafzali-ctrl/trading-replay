@@ -1,13 +1,12 @@
 /**
- * Native Windows auto-update (Tauri 2 plugin-updater).
+ * v3.43.7 — Native Windows auto-update (Tauri 2 plugin-updater).
  *
  * Only active on desktop (isTauri). Web/PWA ignores this module.
  * Never blocks startup; never requires network for trading features.
  * Updater replaces application binaries only — SQLite / IndexedDB data stay intact.
  *
- * Displayed "current version" MUST come from @tauri-apps/api/app getVersion()
- * (the installed binary), not from the compile-time APP_VERSION string alone.
- * A mismatch between baked APP_VERSION and the real binary is a build bug.
+ * Displayed "current version" MUST come from the installed binary
+ * (window.__TAURI__.app.getVersion / @tauri-apps/api/app), not only APP_VERSION.
  */
 
 import { APP_VERSION } from "./storageVersions";
@@ -39,22 +38,6 @@ export function initialUpdateState(): UpdateState {
     progress: null,
     error: null,
   };
-}
-
-/**
- * Runtime app version from the installed Tauri binary.
- * Falls back to compile-time APP_VERSION on web or if the API is missing.
- */
-export async function resolveInstalledVersion(): Promise<string> {
-  if (!isDesktopPlatform()) return APP_VERSION;
-  try {
-    const mod = await import("@tauri-apps/api/app");
-    const v = await mod.getVersion();
-    if (typeof v === "string" && v.trim()) return v.trim();
-  } catch {
-    // web bundle or missing API
-  }
-  return APP_VERSION;
 }
 
 type UpdaterUpdate = {
@@ -89,10 +72,42 @@ async function relaunchApp(): Promise<void> {
 }
 
 /**
+ * Real version baked into the installed binary (what the updater compares against).
+ * Prefer @tauri-apps/api/app; fall back to withGlobalTauri window.__TAURI__.
+ */
+export async function resolveInstalledVersion(): Promise<string> {
+  if (!isDesktopPlatform()) return APP_VERSION;
+  try {
+    const mod = await import("@tauri-apps/api/app");
+    const v = await mod.getVersion();
+    if (typeof v === "string" && v.trim()) return v.trim();
+  } catch {
+    /* fall through */
+  }
+  try {
+    const g = (
+      window as unknown as {
+        __TAURI__?: { app?: { getVersion?: () => Promise<string> } };
+      }
+    ).__TAURI__;
+    const v = await g?.app?.getVersion?.();
+    if (typeof v === "string" && v.trim()) return v.trim();
+  } catch {
+    /* fall through */
+  }
+  return APP_VERSION;
+}
+
+/** @deprecated use resolveInstalledVersion */
+async function getBinaryVersion(): Promise<string> {
+  return resolveInstalledVersion();
+}
+
+/**
  * Background / manual check. Returns next state; does not throw.
  */
 export async function checkForDesktopUpdate(): Promise<UpdateState> {
-  const currentVersion = await resolveInstalledVersion();
+  const currentVersion = await getBinaryVersion();
   const base: UpdateState = {
     status: "idle",
     currentVersion,
@@ -118,7 +133,6 @@ export async function checkForDesktopUpdate(): Promise<UpdateState> {
   try {
     const update = await check();
     if (!update) {
-      // Log for support / DevTools diagnosis
       console.info(
         "[updater] up_to_date currentVersion=%s (compile APP_VERSION=%s)",
         currentVersion,
@@ -140,13 +154,12 @@ export async function checkForDesktopUpdate(): Promise<UpdateState> {
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.warn("[updater] check failed currentVersion=%s error=%s", currentVersion, msg);
+    console.warn("[updater] check error:", msg);
     const offline =
       /network|fetch|offline|failed to fetch|dns|ENOTFOUND|timeout/i.test(msg);
     return {
       ...base,
       status: offline ? "unavailable" : "error",
-      currentVersion,
       error: offline
         ? "Could not reach update server (offline or unavailable)."
         : msg,
@@ -156,7 +169,6 @@ export async function checkForDesktopUpdate(): Promise<UpdateState> {
 
 /**
  * Download + install the pending update, then relaunch.
- * Calls onProgress with 0–100 when content length is known.
  */
 export async function downloadAndInstallDesktopUpdate(
   onProgress?: (pct: number | null, phase: "downloading" | "installing") => void
@@ -169,7 +181,6 @@ export async function downloadAndInstallDesktopUpdate(
   try {
     const update = await check();
     if (!update) return { ok: false, error: "No update available." };
-    console.info("[updater] downloadAndInstall version=%s", update.version);
 
     let total = 0;
     let received = 0;
@@ -196,7 +207,6 @@ export async function downloadAndInstallDesktopUpdate(
     return { ok: true };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.warn("[updater] install failed: %s", msg);
     return { ok: false, error: msg };
   }
 }

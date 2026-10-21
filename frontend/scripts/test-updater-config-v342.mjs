@@ -20,7 +20,7 @@ function assert(name, cond) {
 
 const confPath = path.join(root, "src-tauri/tauri.conf.json");
 const conf = JSON.parse(fs.readFileSync(confPath, "utf8"));
-assert("version 3.43.0", conf.version === "3.43.0");
+assert("tauri.conf version equals package.json version", conf.version === JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version);
 assert("createUpdaterArtifacts true", conf.bundle?.createUpdaterArtifacts === true);
 assert("updater plugin present", !!conf.plugins?.updater);
 assert("pubkey non-empty", typeof conf.plugins.updater.pubkey === "string" && conf.plugins.updater.pubkey.length > 20);
@@ -47,7 +47,7 @@ assert("process:default permission", caps.permissions.includes("process:default"
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 assert("npm plugin-updater", !!pkg.dependencies["@tauri-apps/plugin-updater"]);
 assert("npm plugin-process", !!pkg.dependencies["@tauri-apps/plugin-process"]);
-assert("package version 3.43.0", pkg.version === "3.43.0");
+assert("package version is semver", /^\d+\.\d+\.\d+$/.test(pkg.version));
 
 const wf = fs.readFileSync(path.join(repo, ".github/workflows/windows-build.yml"), "utf8");
 assert("workflow uses TAURI_SIGNING_PRIVATE_KEY", wf.includes("TAURI_SIGNING_PRIVATE_KEY"));

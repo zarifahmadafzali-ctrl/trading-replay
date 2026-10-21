@@ -243,3 +243,10 @@ When `publish_release=true`, the job **fails** if `latest.json` is missing so re
 - Installed app version is read at runtime via Tauri `getVersion()` (not only the compile-time string).
 - Version sources must stay in sync: `package.json`, `Cargo.toml`, `tauri.conf.json`, `APP_VERSION` (`npm run test:version-sync`).
 
+
+## v3.43.7 — Updater gate hardening
+
+- CI **version alignment gate**: `package.json` == `tauri.conf.json` == `Cargo.toml` == `APP_VERSION` or the Windows job fails before build.
+- Post-publish verification: `releases/latest/download/latest.json` must serve the built version; installer URL must return HTTP 200.
+- Client shows **runtime binary version** via `getVersion()` / `__TAURI__.app.getVersion`, not only compile-time `APP_VERSION`.
+- Do not change signing keys, pubkey, or endpoint. Always publish with workflow `publish_release=true`.
