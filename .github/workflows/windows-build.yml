@@ -371,20 +371,49 @@ jobs:
       - name: Verify published updater endpoint
         if: ${{ inputs.publish_release == true || inputs.publish_release == 'true' }}
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # GitHub can lag a few minutes before /releases/latest points at a just-published tag.
+          # Accept either: (1) /releases/latest/download/latest.json serves this version, or
+          # (2) tag asset + API confirm the release is non-draft and is the repo's latest.
           $v = "${{ steps.ver.outputs.version }}"
-          $endpoint = "https://github.com/${{ github.repository }}/releases/latest/download/latest.json"
-          $ok = $false
-          for ($i = 0; $i -lt 8; $i++) {
+          $tag = "${{ steps.manifest.outputs.tag || format('v{0}', steps.ver.outputs.version) }}"
+          $repo = "${{ github.repository }}"
+          $latestUrl = "https://github.com/$repo/releases/latest/download/latest.json"
+          $tagUrl = "https://github.com/$repo/releases/download/$tag/latest.json"
+          $m = $null
+          $okLatest = $false
+
+          for ($i = 0; $i -lt 18; $i++) {
             try {
-              $r = Invoke-WebRequest -Uri $endpoint -Headers @{ "Cache-Control" = "no-cache" } -UseBasicParsing
+              $r = Invoke-WebRequest -Uri $latestUrl -Headers @{ "Cache-Control" = "no-cache"; "Pragma" = "no-cache" } -UseBasicParsing
               $m = $r.Content | ConvertFrom-Json
-              Write-Host "endpoint version=$($m.version) (want $v)"
-              if ($m.version -eq $v) { $ok = $true; break }
-            } catch { Write-Host "endpoint check failed: $_" }
-            Start-Sleep -Seconds 20
+              Write-Host "latest endpoint version=$($m.version) (want $v) attempt=$($i+1)"
+              if ($m.version -eq $v) { $okLatest = $true; break }
+            } catch { Write-Host "latest endpoint check failed: $_" }
+            Start-Sleep -Seconds 15
           }
-          if (-not $ok) { throw "releases/latest/download/latest.json does not serve $v. Release is not marked Latest (draft/prerelease?)." }
+
+          if (-not $okLatest) {
+            Write-Host "WARN: /releases/latest still not serving $v after retries — checking tag asset + API"
+            $rTag = Invoke-WebRequest -Uri $tagUrl -Headers @{ "Cache-Control" = "no-cache" } -UseBasicParsing
+            $m = $rTag.Content | ConvertFrom-Json
+            if ($m.version -ne $v) {
+              throw "Tag latest.json version=$($m.version) does not match built version $v"
+            }
+            $api = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              Accept = "application/vnd.github+json"
+            }
+            Write-Host "API latest tag=$($api.tag_name) draft=$($api.draft) prerelease=$($api.prerelease)"
+            if ($api.draft) { throw "Release is still draft" }
+            if ($api.tag_name -ne $tag -and $api.tag_name -ne "v$v") {
+              throw "API /releases/latest is $($api.tag_name), expected $tag. make_latest may have failed."
+            }
+            Write-Host "Tag + API verification OK (CDN latest pointer may lag briefly)"
+          }
+
           $url = $m.platforms.'windows-x86_64'.url
           $h = Invoke-WebRequest -Uri $url -Method Head -MaximumRedirection 5 -UseBasicParsing
           if ($h.StatusCode -ne 200) { throw "Installer URL not downloadable: $url ($($h.StatusCode))" }
