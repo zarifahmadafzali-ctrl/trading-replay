@@ -10,6 +10,10 @@ import {
 } from "../lib/drawingTools";
 import { fetchBars, addTrade } from "../lib/api";
 import { appendTradeAsync, rMultiple, auditJournalEvent } from "../lib/journal";
+import {
+  buildHtfSnapshots,
+  normalizeJournalSnapshotConfig,
+} from "../lib/journalSnapshots";
 import { cacheGetRange, cachePutBars } from "../lib/barCache";
 import { normalizeBars } from "../lib/marketDataIntegrity";
 import { recordRangeLoad, recordReplayWindow } from "../lib/replayDiagnostics";
@@ -1053,8 +1057,41 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       reason: localTrade.reason,
       side: localTrade.side,
     });
+    // v3.43.9: optional compact HTF bar snapshots (no look-ahead; uses same aggregateVisible)
+    let htfSnapshots = undefined as ReturnType<typeof buildHtfSnapshots> | undefined;
+    try {
+      const cfg = normalizeJournalSnapshotConfig(sessionMeta?.journalSnapshotConfig);
+      const reason = localTrade.reason as "sl" | "tp" | "manual";
+      const wantClose =
+        cfg.enabled &&
+        ((reason === "tp" && cfg.atClose.tp) ||
+          (reason === "sl" && cfg.atClose.sl) ||
+          (reason === "manual" && cfg.atClose.manual));
+      if (wantClose && cfg.timeframes.length && baseBars.length) {
+        const cursorIdx = Math.max(0, Math.min(cursor, baseBars.length));
+        htfSnapshots = buildHtfSnapshots({
+          bars1s: baseBars,
+          cursorIndex: cursorIdx,
+          timeframes: cfg.timeframes,
+          event: reason,
+          eventTimeUnix: closed.exitTime || baseBars[Math.max(0, cursorIdx - 1)]?.time || 0,
+          entry: closed.entry.price,
+          sl: closed.stop.price,
+          tp: closed.takeProfit.price,
+          exit: closed.exitPrice,
+          aggregateVisible,
+        });
+      }
+    } catch {
+      htfSnapshots = undefined;
+    }
+
     // Session IndexedDB is source of truth; idempotent on tradeId
-    await appendTradeAsync({ ...localTrade, sessionId: sessionIdRef.current || undefined });
+    await appendTradeAsync({
+      ...localTrade,
+      ...(htfSnapshots && htfSnapshots.length ? { htfSnapshots } : {}),
+      sessionId: sessionIdRef.current || undefined,
+    });
 
     // Realized currency PnL → owning account.balance (initialBalance stays immutable)
     try {

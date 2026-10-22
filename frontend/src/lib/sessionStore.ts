@@ -32,6 +32,8 @@ export type SessionMeta = {
   instrument?: InstrumentSpec;
   propFirm?: PropFirmConfig;
   sessionType?: "backtest" | "prop";
+  /** Optional HTF journal snapshot preferences (v3.43.9). */
+  journalSnapshotConfig?: import("./journalSnapshots").JournalSnapshotConfig;
 };
 
 export type SessionRuntime = {
@@ -191,7 +193,7 @@ export async function getSessionTrades(sessionId: string): Promise<any[]> {
 }
 
 export async function putSessionTrades(sessionId: string, trades: any[]): Promise<void> {
-  await idbPut(STORE_TRADES, { sessionId, trades: trades.slice(0, 500) });
+  await idbPut(STORE_TRADES, { sessionId, trades }); // v3.43.9: no silent trade drop
 }
 
 export async function getSessionShapes(sessionId: string): Promise<unknown[]> {

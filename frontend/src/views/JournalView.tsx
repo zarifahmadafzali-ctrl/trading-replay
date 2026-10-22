@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import {
   loadJournalForSession,
   deleteJournalTrade,
@@ -10,7 +10,16 @@ import {
   type CloseReason,
 } from "../lib/journal";
 import {
+  renderHtfSnapshotToCanvas,
+  normalizeJournalSnapshotConfig,
+  DEFAULT_JOURNAL_SNAPSHOT_CONFIG,
+  type HtfSnapshot,
+  type JournalSnapshotConfig,
+} from "../lib/journalSnapshots";
+import {
   getActiveSessionId,
+  getSession,
+  upsertSession,
   listSessions,
   SESSION_CHANGED_EVENT,
   type SessionMeta,
@@ -53,11 +62,50 @@ function durationLabel(sec: number | undefined): string {
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
+
+function HtfSnapshotCanvas({ snap }: { snap: HtfSnapshot }) {
+  const ref = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    if (ref.current) renderHtfSnapshotToCanvas(ref.current, snap, { width: 640, height: 260 });
+  }, [snap]);
+  return (
+    <canvas
+      ref={ref}
+      width={640}
+      height={260}
+      className="journal-screenshot"
+      style={{ width: "100%", maxWidth: 640, height: "auto", background: "#0b1220", borderRadius: 6 }}
+    />
+  );
+}
+
 export function JournalView(_props: { backendOnline?: boolean | null }) {
   const [trades, setTrades] = useState<JournalTrade[]>([]);
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(() => getActiveSessionId());
   const [selected, setSelected] = useState<JournalTrade | null>(null);
+  const [snapCfg, setSnapCfg] = useState<JournalSnapshotConfig>(DEFAULT_JOURNAL_SNAPSHOT_CONFIG);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const sid = getActiveSessionId();
+      if (!sid) return;
+      const meta = await getSession(sid);
+      if (!cancelled && meta) {
+        setSnapCfg(normalizeJournalSnapshotConfig(meta.journalSnapshotConfig));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  async function saveSnapCfg(next: JournalSnapshotConfig) {
+    setSnapCfg(next);
+    const sid = getActiveSessionId();
+    if (!sid) return;
+    const meta = await getSession(sid);
+    if (!meta) return;
+    await upsertSession({ ...meta, journalSnapshotConfig: next, updatedAt: Date.now() });
+  }
+
   const [sortKey, setSortKey] = useState<SortKey>("exitTime");
   const [searchQ, setSearchQ] = useState("");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -180,6 +228,50 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
       <header className="journal-pro-head">
         <div>
           <h2>Trade Journal</h2>
+      <div className="journal-snap-cfg" style={{ margin: "8px 0 12px", padding: 10, border: "1px solid #1e293b", borderRadius: 8, fontSize: 12 }}>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>HTF journal snapshots</div>
+        <label style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+          <input
+            type="checkbox"
+            checked={snapCfg.enabled}
+            onChange={(e) => void saveSnapCfg({ ...snapCfg, enabled: e.target.checked })}
+          />
+          Enable higher-timeframe bar snapshots on close
+        </label>
+        {snapCfg.enabled && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 6 }}>
+            {[
+              [300, "5m"],
+              [900, "15m"],
+              [3600, "1H"],
+              [14400, "4H"],
+              [86400, "D"],
+            ].map(([sec, label]) => {
+              const s = Number(sec);
+              const on = snapCfg.timeframes.includes(s);
+              return (
+                <label key={s} style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={() => {
+                      const timeframes = on
+                        ? snapCfg.timeframes.filter((x) => x !== s)
+                        : [...snapCfg.timeframes, s];
+                      void saveSnapCfg({ ...snapCfg, timeframes });
+                    }}
+                  />
+                  {label}
+                </label>
+              );
+            })}
+          </div>
+        )}
+        <p className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+          PNGs still capture drawings. HTF stores compact OHLC (no look-ahead). Default off.
+        </p>
+      </div>
+
           <p className="muted" style={{ margin: 0, fontSize: 12 }}>
             Automated from closed positions · Session: <b>{sessionName}</b> · {filtered.length} trade
             {filtered.length === 1 ? "" : "s"}
@@ -535,6 +627,20 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
                   alt="Trade exit chart"
                   className="journal-screenshot"
                 />
+              </section>
+            )}
+
+            {selected.htfSnapshots && selected.htfSnapshots.length > 0 && (
+              <section>
+                <h4>Higher-timeframe snapshots</h4>
+                <p className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
+                  Compact bar data at event time (no look-ahead). Drawings are only on PNG snapshots above.
+                </p>
+                {selected.htfSnapshots.map((snap, i) => (
+                  <div key={`${snap.tf}-${snap.event}-${i}`} style={{ marginBottom: 10 }}>
+                    <HtfSnapshotCanvas snap={snap} />
+                  </div>
+                ))}
               </section>
             )}
 

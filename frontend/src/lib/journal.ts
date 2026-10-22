@@ -1,6 +1,21 @@
 import { getSessionStorageAdapter } from "./storageAdapter";
 
 import type { TradeRiskSnapshot } from "./riskModel";
+import {
+  normalizeHtfSnapshots,
+  pruneOldestImages,
+  type HtfSnapshot,
+} from "./journalSnapshots";
+export type { HtfSnapshot, JournalSnapshotConfig } from "./journalSnapshots";
+export {
+  DEFAULT_JOURNAL_SNAPSHOT_CONFIG,
+  normalizeJournalSnapshotConfig,
+  buildHtfSnapshots,
+  compressScreenshotDataUrlAsync,
+  renderHtfSnapshotToCanvas,
+  JOURNAL_IMAGE_KEEP,
+  pruneOldestImages,
+} from "./journalSnapshots";
 
 export type CloseReason = "sl" | "tp" | "manual";
 
@@ -46,6 +61,8 @@ export type JournalTrade = {
   closeScreenshot?: string;
   /** Chart PNG when the position opened / filled (entry confirmation). */
   entryScreenshot?: string;
+  /** Compact HTF bar snapshots at fill/close (optional). */
+  htfSnapshots?: HtfSnapshot[];
 
   /** v3.19.0 extensions (optional for legacy rows) */
   tradeId?: string;
@@ -133,6 +150,7 @@ export function normalizeJournalTrade(raw: Partial<JournalTrade> & Record<string
     snapshot: raw.snapshot as TradeRiskSnapshot | undefined,
     closeScreenshot: raw.closeScreenshot as string | undefined,
     entryScreenshot: raw.entryScreenshot as string | undefined,
+    htfSnapshots: normalizeHtfSnapshots(raw.htfSnapshots),
     currencyPnL: numOrNull(raw.currencyPnL),
     balanceAfter: numOrNull(raw.balanceAfter),
     rewardAmount: numOrNull(raw.rewardAmount),
@@ -182,14 +200,14 @@ export async function loadJournalForSession(sessionId: string | null): Promise<J
 export async function saveJournalForSession(sessionId: string | null, trades: JournalTrade[]) {
   if (!sessionId) {
     try {
-      localStorage.setItem(LEGACY_KEY, JSON.stringify(trades.slice(0, 500)));
+      localStorage.setItem(LEGACY_KEY, JSON.stringify(pruneOldestImages(trades)));
       emitJournalChanged(null);
     } catch {
       /* */
     }
     return;
   }
-  await getSessionStorageAdapter().putTrades(sessionId, trades);
+  await getSessionStorageAdapter().putTrades(sessionId, pruneOldestImages(trades));
   emitJournalChanged(sessionId);
 }
 
@@ -212,7 +230,9 @@ export async function appendTradeAsync(trade: JournalTrade): Promise<JournalTrad
     auditJournalEvent("journal_skip_duplicate", { id: key, sessionId });
     return prev;
   }
-  const next = [normalized, ...prev].slice(0, 500);
+  // v3.43.9: never drop trade rows (analytics/prop need full history).
+  // Images only are pruned in saveJournalForSession via pruneOldestImages.
+  const next = [normalized, ...prev];
   await saveJournalForSession(sessionId, next);
   auditJournalEvent("journal_persisted", {
     id: key,
