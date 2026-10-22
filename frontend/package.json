@@ -1,6 +1,6 @@
 {
   "name": "trading-replay-pwa",
-  "version": "3.43.7",
+  "version": "3.43.8",
   "private": true,
   "type": "module",
   "scripts": {
@@ -45,7 +45,8 @@
     "test:sqlite": "node scripts/test-sqlite-adapter-v337.mjs",
     "test:portable": "node scripts/test-portable-backup-v338.mjs",
     "test:sqlite-native": "echo \"Run: cd frontend/src-tauri && cargo run --release --bin sqlite_verify (requires rusqlite; see DESKTOP.md)\"",
-    "test:version-sync": "node scripts/test-version-sync.mjs"
+    "test:version-sync": "node scripts/test-version-sync.mjs",
+    "test:domain": "node --experimental-strip-types scripts/test-domain-prop-rules.ts"
   },
   "dependencies": {
     "react": "18.3.1",

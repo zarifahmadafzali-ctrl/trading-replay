@@ -250,3 +250,11 @@ When `publish_release=true`, the job **fails** if `latest.json` is missing so re
 - Post-publish verification: `releases/latest/download/latest.json` must serve the built version; installer URL must return HTTP 200.
 - Client shows **runtime binary version** via `getVersion()` / `__TAURI__.app.getVersion`, not only compile-time `APP_VERSION`.
 - Do not change signing keys, pubkey, or endpoint. Always publish with workflow `publish_release=true`.
+
+## v3.43.8 — Prop daily-loss / multi-account / trading-day fixes
+
+- **P1** `dailyLossBaseline`: `legacy` (default) vs `day_start` (only today's unrealized change).
+- **P2** `belongsToAccount` + `stampUntaggedTrades` — untagged journal trades no longer count for every account.
+- **P3** optional `dayResetTz` / `dayResetHour` on PropRuleSet (default UTC/0 = previous behavior).
+- **P4** `npm run test:domain` imports real `lib/propRules.ts` (Node strip-types).
+- ReplayView should pass `dayStartUnrealizedPnL` when using `day_start` (API ready; full UI snapshot optional follow-up).

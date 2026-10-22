@@ -17,8 +17,18 @@ export type PropRuleSet = {
   accountSize: number;
   profitTargetPct?: number;
   dailyLossLimitPct?: number;
+  /**
+   * How daily loss combines with open unrealized PnL.
+   * - "legacy" (default): dayRealized + full unrealized (old behavior; may count carry-in).
+   * - "day_start": dayRealized + (unrealized - dayStartUnrealized) only today's change.
+   */
+  dailyLossBaseline?: "legacy" | "day_start";
   maxOverallLossPct?: number;
   minimumTradingDays?: number;
+  /** IANA timezone for trading-day / daily-loss day boundary. Default UTC. */
+  dayResetTz?: string;
+  /** Local hour (0–23) in dayResetTz when the trading day rolls. Default 0. */
+  dayResetHour?: number;
   /**
    * Optional hard cap on unique trading days.
    * null / undefined / <=0 → NOT enforced (never fails solely because days > N).
@@ -169,11 +179,17 @@ export function normalizePropProgram(prog: PropProgramConfig | null | undefined,
               : 5000,
         profitTargetPct: ph.rules?.profitTargetPct,
         dailyLossLimitPct: ph.rules?.dailyLossLimitPct,
+        dailyLossBaseline: ph.rules?.dailyLossBaseline,
         maxOverallLossPct: ph.rules?.maxOverallLossPct,
         minimumTradingDays: ph.rules?.minimumTradingDays,
+        maximumTradingDays: ph.rules?.maximumTradingDays,
         tradingDayDefinition: ph.rules?.tradingDayDefinition,
+        dayResetTz: ph.rules?.dayResetTz,
+        dayResetHour: ph.rules?.dayResetHour,
         consistencyPct: ph.rules?.consistencyPct,
         leverage: ph.rules?.leverage,
+        newsTradingAllowed: ph.rules?.newsTradingAllowed,
+        weekendHoldingAllowed: ph.rules?.weekendHoldingAllowed,
         payout: ph.rules?.payout ? { ...ph.rules.payout } : undefined,
       }),
     })),
@@ -292,6 +308,99 @@ export function utcDayKey(unixSec: number): string {
 }
 
 /**
+ * Account ownership filter (P2).
+ * Untagged trades do NOT match every account — only legacyOwnerId when provided.
+ * After stampUntaggedTrades, every trade should carry accountId.
+ */
+export function belongsToAccount(
+  trade: PropTradeLike,
+  accountId: string | undefined,
+  legacyOwnerId?: string
+): boolean {
+  if (!accountId) return true;
+  const tid = trade.accountId;
+  if (tid == null || tid === "") {
+    return legacyOwnerId != null && legacyOwnerId === accountId;
+  }
+  return tid === accountId;
+}
+
+/** One-time migration: assign untagged trades to legacyOwnerId (session first account). */
+export function stampUntaggedTrades<T extends PropTradeLike>(
+  trades: T[],
+  legacyOwnerId: string
+): T[] {
+  if (!legacyOwnerId) return trades;
+  return trades.map((t) => {
+    if (t.accountId != null && t.accountId !== "") return t;
+    return { ...t, accountId: legacyOwnerId };
+  });
+}
+
+/**
+ * Trading-day key in an optional IANA timezone with optional reset hour (P3).
+ * Defaults (UTC, hour 0) match utcDayKey exactly.
+ */
+export function tradingDayKey(
+  unixSec: number,
+  tz: string = "UTC",
+  resetHour: number = 0
+): string {
+  const sec = toUnixSec(unixSec);
+  const zone = tz && tz.trim() ? tz.trim() : "UTC";
+  const hour = Number.isFinite(resetHour) ? Math.max(0, Math.min(23, Math.floor(resetHour))) : 0;
+  if ((zone === "UTC" || zone === "Etc/UTC") && hour === 0) {
+    return utcDayKey(sec);
+  }
+  const d = new Date(sec * 1000);
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+  });
+  const parts: Record<string, string> = {};
+  for (const p of fmt.formatToParts(d)) {
+    if (p.type !== "literal") parts[p.type] = p.value;
+  }
+  let y = Number(parts.year);
+  let m = Number(parts.month);
+  let day = Number(parts.day);
+  const h = Number(parts.hour);
+  if (Number.isFinite(h) && h < hour) {
+    // Step back one calendar day in that zone via UTC noon anchor.
+    const anchor = Date.UTC(y, m - 1, day, 12, 0, 0);
+    const prev = new Date(anchor - 86400000);
+    const fmtDay = new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const pp: Record<string, string> = {};
+    for (const p of fmtDay.formatToParts(prev)) {
+      if (p.type !== "literal") pp[p.type] = p.value;
+    }
+    // Prefer arithmetic on Y-M-D when zone is well-behaved
+    const pd = new Date(Date.UTC(y, m - 1, day));
+    pd.setUTCDate(pd.getUTCDate() - 1);
+    y = pd.getUTCFullYear();
+    m = pd.getUTCMonth() + 1;
+    day = pd.getUTCDate();
+  }
+  return `${y}-${String(m).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function dayKeyOpts(rules: PropRuleSet | null | undefined): { tz: string; hour: number } {
+  return {
+    tz: rules?.dayResetTz?.trim() || "UTC",
+    hour: rules?.dayResetHour != null && Number.isFinite(rules.dayResetHour) ? Number(rules.dayResetHour) : 0,
+  };
+}
+
+/**
  * Unique UTC calendar days that qualify as trading days.
  * Trading Days ≠ trade count. Multiple qualifying trades on the same day = 1 day.
  *
@@ -301,9 +410,12 @@ export function utcDayKey(unixSec: number): string {
 export function countTradingDays(
   trades: PropTradeLike[],
   accountId?: string,
-  definition: TradingDayDefinition = "fill_and_close"
+  definition: TradingDayDefinition = "fill_and_close",
+  legacyOwnerId?: string,
+  dayTz: string = "UTC",
+  dayHour: number = 0
 ): number {
-  return auditTradingDays(trades, accountId, definition).length;
+  return auditTradingDays(trades, accountId, definition, legacyOwnerId, dayTz, dayHour).length;
 }
 
 /** Per-day audit row explaining why a day counted. */
@@ -324,27 +436,30 @@ export type TradingDayAudit = {
 export function auditTradingDays(
   trades: PropTradeLike[],
   accountId?: string,
-  definition: TradingDayDefinition = "fill_and_close"
+  definition: TradingDayDefinition = "fill_and_close",
+  legacyOwnerId?: string,
+  dayTz: string = "UTC",
+  dayHour: number = 0
 ): TradingDayAudit[] {
   type Acc = { filled: number; closed: number; pnl: number };
   const byDay = new Map<string, Acc>();
 
   for (const t of trades) {
-    if (accountId && t.accountId && t.accountId !== accountId) continue;
+    if (!belongsToAccount(t, accountId, legacyOwnerId)) continue;
     const hasEntry = t.entryTime != null && Number.isFinite(t.entryTime);
     const hasExit = t.exitTime != null && Number.isFinite(t.exitTime);
 
     let dayKey: string | null = null;
     if (definition === "any_fill") {
       if (!hasEntry) continue;
-      dayKey = utcDayKey(t.entryTime!);
+      dayKey = tradingDayKey(t.entryTime!, dayTz, dayHour);
     } else if (definition === "any_close") {
       if (!hasExit) continue;
-      dayKey = utcDayKey(t.exitTime!);
+      dayKey = tradingDayKey(t.exitTime!, dayTz, dayHour);
     } else {
       // fill_and_close (default)
       if (!hasEntry || !hasExit) continue;
-      dayKey = utcDayKey(t.exitTime!);
+      dayKey = tradingDayKey(t.exitTime!, dayTz, dayHour);
     }
     if (!dayKey) continue;
 
@@ -377,10 +492,14 @@ export function auditTradingDays(
     }));
 }
 
-export function sumCurrencyPnL(trades: PropTradeLike[], accountId?: string): number {
+export function sumCurrencyPnL(
+  trades: PropTradeLike[],
+  accountId?: string,
+  legacyOwnerId?: string
+): number {
   let sum = 0;
   for (const t of trades) {
-    if (accountId && t.accountId && t.accountId !== accountId) continue;
+    if (!belongsToAccount(t, accountId, legacyOwnerId)) continue;
     if (t.currencyPnL != null && Number.isFinite(t.currencyPnL)) {
       sum += t.currencyPnL;
       continue;
@@ -401,13 +520,16 @@ export function sumCurrencyPnL(trades: PropTradeLike[], accountId?: string): num
 export function dayRealizedPnL(
   trades: PropTradeLike[],
   dayKey: string,
-  accountId?: string
+  accountId?: string,
+  legacyOwnerId?: string,
+  dayTz: string = "UTC",
+  dayHour: number = 0
 ): number {
   let sum = 0;
   for (const t of trades) {
-    if (accountId && t.accountId && t.accountId !== accountId) continue;
+    if (!belongsToAccount(t, accountId, legacyOwnerId)) continue;
     if (t.exitTime == null) continue;
-    if (utcDayKey(t.exitTime) !== dayKey) continue;
+    if (tradingDayKey(t.exitTime, dayTz, dayHour) !== dayKey) continue;
     if (t.currencyPnL != null && Number.isFinite(t.currencyPnL)) {
       sum += t.currencyPnL;
       continue;
@@ -431,6 +553,16 @@ export type PropProgressState = {
   currentTime: number;
   /** Unrealized open PnL in currency for this account */
   unrealizedPnL?: number;
+  /**
+   * Unrealized PnL snapshot at the start of the current trading day (for dailyLossBaseline "day_start").
+   * Caller (ReplayView) should set this on the first tick of each day-key.
+   */
+  dayStartUnrealizedPnL?: number;
+  /**
+   * When filtering trades by account, untagged trades (no accountId) only match this id
+   * until migration stamps them. Prefer stamping via stampUntaggedTrades first.
+   */
+  legacyOwnerId?: string;
 };
 
 export function calculatePropProgress(state: PropProgressState): {
@@ -451,7 +583,9 @@ export function calculatePropProgress(state: PropProgressState): {
     rules?.accountSize && rules.accountSize > 0
       ? rules.accountSize
       : state.account.initialBalance || state.account.balance || 0;
-  const realizedPnL = sumCurrencyPnL(state.trades, state.account.accountId);
+  const legacyOwnerId = state.legacyOwnerId;
+  const { tz: dayTz, hour: dayHour } = dayKeyOpts(rules);
+  const realizedPnL = sumCurrencyPnL(state.trades, state.account.accountId, legacyOwnerId);
   const currentProfitPct =
     referenceBalance > 0 ? (realizedPnL / referenceBalance) * 100 : 0;
   const targetPct = rules?.profitTargetPct;
@@ -461,10 +595,24 @@ export function calculatePropProgress(state: PropProgressState): {
     targetProfitCurrency != null && targetProfitCurrency > 0
       ? Math.max(0, (realizedPnL / targetProfitCurrency) * 100)
       : 0;
-  const todayKey = utcDayKey(state.currentTime);
-  const todayRealizedPnL = dayRealizedPnL(state.trades, todayKey, state.account.accountId);
+  const todayKey = tradingDayKey(state.currentTime, dayTz, dayHour);
+  const todayRealizedPnL = dayRealizedPnL(
+    state.trades,
+    todayKey,
+    state.account.accountId,
+    legacyOwnerId,
+    dayTz,
+    dayHour
+  );
   const dayDef = rules?.tradingDayDefinition || "fill_and_close";
-  const tradingDays = countTradingDays(state.trades, state.account.accountId, dayDef);
+  const tradingDays = countTradingDays(
+    state.trades,
+    state.account.accountId,
+    dayDef,
+    legacyOwnerId,
+    dayTz,
+    dayHour
+  );
   return {
     rules,
     phase,
@@ -493,14 +641,19 @@ export function isDailyLossBreached(
   referenceBalance: number,
   dayPnL: number,
   unrealizedPnL: number,
-  dailyLossLimitPct?: number
+  dailyLossLimitPct?: number,
+  dayStartUnrealized: number = 0,
+  baseline: "legacy" | "day_start" = "legacy"
 ): boolean {
   if (dailyLossLimitPct == null || !(referenceBalance > 0)) return false;
   const limit = (referenceBalance * dailyLossLimitPct) / 100;
   // dayPnL = realized closed trades only for the calendar day.
   // unrealizedPnL must be mark-to-market vs current price — NEVER planned SL distance
   // and NEVER risk-at-entry. Moving SL must not invent realized loss.
-  const dayTotal = dayPnL + (Number.isFinite(unrealizedPnL) ? unrealizedPnL : 0);
+  const u = Number.isFinite(unrealizedPnL) ? unrealizedPnL : 0;
+  const startU = Number.isFinite(dayStartUnrealized) ? dayStartUnrealized : 0;
+  const dayTotal =
+    baseline === "day_start" ? dayPnL + (u - startU) : dayPnL + u;
   return dayTotal <= -limit + 1e-9;
 }
 
@@ -555,7 +708,7 @@ export function calculateConsistencyMetric(
   let largest = 0;
   let totalWin = 0;
   for (const tr of trades) {
-    if (accountId && tr.accountId && tr.accountId !== accountId) continue;
+    if (!belongsToAccount(tr, accountId)) continue;
     let pnl = 0;
     if (tr.currencyPnL != null && Number.isFinite(tr.currencyPnL)) pnl = tr.currencyPnL;
     else if (
@@ -643,7 +796,7 @@ export function filterTradesForPhaseWindow(
   }
 
   return trades.filter((tr) => {
-    if (accountId && tr.accountId && tr.accountId !== accountId) return false;
+    if (!belongsToAccount(tr, accountId)) return false;
     const exit = tr.exitTime != null ? toUnixSec(tr.exitTime) : null;
     if (exit == null || !Number.isFinite(exit)) return false;
     if (exit > windowEnd || exit < windowStart) return false;
@@ -698,11 +851,14 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
   const equityDelta = realized + unrealized;
 
   const profitTargetReached = isProfitTargetReached(ref, realized, rules.profitTargetPct);
+  const dailyBaseline = rules.dailyLossBaseline === "day_start" ? "day_start" : "legacy";
   const dailyLossBreached = isDailyLossBreached(
     ref,
     progress.todayRealizedPnL,
     unrealized,
-    rules.dailyLossLimitPct
+    rules.dailyLossLimitPct,
+    state.dayStartUnrealizedPnL ?? 0,
+    dailyBaseline
   );
   const maxOverallLossBreached = isOverallLossBreached(
     ref,

@@ -7,6 +7,7 @@
 import type { AccountProfile } from "./riskModel";
 import {
   evaluatePropRules,
+  belongsToAccount,
   getActivePropPhase,
   ensurePropProgram,
   toUnixSec,
@@ -251,6 +252,10 @@ export function suggestLifecycleTransitions(opts: {
   trades: PropTradeLike[];
   replayTime: number;
   unrealizedPnL?: number;
+  /** Snapshot of unrealized PnL at trading-day start (dailyLossBaseline day_start). */
+  dayStartUnrealizedPnL?: number;
+  /** Untagged trades attributed only to this account until stamped. */
+  legacyOwnerId?: string;
 }): LifecycleEvent[] {
   const { account, events, trades, replayTime } = opts;
   if ((account.accountType || "personal") !== "prop") return [];
@@ -261,7 +266,7 @@ export function suggestLifecycleTransitions(opts: {
 
   const allAccountTrades = trades.filter(
     (tr) =>
-      (!tr.accountId || tr.accountId === account.accountId) &&
+      belongsToAccount(tr, account.accountId, opts.legacyOwnerId) &&
       (tr.exitTime == null || toUnixSec(tr.exitTime) <= t)
   );
 
@@ -283,6 +288,8 @@ export function suggestLifecycleTransitions(opts: {
     trades: accountTrades,
     currentTime: t,
     unrealizedPnL: opts.unrealizedPnL ?? 0,
+    dayStartUnrealizedPnL: opts.dayStartUnrealizedPnL ?? 0,
+    legacyOwnerId: opts.legacyOwnerId,
   });
 
   const out: LifecycleEvent[] = [];
