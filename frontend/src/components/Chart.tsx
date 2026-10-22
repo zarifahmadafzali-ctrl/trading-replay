@@ -66,10 +66,12 @@ export type RectangleShape = {
   kind: "rectangle";
   a: ChartPoint;
   b: ChartPoint;
+  locked?: boolean;
   visible?: boolean;
   color?: string;
   lineWidth?: number;
   lineStyle?: "solid" | "dashed" | "dotted";
+  fillOpacity?: number;
 };
 
 export type MeasureShape = {
@@ -77,6 +79,7 @@ export type MeasureShape = {
   kind: "measure";
   a: ChartPoint;
   b: ChartPoint;
+  locked?: boolean;
   visible?: boolean;
   color?: string;
   lineWidth?: number;
@@ -87,6 +90,7 @@ export type HLineShape = {
   id: string;
   kind: "hline";
   price: number;
+  locked?: boolean;
   visible?: boolean;
   color?: string;
   lineWidth?: number;
@@ -97,6 +101,7 @@ export type VLineShape = {
   id: string;
   kind: "vline";
   time: number;
+  locked?: boolean;
   visible?: boolean;
   color?: string;
   lineWidth?: number;
@@ -108,6 +113,7 @@ export type FibShape = {
   kind: "fib";
   a: ChartPoint;
   b: ChartPoint;
+  locked?: boolean;
   visible?: boolean;
   color?: string;
   lineWidth?: number;
@@ -194,6 +200,17 @@ function formatDuration(seconds: number): string {
   if (m) parts.push(`${m}m`);
   if (sec || parts.length === 0) parts.push(`${sec}s`);
   return parts.slice(0, 2).join(" ");
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace("#", "").trim();
+  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  if (full.length !== 6) return `rgba(96, 165, 250, ${alpha})`;
+  const n = parseInt(full, 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 function dashForStyle(style?: "solid" | "dashed" | "dotted"): number[] {
@@ -869,13 +886,17 @@ export function Chart({
         const y = Math.min(A.y, B.y);
         const rw = Math.abs(B.x - A.x);
         const rh = Math.abs(B.y - A.y);
-        ctx.fillStyle = sel ? "rgba(251, 191, 36, 0.14)" : "rgba(96, 165, 250, 0.12)";
-        ctx.strokeStyle = sel ? "#fbbf24" : "#60a5fa";
-        ctx.lineWidth = sel ? 2 : 1.5;
+        const base = s.color || "#60a5fa";
+        const fo = typeof s.fillOpacity === "number" ? s.fillOpacity : 0.12;
+        ctx.fillStyle = sel ? "rgba(251, 191, 36, 0.14)" : hexToRgba(base, fo);
+        ctx.strokeStyle = sel ? "#fbbf24" : base;
+        ctx.lineWidth = sel ? 2 : (s.lineWidth || 1.5);
+        ctx.setLineDash(dashForStyle(s.lineStyle));
         ctx.fillRect(x, y, rw, rh);
         ctx.strokeRect(x, y, rw, rh);
+        ctx.setLineDash([]);
         const r = sel ? 6 : 4;
-        ctx.fillStyle = sel ? "#fbbf24" : "#60a5fa";
+        ctx.fillStyle = sel ? "#fbbf24" : base;
         ctx.beginPath(); ctx.arc(A.x, A.y, r, 0, Math.PI * 2); ctx.fill();
         ctx.beginPath(); ctx.arc(B.x, B.y, r, 0, Math.PI * 2); ctx.fill();
         if (sel) {
@@ -886,19 +907,20 @@ export function Chart({
         const B = toXY(s.b);
         if (!A || !B) continue;
         const sel = selectedShapeIdRef?.current === s.id;
-        ctx.strokeStyle = sel ? "#fbbf24" : "#c084fc";
-        ctx.lineWidth = sel ? 2.5 : 1.5;
-        ctx.setLineDash([6, 4]);
+        const base = s.color || "#c084fc";
+        ctx.strokeStyle = sel ? "#fbbf24" : base;
+        ctx.lineWidth = sel ? 2.5 : (s.lineWidth || 1.5);
+        ctx.setLineDash(s.lineStyle ? dashForStyle(s.lineStyle) : [6, 4]);
         ctx.beginPath();
         ctx.moveTo(A.x, A.y);
         ctx.lineTo(B.x, B.y);
         ctx.stroke();
         ctx.setLineDash([]);
         const r = sel ? 6 : 4;
-        ctx.fillStyle = sel ? "#fbbf24" : "#c084fc";
+        ctx.fillStyle = sel ? "#fbbf24" : base;
         ctx.beginPath(); ctx.arc(A.x, A.y, r, 0, Math.PI * 2); ctx.fill();
         ctx.beginPath(); ctx.arc(B.x, B.y, r, 0, Math.PI * 2); ctx.fill();
-        drawMeasureLabel(ctx, s.a, s.b, A, B, sel ? "#fbbf24" : "#c084fc");
+        drawMeasureLabel(ctx, s.a, s.b, A, B, sel ? "#fbbf24" : base);
         if (sel) {
           drawDeleteButton(ctx, s.id, B.x + 14, B.y - 14);
         }
@@ -1320,9 +1342,16 @@ export function Chart({
     const lineThreshold = touch ? 24 : 16;
     const w = elWidth();
 
+    const canEdit = (s: Shape) => {
+      if ("visible" in s && s.visible === false) return false;
+      if ("locked" in s && s.locked) return false;
+      return true;
+    };
+
     // Trend line / rectangle / measure / fib endpoints — grab either point 'a' or 'b'.
     for (const s of shapesRef.current) {
       if (s.kind !== "trendline" && s.kind !== "ray" && s.kind !== "extended" && s.kind !== "rectangle" && s.kind !== "measure" && s.kind !== "fib") continue;
+      if (!canEdit(s)) continue;
       const A = toXY(s.a);
       const B = toXY(s.b);
       if (A && Math.hypot(A.x - x, A.y - y) <= pointThreshold) return { id: s.id, field: "a" };
@@ -1330,6 +1359,7 @@ export function Chart({
     }
 
     for (const s of shapesRef.current) {
+      if (!canEdit(s)) continue;
       if (s.kind === "hline") {
         const yy = series.priceToCoordinate(s.price);
         if (yy != null && Math.abs(yy - y) <= lineThreshold) return { id: s.id, field: "price" };
@@ -1344,6 +1374,7 @@ export function Chart({
     if (selId) {
       for (const s of shapesRef.current) {
         if (s.id !== selId) continue;
+        if (!canEdit(s)) continue;
         if (s.kind === "trendline" || s.kind === "ray" || s.kind === "extended" || s.kind === "rectangle" || s.kind === "measure" || s.kind === "fib") {
           const A = toXY(s.a);
           const B = toXY(s.b);

@@ -2345,14 +2345,49 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         const lw = "lineWidth" in sel && typeof sel.lineWidth === "number" ? sel.lineWidth : 1.5;
         const ls = "lineStyle" in sel && sel.lineStyle ? sel.lineStyle : "solid";
         const vis = !("visible" in sel && sel.visible === false);
+        const locked = "locked" in sel && !!sel.locked;
+        const color =
+          "color" in sel && typeof sel.color === "string" && sel.color
+            ? sel.color
+            : sel.kind === "hline"
+              ? "#34d399"
+              : sel.kind === "measure"
+                ? "#c084fc"
+                : "#60a5fa";
         const patch = (partial: Record<string, unknown>) => {
           pushShapes(
             shapes.map((s) => (s.id === selectedShapeId ? ({ ...s, ...partial } as typeof s) : s))
           );
         };
+        const duplicateSelected = () => {
+          const copy = JSON.parse(JSON.stringify(sel)) as typeof sel;
+          const nid = `shape_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+          (copy as { id: string }).id = nid;
+          // Nudge so the duplicate is visibly offset
+          if ("a" in copy && "b" in copy && copy.a && copy.b) {
+            const dt = 60;
+            const dp = Math.abs(copy.a.price - copy.b.price) * 0.02 || 1;
+            copy.a = { time: copy.a.time + dt, price: copy.a.price + dp };
+            copy.b = { time: copy.b.time + dt, price: copy.b.price + dp };
+          } else if ("price" in copy && typeof (copy as { price?: number }).price === "number") {
+            (copy as { price: number }).price += 1;
+          } else if ("time" in copy && typeof (copy as { time?: number }).time === "number") {
+            (copy as { time: number }).time += 60;
+          }
+          pushShapes([...shapes, copy]);
+          setSelectedShapeId(nid);
+        };
         return (
           <div className="draw-settings card">
-            <span className="draw-settings-label">Object · {sel.kind}</span>
+            <span className="draw-settings-label">Object · {sel.kind}{locked ? " · locked" : ""}</span>
+            <label>
+              Color
+              <input
+                type="color"
+                value={color.startsWith("#") && color.length === 7 ? color : "#60a5fa"}
+                onChange={(e) => patch({ color: e.target.value })}
+              />
+            </label>
             <label>
               Width
               <select
@@ -2384,7 +2419,18 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
               />
               Visible
             </label>
-            <button type="button" onClick={deleteSelectedShape}>
+            <label className="draw-settings-check">
+              <input
+                type="checkbox"
+                checked={locked}
+                onChange={(e) => patch({ locked: e.target.checked })}
+              />
+              Locked
+            </label>
+            <button type="button" onClick={duplicateSelected}>
+              Duplicate
+            </button>
+            <button type="button" onClick={deleteSelectedShape} disabled={locked} title={locked ? "Unlock to delete" : "Delete"}>
               Delete
             </button>
           </div>
