@@ -258,3 +258,46 @@ When `publish_release=true`, the job **fails** if `latest.json` is missing so re
 - **P3** optional `dayResetTz` / `dayResetHour` on PropRuleSet (default UTC/0 = previous behavior).
 - **P4** `npm run test:domain` imports real `lib/propRules.ts` (Node strip-types).
 - ReplayView should pass `dayStartUnrealizedPnL` when using `day_start` (API ready; full UI snapshot optional follow-up).
+
+## v3.44.1 — Windows install path hardening
+
+### Correct installer file
+
+From GitHub Releases Assets download **only**:
+
+`Trading.Replay_<version>_x64-setup.exe`
+
+Do **not**:
+
+- download **Source code (zip)** and extract it
+- run a random `.exe` from a workflow artifact folder that is not `*-setup.exe`
+- use **Run as administrator** on the current-user NSIS installer
+
+### Why "Run as administrator" breaks version/data
+
+NSIS is configured with `installMode: currentUser`.
+
+Install path:
+
+`%LOCALAPPDATA%\Trading Replay\`
+
+If you elevate the installer, files can land under the **Administrator** profile’s LocalAppData while your normal desktop shortcut / Start Menu entry still points at an older user install. The app then looks like it “only opens” or keeps the old version and old journal data.
+
+### Correct install steps
+
+1. Uninstall previous **Trading Replay** from Windows Settings → Apps (optional but cleaner).
+2. Download `*-setup.exe` for the release.
+3. Double-click as your **normal user** (no admin).
+4. Complete the NSIS wizard.
+5. Open **Start Menu → Trading Replay → Trading Replay**.
+6. Confirm the in-app version matches the release tag.
+7. Do not keep launching copies from the Downloads folder.
+
+### Updater
+
+`plugins.updater.windows.installMode` remains `passive` for silent in-app updates.
+Manual first install still uses the interactive NSIS UI.
+
+### Bundle targets
+
+From v3.44.1 the desktop bundle target is **NSIS only** (`targets: ["nsis"]`) so Releases are not split across MSI and NSIS install roots.

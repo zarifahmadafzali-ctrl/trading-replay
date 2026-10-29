@@ -301,7 +301,6 @@ jobs:
           name: trading-replay-windows
           path: |
             frontend/src-tauri/target/release/bundle/nsis/**
-            frontend/src-tauri/target/release/bundle/msi/**
             frontend/src-tauri/target/release/bundle/latest.json
             frontend/src-tauri/target/release/trading-replay.exe
             frontend/src-tauri/target/release/Trading Replay.exe
@@ -343,25 +342,36 @@ jobs:
           body: |
             ## Trading Replay ${{ steps.ver.outputs.version }}
 
-            Windows desktop package (Tauri).
+            Windows desktop package (Tauri NSIS).
 
-            ### Install
-            Download the NSIS installer (`*-setup.exe`) and run it.
-
-            ### Backend
-            Desktop builds use `VITE_API_BASE` baked at compile time
-            (production Data Engine on Render).
+            ### How to install (important)
+            1. Download **only** this file from Assets:
+               `Trading.Replay_${{ steps.ver.outputs.version }}_x64-setup.exe`
+            2. Do **NOT** download "Source code (zip)" and extract it.
+            3. Do **NOT** run the installer with "Run as administrator".
+               This build installs for the **current Windows user** into
+               `%LOCALAPPDATA%\Trading Replay\`.
+               Running as admin can install into the wrong profile so the
+               normal desktop shortcut still opens an old copy.
+            4. Double-click the `*-setup.exe` as your normal user.
+               Finish the installer, then open **Trading Replay** from the
+               Start Menu folder **Trading Replay** (not from Downloads).
+            5. Confirm the version inside the app matches this release.
 
             ### Auto-update
             Installed desktop builds check:
             `https://github.com/${{ github.repository }}/releases/latest/download/latest.json`
 
-            Data (Journal, Sessions, SQLite, market cache) is **not** deleted by updates.
+            Updater replaces application files only. Journal / Sessions /
+            SQLite / market cache stay intact.
+
+            ### Backend
+            Desktop builds use `VITE_API_BASE` baked at compile time
+            (production Data Engine on Render).
 
             ${{ inputs.reason }}
           files: |
             frontend/src-tauri/target/release/bundle/nsis/*
-            frontend/src-tauri/target/release/bundle/msi/*
             frontend/src-tauri/target/release/bundle/latest.json
           fail_on_unmatched_files: true
           generate_release_notes: true
