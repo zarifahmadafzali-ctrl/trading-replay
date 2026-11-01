@@ -2497,8 +2497,9 @@ html.tr-fullscreen .view-panel:not(.view-panel-hidden),
 
 html.tr-fullscreen .replay-view .chartbox,
 .app:fullscreen .replay-view .chartbox {
+  /* Grow into ALL remaining viewport under the toolbars (TradingView-like) */
   flex: 1 1 0% !important;
-  min-height: max(42dvh, 240px) !important;
+  min-height: 50dvh !important;
   height: auto !important;
   width: 100% !important;
   position: relative !important;
@@ -2513,7 +2514,7 @@ html.tr-fullscreen .replay-view .chartbox .chart,
 .app:fullscreen .replay-view .chartbox .chart {
   width: 100% !important;
   height: 100% !important;
-  min-height: max(42dvh, 240px) !important;
+  min-height: 100% !important;
   visibility: visible !important;
   opacity: 1 !important;
 }
@@ -2522,7 +2523,7 @@ html.tr-fullscreen .chartbox .tv-lightweight-charts,
 .app:fullscreen .chartbox .tv-lightweight-charts {
   width: 100% !important;
   height: 100% !important;
-  min-height: max(42dvh, 240px) !important;
+  min-height: 100% !important;
   visibility: visible !important;
   opacity: 1 !important;
 }
@@ -2533,4 +2534,21 @@ html.tr-fullscreen .chartbox .tv-lightweight-charts td,
 .app:fullscreen .chartbox .tv-lightweight-charts td {
   visibility: visible !important;
   opacity: 1 !important;
+}
+
+
+/* v3.45.10 — chart fills remaining fullscreen height (no half-screen gap) */
+html.tr-fullscreen .replay-view > .bar,
+.app:fullscreen .replay-view > .bar {
+  flex: 0 0 auto !important;
+}
+html.tr-fullscreen .replay-view > .chartbox,
+.app:fullscreen .replay-view > .chartbox {
+  flex: 1 1 0% !important;
+}
+html.tr-fullscreen .replay-view > .replay-info,
+.app:fullscreen .replay-view > .replay-info {
+  flex: 0 0 auto !important;
+  max-height: 30vh;
+  overflow: auto;
 }

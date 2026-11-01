@@ -1983,11 +1983,14 @@ export function Chart({
       if (!containerRef.current || !handlesRef.current) return;
       const elc = containerRef.current;
       const wrap = elc.parentElement; // .chart-wrap
-      const box = wrap?.parentElement; // .chartbox
-      // Mobile fullscreen flex often reports 0 for one frame (or permanently if
-      // min-height:0 collapses). Fall back to viewport so LWC never stays black.
+      const box = (wrap?.parentElement || null) as HTMLElement | null; // .chartbox
+      const fs =
+        !!document.fullscreenElement ||
+        document.documentElement.classList.contains("tr-fullscreen");
       const vw = Math.max(window.innerWidth || 0, document.documentElement?.clientWidth || 0, 320);
       const vh = Math.max(window.innerHeight || 0, document.documentElement?.clientHeight || 0, 480);
+      // Bottom reserve for floating replay bar + home indicator
+      const bottomPad = fs ? 88 : 24;
       let w = Math.max(
         elc.clientWidth || 0,
         elc.offsetWidth || 0,
@@ -2002,11 +2005,21 @@ export function Chart({
         box?.clientHeight || 0,
         0
       );
+      // TradingView-like: fill ALL space from chartbox top to above the replay bar.
+      // Previous logic kept a half-height box when flex reported ~42dvh.
+      if (box) {
+        const top = box.getBoundingClientRect().top;
+        const fillH = Math.floor(vh - top - bottomPad);
+        if (fillH > 120) h = Math.max(h, fillH);
+        // Stretch the flex item so the black gap under the chart disappears
+        box.style.flex = "1 1 0%";
+        box.style.height = `${h}px`;
+        box.style.minHeight = `${h}px`;
+        box.style.maxHeight = "none";
+      }
       if (w < 120) w = vw;
-      // Reserve ~160px for top bars / safe areas; never allow a tiny black strip
       if (h < 160) h = Math.max(220, vh - 160);
       try {
-        // Explicit size even with autoSize — forces a full relayout of axes
         chart.applyOptions({
           width: w,
           height: h,
@@ -2026,16 +2039,12 @@ export function Chart({
             borderColor: "#202a35",
           },
         });
-        // Also stretch the DOM node so autoSize + flex agree
-        elc.style.width = `${w}px`;
+        elc.style.width = "100%";
         elc.style.height = `${h}px`;
         if (wrap) {
           wrap.style.width = "100%";
           wrap.style.height = `${h}px`;
           wrap.style.minHeight = `${h}px`;
-        }
-        if (box) {
-          box.style.minHeight = `${h}px`;
         }
         candles.priceScale().applyOptions({ visible: true, autoScale: true });
         if (overlayRef.current) {
