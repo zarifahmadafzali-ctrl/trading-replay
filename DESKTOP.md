@@ -301,3 +301,16 @@ Manual first install still uses the interactive NSIS UI.
 ### Bundle targets
 
 From v3.44.1 the desktop bundle target is **NSIS only** (`targets: ["nsis"]`) so Releases are not split across MSI and NSIS install roots.
+
+## v3.44.2 — Brand icon pack
+
+Desktop (Tauri NSIS / Windows taskbar / installer):
+- `frontend/src-tauri/icons/icon.ico` (16–256 multi-size)
+- `32x32.png`, `128x128.png`, `henry.w@example.net`, `icon.png`
+- Source master: `icon-source-1024.png` (for future Play Store / APK)
+
+Web / PWA:
+- `frontend/public/icons/icon-192.png`, `icon-512.png`, `favicon-32.png`, `apple-touch-icon.png`
+- `manifest.webmanifest` updated for installable PWA icons
+
+Installer still uses `icons/icon.ico` via `bundle.icon` + `nsis.installerIcon`.
