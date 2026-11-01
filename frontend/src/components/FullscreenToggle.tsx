@@ -87,13 +87,13 @@ export function FullscreenToggle() {
       // v3.35.0 — CSS hook for scrollable fullscreen layouts
       document.documentElement.classList.toggle("tr-fullscreen", fs);
       document.body.classList.toggle("tr-fullscreen", fs);
-      // Chart (lightweight-charts) and flex layout need a reflow after FS change
-      window.setTimeout(() => {
-        window.dispatchEvent(new Event("resize"));
-      }, 50);
-      window.setTimeout(() => {
-        window.dispatchEvent(new Event("resize"));
-      }, 250);
+      // Chart (lightweight-charts) + flex layout need repeated reflow after FS change
+      for (const ms of [0, 50, 150, 300, 600, 1000]) {
+        window.setTimeout(() => {
+          window.dispatchEvent(new Event("resize"));
+          window.dispatchEvent(new CustomEvent("tr-fullscreen-change", { detail: { fullscreen: fs } }));
+        }, ms);
+      }
     };
     onChange();
     document.addEventListener("fullscreenchange", onChange);

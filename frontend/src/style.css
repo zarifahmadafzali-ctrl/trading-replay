@@ -1985,11 +1985,19 @@ html.tr-fullscreen .replay-view .chartbox,
   max-height: none !important;
   position: relative;
 }
-html.tr-fullscreen .replay-view .chartbox > div,
-.app:fullscreen .replay-view .chartbox > div,
-:fullscreen .replay-view .chartbox > div {
+html.tr-fullscreen .replay-view .chartbox > .chart-wrap,
+.app:fullscreen .replay-view .chartbox > .chart-wrap,
+:fullscreen .replay-view .chartbox > .chart-wrap {
   height: 100% !important;
-  min-height: 0;
+  width: 100% !important;
+  min-height: 0 !important;
+  position: relative !important;
+}
+html.tr-fullscreen .replay-view .chartbox > .chart-wrap > .chart,
+.app:fullscreen .replay-view .chartbox > .chart-wrap > .chart {
+  height: 100% !important;
+  width: 100% !important;
+  min-height: 0 !important;
 }
 /* Floating replay controls — hug the control buttons (no empty long strip) */
 .replay.mobile-scroll {
@@ -2346,3 +2354,58 @@ html.tr-fullscreen .replay.mobile-scroll,
   width: auto !important;
 }
 
+
+
+/* =============================================================================
+ * v3.45.7 — Fullscreen chart axes (TradingView-like)
+ * Ensure price scale + time axis remain visible after entering fullscreen.
+ * ============================================================================= */
+html.tr-fullscreen .view-panel:not(.view-panel-hidden) > .replay-view,
+.app:fullscreen .view-panel:not(.view-panel-hidden) > .replay-view {
+  flex: 1 1 auto !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+html.tr-fullscreen .replay-view .chartbox,
+.app:fullscreen .replay-view .chartbox {
+  flex: 1 1 auto !important;
+  min-height: 180px !important;
+  width: 100% !important;
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+/* LWC root + internal table must fill the box so right price scale + time axis layout */
+html.tr-fullscreen .chartbox .tv-lightweight-charts,
+.app:fullscreen .chartbox .tv-lightweight-charts {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 180px !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+html.tr-fullscreen .chartbox .tv-lightweight-charts table,
+.app:fullscreen .chartbox .tv-lightweight-charts table {
+  width: 100% !important;
+  height: 100% !important;
+}
+html.tr-fullscreen .chartbox .tv-lightweight-charts td,
+.app:fullscreen .chartbox .tv-lightweight-charts td {
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+/* Overlay stays full-surface without stealing layout from LWC */
+html.tr-fullscreen .chart-overlay,
+.app:fullscreen .chart-overlay {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  pointer-events: none !important;
+}

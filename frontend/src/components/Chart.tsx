@@ -1978,35 +1978,76 @@ export function Chart({
     window.addEventListener("keydown", onKeyDown);
 
     const forceChartResize = () => {
-      if (!containerRef.current) return;
+      if (!containerRef.current || !handlesRef.current) return;
       const elc = containerRef.current;
-      const w = Math.max(elc.clientWidth || elc.offsetWidth || 0, 0);
-      const h = Math.max(elc.clientHeight || elc.offsetHeight || 0, 0);
-      if (w >= 40 && h >= 40) {
-        chart.applyOptions({ width: w, height: h });
-        try {
-          candles.priceScale().applyOptions({ visible: true, autoScale: true });
-          chart.timeScale().applyOptions({
+      const wrap = elc.parentElement; // .chart-wrap
+      const box = wrap?.parentElement; // .chartbox
+      // Measure the largest stable box in the chain — fullscreen flex can leave
+      // the inner div at 0 for a frame, which blacks out LWC price/time axes.
+      const w = Math.max(
+        elc.clientWidth || 0,
+        elc.offsetWidth || 0,
+        wrap?.clientWidth || 0,
+        box?.clientWidth || 0,
+        0
+      );
+      const h = Math.max(
+        elc.clientHeight || 0,
+        elc.offsetHeight || 0,
+        wrap?.clientHeight || 0,
+        box?.clientHeight || 0,
+        0
+      );
+      if (w < 80 || h < 80) return;
+      try {
+        chart.applyOptions({
+          width: w,
+          height: h,
+          rightPriceScale: {
+            visible: true,
+            borderVisible: true,
+            borderColor: "#202a35",
+            minimumWidth: 56,
+            scaleMargins: { top: 0.06, bottom: 0.08 },
+          },
+          timeScale: {
             visible: true,
             timeVisible: true,
             secondsVisible: true,
             borderVisible: true,
-          });
-        } catch {
-          /* */
+            ticksVisible: true,
+            borderColor: "#202a35",
+          },
+        });
+        candles.priceScale().applyOptions({ visible: true, autoScale: true });
+        // Keep overlay canvas in sync with the chart surface
+        if (overlayRef.current) {
+          const dpr = Math.min(window.devicePixelRatio || 1, 2);
+          overlayRef.current.width = Math.floor(w * dpr);
+          overlayRef.current.height = Math.floor(h * dpr);
+          overlayRef.current.style.width = `${w}px`;
+          overlayRef.current.style.height = `${h}px`;
+          const octx = overlayRef.current.getContext("2d");
+          if (octx) octx.setTransform(dpr, 0, 0, dpr, 0, 0);
         }
         scheduleRedraw();
+      } catch {
+        /* chart may be disposing */
       }
     };
     const resizeObserver = new ResizeObserver(() => forceChartResize());
     resizeObserver.observe(containerRef.current);
-    // Fullscreen / orientation changes often resize without a stable RO tick on mobile.
+    if (containerRef.current.parentElement) {
+      resizeObserver.observe(containerRef.current.parentElement);
+    }
+    // Fullscreen / orientation: LWC needs several retries while flex settles.
     const onFsOrOrient = () => {
-      requestAnimationFrame(() => {
-        forceChartResize();
-        setTimeout(forceChartResize, 50);
-        setTimeout(forceChartResize, 200);
-      });
+      const delays = [0, 16, 50, 100, 200, 400, 800];
+      for (const ms of delays) {
+        window.setTimeout(() => {
+          requestAnimationFrame(() => forceChartResize());
+        }, ms);
+      }
     };
     document.addEventListener("fullscreenchange", onFsOrOrient);
     document.addEventListener("webkitfullscreenchange", onFsOrOrient as EventListener);
