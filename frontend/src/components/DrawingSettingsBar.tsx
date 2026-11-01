@@ -1,7 +1,13 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode, SyntheticEvent } from "react";
-import type { DrawingShape, FibLevel, LineStyle } from "../lib/drawingModel";
-import { DEFAULT_FIB_LEVELS, resolveStyle } from "../lib/drawingModel";
+import type { DrawingShape, FibLevel, LineStyle, TextAlign, DrawingTemplate } from "../lib/drawingModel";
+import {
+  DEFAULT_FIB_LEVELS,
+  resolveStyle,
+  listTemplates,
+  saveNamedTemplate,
+  deleteNamedTemplate,
+} from "../lib/drawingModel";
 
 /**
  * TradingView-style floating settings bar for the SELECTED drawing.
@@ -82,7 +88,9 @@ export function DrawingSettingsBar(props: DrawingSettingsBarProps) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [w, setW] = useState(360);
   const [h, setH] = useState(40);
-  const [open, setOpen] = useState<null | "color" | "fill" | "fib" | "text" | "width" | "style" | "more">(null);
+  const [open, setOpen] = useState<null | "color" | "fill" | "fib" | "text" | "width" | "style" | "more" | "template">(null);
+  const [tplName, setTplName] = useState("");
+  const [, setTplTick] = useState(0);
   const [drag, setDrag] = useState({ dx: 0, dy: 0 });
   const dragRef = useRef<{ x: number; y: number; dx: number; dy: number } | null>(null);
   const lastId = useRef<string | null>(null);
@@ -141,7 +149,12 @@ export function DrawingSettingsBar(props: DrawingSettingsBarProps) {
         {open === "color" && (
           <div style={POP}>
             <Swatches value={st.color} onPick={(c) => set({ color: c })} />
-            {k === "measure" && <button type="button" onClick={() => set({ color: undefined })} style={{ marginTop: 8 }}>Auto (blue up / red down)</button>}
+            <Opacity
+              label="Opacity"
+              value={typeof shape.strokeOpacity === "number" ? shape.strokeOpacity : 1}
+              onChange={(v) => set({ strokeOpacity: v })}
+            />
+            {k === "measure" && <button type="button" onClick={() => set({ color: undefined, strokeOpacity: undefined })} style={{ marginTop: 8 }}>Auto (blue up / red down)</button>}
           </div>
         )}
       </div>
@@ -275,7 +288,7 @@ export function DrawingSettingsBar(props: DrawingSettingsBarProps) {
         <div style={{ position: "relative" }}>
           <Btn title="Text" active={open === "text" || !!shape.text} onClick={() => setOpen(open === "text" ? null : "text")}>T</Btn>
           {open === "text" && (
-            <div style={POP}>
+            <div style={{ ...POP, minWidth: 220 }}>
               <input type="text" value={shape.text || ""} placeholder="Label" aria-label="Label text"
                 onChange={(e) => set({ text: e.target.value })}
                 style={{ width: "100%", background: "#131722", color: "#d1d4dc", border: "1px solid #363a45", borderRadius: 4, padding: 6 }} />
@@ -283,6 +296,17 @@ export function DrawingSettingsBar(props: DrawingSettingsBarProps) {
                 <span>Size</span>
                 <input type="range" min={10} max={28} value={shape.fontSize || 13} onChange={(e) => set({ fontSize: Number(e.target.value) })} />
               </label>
+              <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4 }}>
+                {([
+                  ["top-left", "↖"], ["top", "↑"], ["top-right", "↗"],
+                  ["left", "←"], ["center", "·"], ["right", "→"],
+                  ["bottom-left", "↙"], ["bottom", "↓"], ["bottom-right", "↘"],
+                ] as [TextAlign, string][]).map(([al, ic]) => (
+                  <button key={al} type="button" title={al} onClick={() => set({ textAlign: al })}
+                    style={{ padding: 6, borderRadius: 4, border: "1px solid #363a45", cursor: "pointer",
+                      background: (shape.textAlign || "center") === al ? "#2962FF" : "#131722", color: "#d1d4dc" }}>{ic}</button>
+                ))}
+              </div>
               <div style={{ marginTop: 8 }}><Swatches value={shape.textColor} onPick={(c) => set({ textColor: c })} /></div>
             </div>
           )}
@@ -295,7 +319,43 @@ export function DrawingSettingsBar(props: DrawingSettingsBarProps) {
       <Btn title="Clone" onClick={props.onClone}>⧉</Btn>
       {props.onBringToFront && <Btn title="Bring to front" onClick={props.onBringToFront}>⤒</Btn>}
       {props.onSendToBack && <Btn title="Send to back" onClick={props.onSendToBack}>⤓</Btn>}
-      {props.onSaveAsDefault && <Btn title="Save style as default for this tool" onClick={props.onSaveAsDefault}>★</Btn>}
+      <div style={{ position: "relative" }}>
+        <Btn title="Templates / save appearance" active={open === "template"} onClick={() => setOpen(open === "template" ? null : "template")}>★</Btn>
+        {open === "template" && (
+          <div style={{ ...POP, minWidth: 220, right: 0, left: "auto" }}>
+            <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 6 }}>Appearance only (not size/position)</div>
+            {props.onSaveAsDefault && (
+              <button type="button" onClick={() => { props.onSaveAsDefault?.(); setOpen(null); }}
+                style={{ width: "100%", textAlign: "left", padding: "6px 8px", marginBottom: 4, background: "#2a2e39", border: "1px solid #363a45", borderRadius: 4, color: "#d1d4dc", cursor: "pointer" }}>
+                Save as default for new {k}
+              </button>
+            )}
+            <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+              <input value={tplName} onChange={(e) => setTplName(e.target.value)} placeholder="Template name"
+                style={{ flex: 1, background: "#131722", color: "#d1d4dc", border: "1px solid #363a45", borderRadius: 4, padding: 6 }} />
+              <button type="button" onClick={() => {
+                if (!tplName.trim()) return;
+                saveNamedTemplate(k, tplName.trim(), shape);
+                setTplName("");
+                setTplTick((n) => n + 1);
+              }} style={{ padding: "6px 10px", borderRadius: 4, border: "1px solid #2962FF", background: "#2962FF", color: "#fff", cursor: "pointer" }}>Save</button>
+            </div>
+            {listTemplates(k).map((tpl: DrawingTemplate) => (
+              <div key={tpl.id} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4 }}>
+                <button type="button" onClick={() => {
+                  onChange(tpl.style as Partial<DrawingShape>);
+                  setOpen(null);
+                }} style={{ flex: 1, textAlign: "left", padding: "6px 8px", background: "#131722", border: "1px solid #363a45", borderRadius: 4, color: "#d1d4dc", cursor: "pointer" }}>
+                  {tpl.name}
+                </button>
+                <button type="button" title="Delete template" onClick={() => { deleteNamedTemplate(tpl.id); setTplTick((n) => n + 1); }}
+                  style={{ padding: "4px 8px", background: "transparent", border: "1px solid #363a45", borderRadius: 4, color: "#F23645", cursor: "pointer" }}>×</button>
+              </div>
+            ))}
+            {listTemplates(k).length === 0 && <div style={{ opacity: 0.6, fontSize: 11 }}>No saved templates yet</div>}
+          </div>
+        )}
+      </div>
       <Btn title="Delete" danger onClick={props.onDelete}>🗑</Btn>
     </div>
   );

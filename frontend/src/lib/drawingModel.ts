@@ -27,11 +27,24 @@ export const DEFAULT_FIB_LEVELS: FibLevel[] = [
   { value: 4.236, color: "#E91E63", enabled: false },
 ];
 
+export type TextAlign =
+  | "center"
+  | "left"
+  | "right"
+  | "top"
+  | "bottom"
+  | "top-left"
+  | "top-right"
+  | "bottom-left"
+  | "bottom-right";
+
 export type DrawingBase = {
   id: string;
   visible?: boolean;
   locked?: boolean;
   color?: string;
+  /** 0..1 stroke/line color opacity (default 1) */
+  strokeOpacity?: number;
   lineWidth?: number;
   lineStyle?: LineStyle;
   fillColor?: string;
@@ -40,6 +53,8 @@ export type DrawingBase = {
   text?: string;
   textColor?: string;
   fontSize?: number;
+  /** Label placement relative to the shape bounds (rectangle/box tools etc.) */
+  textAlign?: TextAlign;
 };
 
 export type TrendlineShape = DrawingBase & {
@@ -125,6 +140,7 @@ export type ResolvedStyle = {
   lineStyle: LineStyle;
   fillColor: string;
   fillOpacity: number;
+  strokeOpacity: number;
 };
 
 export function resolveStyle(s: DrawingBase & { kind: DrawingKind }): ResolvedStyle {
@@ -132,12 +148,14 @@ export function resolveStyle(s: DrawingBase & { kind: DrawingKind }): ResolvedSt
   const color = s.color || d.color;
   const lw = Number(s.lineWidth);
   const fo = Number(s.fillOpacity);
+  const so = Number(s.strokeOpacity);
   return {
     color,
     lineWidth: Number.isFinite(lw) && lw > 0 ? Math.min(lw, 8) : d.lineWidth,
     lineStyle: s.lineStyle || d.lineStyle,
     fillColor: s.fillColor || color,
     fillOpacity: s.fillOpacity != null && Number.isFinite(fo) ? Math.min(1, Math.max(0, fo)) : d.fillOpacity,
+    strokeOpacity: s.strokeOpacity != null && Number.isFinite(so) ? Math.min(1, Math.max(0, so)) : 1,
   };
 }
 
@@ -495,7 +513,7 @@ export function shapeBoundsPx(s: DrawingShape, project: Project, bounds: Bounds)
 
 /* ───────────── creation + per-tool defaults ───────────── */
 
-const GEOMETRY_KEYS = new Set(["id", "kind", "a", "b", "c", "time", "price", "text"]);
+const GEOMETRY_KEYS = new Set(["id", "kind", "a", "b", "c", "time", "price", "text"]); // text content excluded; appearance-only templates
 const DEFAULTS_KEY = "tr-draw-defaults-v2";
 
 export function loadToolDefaults(kind: DrawingKind): Partial<DrawingShape> {
@@ -512,13 +530,72 @@ export function saveToolDefaults(kind: DrawingKind, shape: DrawingShape): void {
   try {
     const raw = localStorage.getItem(DEFAULTS_KEY);
     const all = raw ? (JSON.parse(raw) as Record<string, Record<string, unknown>>) : {};
-    const clean: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(shape)) if (!GEOMETRY_KEYS.has(k) && v !== undefined) clean[k] = v;
-    all[kind] = clean;
+    all[kind] = extractAppearance(shape);
     localStorage.setItem(DEFAULTS_KEY, JSON.stringify(all));
   } catch {
     /* storage unavailable */
   }
+}
+
+/** Appearance-only fields (no geometry/size). Used for defaults + named templates. */
+export function extractAppearance(shape: DrawingShape): Record<string, unknown> {
+  const clean: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(shape)) {
+    if (GEOMETRY_KEYS.has(k) || v === undefined) continue;
+    clean[k] = v;
+  }
+  return clean;
+}
+
+const TEMPLATES_KEY = "tr-draw-templates-v1";
+
+export type DrawingTemplate = { id: string; name: string; kind: DrawingKind; style: Record<string, unknown> };
+
+export function listTemplates(kind: DrawingKind): DrawingTemplate[] {
+  try {
+    const raw = localStorage.getItem(TEMPLATES_KEY);
+    const all = raw ? (JSON.parse(raw) as DrawingTemplate[]) : [];
+    return all.filter((t) => t.kind === kind);
+  } catch {
+    return [];
+  }
+}
+
+export function saveNamedTemplate(kind: DrawingKind, name: string, shape: DrawingShape): DrawingTemplate {
+  const tpl: DrawingTemplate = {
+    id: `tpl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+    name: name.trim() || "Template",
+    kind,
+    style: extractAppearance(shape),
+  };
+  try {
+    const raw = localStorage.getItem(TEMPLATES_KEY);
+    const all = raw ? (JSON.parse(raw) as DrawingTemplate[]) : [];
+    all.push(tpl);
+    localStorage.setItem(TEMPLATES_KEY, JSON.stringify(all));
+  } catch {
+    /* ignore */
+  }
+  return tpl;
+}
+
+export function deleteNamedTemplate(id: string): void {
+  try {
+    const raw = localStorage.getItem(TEMPLATES_KEY);
+    const all = raw ? (JSON.parse(raw) as DrawingTemplate[]) : [];
+    localStorage.setItem(TEMPLATES_KEY, JSON.stringify(all.filter((t) => t.id !== id)));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function applyAppearance(shape: DrawingShape, style: Record<string, unknown>): DrawingShape {
+  const next = { ...shape } as Record<string, unknown>;
+  for (const [k, v] of Object.entries(style)) {
+    if (GEOMETRY_KEYS.has(k) || k === "id" || k === "kind") continue;
+    next[k] = v;
+  }
+  return next as unknown as DrawingShape;
 }
 
 export function createShape(

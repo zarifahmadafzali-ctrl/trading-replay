@@ -101,6 +101,26 @@ function labelBox(
   lines.forEach((l, i) => ctx.fillText(l, bx + padX, by + padY - 1 + i * lineH));
 }
 
+
+function textAnchorInRect(
+  align: string | undefined,
+  x0: number, y0: number, x1: number, y1: number
+): { x: number; y: number; textAlign: CanvasTextAlign; textBaseline: CanvasTextBaseline } {
+  const a = align || "center";
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+  switch (a) {
+    case "left": return { x: x0 + 8, y: my, textAlign: "left", textBaseline: "middle" };
+    case "right": return { x: x1 - 8, y: my, textAlign: "right", textBaseline: "middle" };
+    case "top": return { x: mx, y: y0 + 6, textAlign: "center", textBaseline: "top" };
+    case "bottom": return { x: mx, y: y1 - 6, textAlign: "center", textBaseline: "bottom" };
+    case "top-left": return { x: x0 + 8, y: y0 + 6, textAlign: "left", textBaseline: "top" };
+    case "top-right": return { x: x1 - 8, y: y0 + 6, textAlign: "right", textBaseline: "top" };
+    case "bottom-left": return { x: x0 + 8, y: y1 - 6, textAlign: "left", textBaseline: "bottom" };
+    case "bottom-right": return { x: x1 - 8, y: y1 - 6, textAlign: "right", textBaseline: "bottom" };
+    default: return { x: mx, y: my, textAlign: "center", textBaseline: "middle" };
+  }
+}
+
 function yAtX(P: Px, Q: Px, x: number): number | null {
   if (Q.x === P.x) return null;
   return P.y + ((Q.y - P.y) * (x - P.x)) / (Q.x - P.x);
@@ -127,11 +147,15 @@ export function drawShape(ctx: CanvasRenderingContext2D, shape: DrawingShape, en
         ctx.fillStyle = withAlpha(st.fillColor, st.fillOpacity);
         ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
       }
-      applyLine(ctx, st.color, st.lineWidth, st.lineStyle);
+      applyLine(ctx, withAlpha(st.color, st.strokeOpacity), st.lineWidth, st.lineStyle);
       ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
       if (s.text) {
-        ctx.font = FONT; ctx.fillStyle = s.textColor || st.color; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        ctx.fillText(s.text, (x0 + Math.max(A.x, B.x)) / 2, (y0 + y1) / 2);
+        const ta = textAnchorInRect(s.textAlign, x0, y0, Math.max(A.x, B.x), y1);
+        ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
+        ctx.fillStyle = s.textColor || st.color;
+        ctx.textAlign = ta.textAlign;
+        ctx.textBaseline = ta.textBaseline;
+        ctx.fillText(s.text, ta.x, ta.y);
       }
       if (s.showStats) {
         const hi = Math.max(s.a.price, s.b.price), lo = Math.min(s.a.price, s.b.price);
@@ -229,7 +253,7 @@ export function drawShape(ctx: CanvasRenderingContext2D, shape: DrawingShape, en
           ctx.closePath(); ctx.fill();
         }
       }
-      applyLine(ctx, st.color, st.lineWidth, st.lineStyle);
+      applyLine(ctx, withAlpha(st.color, st.strokeOpacity ?? 1), st.lineWidth, st.lineStyle);
       if (base) seg(ctx, base[0], base[1]);
       if (par) seg(ctx, par[0], par[1]);
       if (s.showMiddle) {
@@ -269,15 +293,24 @@ function drawTrend(ctx: CanvasRenderingContext2D, s: TrendlineShape, env: Render
   const A = env.project(s.a), B = env.project(s.b);
   if (!A || !B) return;
   const st = resolveStyle(s);
-  applyLine(ctx, st.color, st.lineWidth, st.lineStyle);
+  applyLine(ctx, withAlpha(st.color, st.strokeOpacity ?? 1), st.lineWidth, st.lineStyle);
   const sg = clipLineToRect(A, B, env.bounds, !!s.extendLeft, !!s.extendRight);
   if (sg) seg(ctx, sg[0], sg[1]);
   if (s.arrowEnd) arrowHead(ctx, B, A, st.color, 6 + st.lineWidth * 2);
   if (s.arrowStart) arrowHead(ctx, A, B, st.color, 6 + st.lineWidth * 2);
   const mid = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 };
   if (s.text) {
-    ctx.font = FONT; ctx.fillStyle = s.textColor || st.color; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
-    ctx.fillText(s.text, mid.x, mid.y - 6);
+    const align = s.textAlign || "center";
+    ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
+    ctx.fillStyle = s.textColor || st.color;
+    let tx = mid.x, ty = mid.y - 6, ta: CanvasTextAlign = "center", tb: CanvasTextBaseline = "bottom";
+    if (align === "left" || align === "top-left" || align === "bottom-left") { tx = Math.min(A.x, B.x); ta = "left"; }
+    else if (align === "right" || align === "top-right" || align === "bottom-right") { tx = Math.max(A.x, B.x); ta = "right"; }
+    if (align === "top" || align === "top-left" || align === "top-right") { ty = Math.min(A.y, B.y) - 4; tb = "bottom"; }
+    else if (align === "bottom" || align === "bottom-left" || align === "bottom-right") { ty = Math.max(A.y, B.y) + 4; tb = "top"; }
+    else if (align === "center") { ty = mid.y - 6; tb = "bottom"; }
+    ctx.textAlign = ta; ctx.textBaseline = tb;
+    ctx.fillText(s.text, tx, ty);
   }
   if (s.showStats || s.showAngle) {
     const ms = measureStats(s.a, s.b, { barSec: env.barSec });
