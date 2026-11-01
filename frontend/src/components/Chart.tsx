@@ -1575,6 +1575,8 @@ export function Chart({
     if (!containerRef.current) return;
 
     const chart = createChart(containerRef.current, {
+      // autoSize: chart follows container — critical for mobile fullscreen flex layout
+      autoSize: true,
       layout: { background: { color: "#080b0f" }, textColor: "#b7c1cf" },
       grid: {
         vertLines: { color: "#17202a" },
@@ -1982,24 +1984,29 @@ export function Chart({
       const elc = containerRef.current;
       const wrap = elc.parentElement; // .chart-wrap
       const box = wrap?.parentElement; // .chartbox
-      // Measure the largest stable box in the chain — fullscreen flex can leave
-      // the inner div at 0 for a frame, which blacks out LWC price/time axes.
-      const w = Math.max(
+      // Mobile fullscreen flex often reports 0 for one frame (or permanently if
+      // min-height:0 collapses). Fall back to viewport so LWC never stays black.
+      const vw = Math.max(window.innerWidth || 0, document.documentElement?.clientWidth || 0, 320);
+      const vh = Math.max(window.innerHeight || 0, document.documentElement?.clientHeight || 0, 480);
+      let w = Math.max(
         elc.clientWidth || 0,
         elc.offsetWidth || 0,
         wrap?.clientWidth || 0,
         box?.clientWidth || 0,
         0
       );
-      const h = Math.max(
+      let h = Math.max(
         elc.clientHeight || 0,
         elc.offsetHeight || 0,
         wrap?.clientHeight || 0,
         box?.clientHeight || 0,
         0
       );
-      if (w < 80 || h < 80) return;
+      if (w < 120) w = vw;
+      // Reserve ~160px for top bars / safe areas; never allow a tiny black strip
+      if (h < 160) h = Math.max(220, vh - 160);
       try {
+        // Explicit size even with autoSize — forces a full relayout of axes
         chart.applyOptions({
           width: w,
           height: h,
@@ -2019,8 +2026,18 @@ export function Chart({
             borderColor: "#202a35",
           },
         });
+        // Also stretch the DOM node so autoSize + flex agree
+        elc.style.width = `${w}px`;
+        elc.style.height = `${h}px`;
+        if (wrap) {
+          wrap.style.width = "100%";
+          wrap.style.height = `${h}px`;
+          wrap.style.minHeight = `${h}px`;
+        }
+        if (box) {
+          box.style.minHeight = `${h}px`;
+        }
         candles.priceScale().applyOptions({ visible: true, autoScale: true });
-        // Keep overlay canvas in sync with the chart surface
         if (overlayRef.current) {
           const dpr = Math.min(window.devicePixelRatio || 1, 2);
           overlayRef.current.width = Math.floor(w * dpr);
@@ -2039,7 +2056,13 @@ export function Chart({
     resizeObserver.observe(containerRef.current);
     if (containerRef.current.parentElement) {
       resizeObserver.observe(containerRef.current.parentElement);
+      if (containerRef.current.parentElement.parentElement) {
+        resizeObserver.observe(containerRef.current.parentElement.parentElement);
+      }
     }
+    // Immediate size after mount (mobile FS may already be active)
+    forceChartResize();
+    requestAnimationFrame(() => forceChartResize());
     // Fullscreen / orientation: LWC needs several retries while flex settles.
     const onFsOrOrient = () => {
       const delays = [0, 16, 50, 100, 200, 400, 800];

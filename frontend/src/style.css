@@ -2468,3 +2468,69 @@ main:has(> .session-view) {
   min-height: 0 !important;
   -webkit-overflow-scrolling: touch;
 }
+
+
+/* =============================================================================
+ * v3.45.9 — Fullscreen black chart fix (mobile)
+ * Root cause: flex min-height:0 collapsed .chartbox to ~0px → LWC painted black
+ * with no price/time axes. Force a real viewport-based height.
+ * ============================================================================= */
+html.tr-fullscreen .replay-view,
+.app:fullscreen .replay-view {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  position: relative !important;
+}
+
+html.tr-fullscreen .view-panel:not(.view-panel-hidden),
+.app:fullscreen .view-panel:not(.view-panel-hidden) {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+html.tr-fullscreen .replay-view .chartbox,
+.app:fullscreen .replay-view .chartbox {
+  flex: 1 1 0% !important;
+  min-height: max(42dvh, 240px) !important;
+  height: auto !important;
+  width: 100% !important;
+  position: relative !important;
+  overflow: hidden !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+html.tr-fullscreen .replay-view .chartbox .chart-wrap,
+.app:fullscreen .replay-view .chartbox .chart-wrap,
+html.tr-fullscreen .replay-view .chartbox .chart,
+.app:fullscreen .replay-view .chartbox .chart {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: max(42dvh, 240px) !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+html.tr-fullscreen .chartbox .tv-lightweight-charts,
+.app:fullscreen .chartbox .tv-lightweight-charts {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: max(42dvh, 240px) !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+html.tr-fullscreen .chartbox .tv-lightweight-charts table,
+.app:fullscreen .chartbox .tv-lightweight-charts table,
+html.tr-fullscreen .chartbox .tv-lightweight-charts td,
+.app:fullscreen .chartbox .tv-lightweight-charts td {
+  visibility: visible !important;
+  opacity: 1 !important;
+}
