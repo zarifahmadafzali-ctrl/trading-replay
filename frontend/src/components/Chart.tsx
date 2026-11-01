@@ -12,6 +12,33 @@ import {
 } from "lightweight-charts";
 import type { Bar } from "../lib/types";
 import { ema, sma, vwap } from "../lib/indicators";
+import {
+  type DrawingShape,
+  type TrendlineShape,
+  type RectangleShape,
+  type MeasureShape,
+  type FibShape,
+  type HLineShape,
+  type VLineShape,
+  type ChannelShape,
+  type TextShape,
+  type Pt,
+  type HitPart,
+  normalizeShape,
+  hitTestShape,
+  applyDrag as applyDrawingDrag,
+  createShape,
+  cloneShape,
+  shapeBoundsPx,
+  bringToFront,
+  sendToBack,
+  loadToolDefaults,
+  saveToolDefaults,
+  constrainAnglePx,
+  constrainSquarePx,
+} from "../lib/drawingModel";
+import { drawShape } from "../lib/drawingRender";
+import { DrawingSettingsBar } from "./DrawingSettingsBar";
 
 export type IndicatorKind = "sma" | "ema" | "vwap" | "rsi";
 export type IndicatorSpec = { id: string; kind: IndicatorKind; period?: number; color: string };
@@ -33,8 +60,14 @@ export type DrawTool =
   | "rectangle"
   | "fib"
   | "measure"
+  | "channel"
+  | "text"
   | "long"
   | "short";
+
+/** Re-export drawing geometry types from the shared model (single source of truth). */
+export type { TrendlineShape, RectangleShape, MeasureShape, FibShape, HLineShape, VLineShape, ChannelShape, TextShape };
+export type ChartPoint = Pt;
 
 export type MagnetMode = "off" | "weak" | "strong";
 
@@ -46,79 +79,6 @@ export type OrderType =
   | "sell_stop"
   | "buy_stop_limit"
   | "sell_stop_limit";
-
-export type ChartPoint = { time: number; price: number };
-
-export type TrendlineShape = {
-  id: string;
-  kind: "trendline" | "ray" | "extended";
-  a: ChartPoint;
-  b: ChartPoint;
-  locked?: boolean;
-  visible?: boolean;
-  color?: string;
-  lineWidth?: number;
-  lineStyle?: "solid" | "dashed" | "dotted";
-};
-
-export type RectangleShape = {
-  id: string;
-  kind: "rectangle";
-  a: ChartPoint;
-  b: ChartPoint;
-  locked?: boolean;
-  visible?: boolean;
-  color?: string;
-  lineWidth?: number;
-  lineStyle?: "solid" | "dashed" | "dotted";
-  fillOpacity?: number;
-};
-
-export type MeasureShape = {
-  id: string;
-  kind: "measure";
-  a: ChartPoint;
-  b: ChartPoint;
-  locked?: boolean;
-  visible?: boolean;
-  color?: string;
-  lineWidth?: number;
-  lineStyle?: "solid" | "dashed" | "dotted";
-};
-
-export type HLineShape = {
-  id: string;
-  kind: "hline";
-  price: number;
-  locked?: boolean;
-  visible?: boolean;
-  color?: string;
-  lineWidth?: number;
-  lineStyle?: "solid" | "dashed" | "dotted";
-};
-
-export type VLineShape = {
-  id: string;
-  kind: "vline";
-  time: number;
-  locked?: boolean;
-  visible?: boolean;
-  color?: string;
-  lineWidth?: number;
-  lineStyle?: "solid" | "dashed" | "dotted";
-};
-
-export type FibShape = {
-  id: string;
-  kind: "fib";
-  a: ChartPoint;
-  b: ChartPoint;
-  locked?: boolean;
-  visible?: boolean;
-  color?: string;
-  lineWidth?: number;
-  lineStyle?: "solid" | "dashed" | "dotted";
-};
 
 export type PositionShape = {
   id: string;
@@ -167,11 +127,29 @@ export type ClosedPosition = {
   entryScreenshot?: string;
 };
 
-export type Shape = TrendlineShape | RectangleShape | MeasureShape | HLineShape | VLineShape | FibShape | PositionShape;
+export type Shape = DrawingShape | PositionShape;
 
 type DragTarget = {
   id: string;
-  field: "stop" | "takeProfit" | "entry" | "stopTrigger" | "a" | "b" | "price" | "time" | "body";
+  field:
+    | "stop"
+    | "takeProfit"
+    | "entry"
+    | "stopTrigger"
+    | "a"
+    | "b"
+    | "c"
+    | "price"
+    | "time"
+    | "body"
+    | "tl"
+    | "tr"
+    | "bl"
+    | "br"
+    | "top"
+    | "bottom"
+    | "left"
+    | "right";
   /** Logical anchor at drag start for body moves (time/price deltas). */
   originPoint?: ChartPoint;
   originShape?: Shape;
@@ -383,7 +361,7 @@ export function Chart({
   } | null>(null);
   const [hint, setHint] = useState("");
 
-  shapesRef.current = shapes;
+  shapesRef.current = shapes.map((s) => (s.kind === "position" ? s : (normalizeShape(s as DrawingShape) as Shape)));
   drawToolRef.current = drawTool;
   orderTypeRef.current = orderType;
   marketRef.current = { price: marketPrice, time: marketTime };
@@ -841,6 +819,24 @@ export function Chart({
     for (const s of shapesRef.current) {
       if ("visible" in s && s.visible === false) continue;
       ctx.setLineDash([]);
+      // Professional drawing engine (trend/rect/measure/fib/channel/text)
+      if (s.kind !== "position" && s.kind !== "hline" && s.kind !== "vline") {
+        const barSec =
+          barsRef.current.length >= 2
+            ? Math.max(1, (barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0))
+            : 60;
+        if (
+          drawShape(ctx, s as DrawingShape, {
+            project: toXY,
+            bounds: { w, h },
+            selected: selectedShapeIdRef.current === s.id,
+            priceDecimals: 2,
+            barSec,
+          })
+        ) {
+          continue;
+        }
+      }
       if (s.kind === "trendline" || s.kind === "ray" || s.kind === "extended") {
         const A = toXY(s.a);
         const B = toXY(s.b);
@@ -1300,11 +1296,50 @@ export function Chart({
       tool !== "extended" &&
       tool !== "rectangle" &&
       tool !== "measure" &&
-      tool !== "fib"
+      tool !== "fib" &&
+      tool !== "channel" &&
+      tool !== "text"
     )
       return;
     const point = applyMagnet(raw, magnetModeRef.current);
     const steps = stepsRef.current;
+
+    // Text: single click
+    if (tool === "text") {
+      const defaults = loadToolDefaults("text");
+      const shape = createShape("text", { a: point }, uid(), { ...defaults, text: "Text" }) as Shape;
+      setShapes([...shapesRef.current, shape]);
+      onSelectedShapeIdRef.current?.(shape.id);
+      onDrawToolChangeRef.current?.("crosshair");
+      setHint("Text placed · edit from settings bar");
+      return;
+    }
+
+    // Channel needs 3 points
+    if (tool === "channel") {
+      if (steps.length === 0) {
+        stepsRef.current = [point];
+        setHint("Channel: point A set · click B on baseline");
+        scheduleRedraw();
+        return;
+      }
+      if (steps.length === 1) {
+        stepsRef.current = [steps[0], point];
+        setHint("Channel: baseline set · click C for width");
+        scheduleRedraw();
+        return;
+      }
+      const a = steps[0], b = steps[1], c = point;
+      stepsRef.current = [];
+      const defaults = loadToolDefaults("channel");
+      const shape = createShape("channel", { a, b, c }, uid(), defaults) as Shape;
+      setShapes([...shapesRef.current, shape]);
+      onSelectedShapeIdRef.current?.(shape.id);
+      onDrawToolChangeRef.current?.("crosshair");
+      setHint("Channel placed");
+      return;
+    }
+
     if (steps.length === 0) {
       stepsRef.current = [point];
       setHint(
@@ -1318,19 +1353,30 @@ export function Chart({
     const a = steps[0];
     const b = point;
     stepsRef.current = [];
-    const shape: Shape =
-      tool === "trendline" || tool === "ray" || tool === "extended"
-        ? { id: uid(), kind: tool, a, b }
+    const kind =
+      tool === "ray" || tool === "extended" || tool === "trendline"
+        ? tool
         : tool === "rectangle"
-        ? { id: uid(), kind: "rectangle", a, b }
+        ? "rectangle"
         : tool === "fib"
-        ? { id: uid(), kind: "fib", a, b }
-        : { id: uid(), kind: "measure", a, b };
+        ? "fib"
+        : "measure";
+    const defaults = loadToolDefaults(kind as "trendline" | "ray" | "extended" | "rectangle" | "fib" | "measure");
+    const extra =
+      tool === "ray"
+        ? { extendRight: true, extendLeft: false }
+        : tool === "extended"
+        ? { extendRight: true, extendLeft: true }
+        : {};
+    const shape = createShape(kind as "trendline", { a, b }, uid(), { ...defaults, ...extra }) as Shape;
+    // keep ray/extended kind for compatibility when tool was ray/extended
+    if (tool === "ray" || tool === "extended") {
+      (shape as TrendlineShape).kind = tool;
+    }
     setShapes([...shapesRef.current, shape]);
     onSelectedShapeIdRef.current?.(shape.id);
-    // Auto-return to select/crosshair after placing (TradingView-like)
     onDrawToolChangeRef.current?.("crosshair");
-    setHint("Done · select to move · Delete / × to remove");
+    setHint("Done · select to move · Delete key or settings bar to remove");
   }
 
   function hitTestDrag(x: number, y: number, touch: boolean): DragTarget | null {
@@ -1348,14 +1394,29 @@ export function Chart({
       return true;
     };
 
-    // Trend line / rectangle / measure / fib endpoints — grab either point 'a' or 'b'.
-    for (const s of shapesRef.current) {
-      if (s.kind !== "trendline" && s.kind !== "ray" && s.kind !== "extended" && s.kind !== "rectangle" && s.kind !== "measure" && s.kind !== "fib") continue;
-      if (!canEdit(s)) continue;
-      const A = toXY(s.a);
-      const B = toXY(s.b);
-      if (A && Math.hypot(A.x - x, A.y - y) <= pointThreshold) return { id: s.id, field: "a" };
-      if (B && Math.hypot(B.x - x, B.y - y) <= pointThreshold) return { id: s.id, field: "b" };
+    // Professional drawings: top-most first; unselected → body only; locked → select only (caller skips drag).
+    {
+      const wBox = elWidth();
+      const hBox = containerRef.current?.clientHeight ?? 0;
+      const list = [...shapesRef.current].reverse();
+      for (const s of list) {
+        if (s.kind === "position" || s.kind === "hline" || s.kind === "vline") continue;
+        if ("visible" in s && s.visible === false) continue;
+        const hit = hitTestShape(s as DrawingShape, toXY, x, y, {
+          handleTol: pointThreshold,
+          lineTol: lineThreshold,
+          bounds: { w: wBox, h: hBox },
+          selected: selectedShapeIdRef.current === s.id,
+        });
+        if (!hit) continue;
+        const originPoint = fromXY(x, y) || undefined;
+        return {
+          id: s.id,
+          field: hit.part as DragTarget["field"],
+          originPoint,
+          originShape: JSON.parse(JSON.stringify(s)) as Shape,
+        };
+      }
     }
 
     for (const s of shapesRef.current) {
@@ -1366,33 +1427,6 @@ export function Chart({
       } else if (s.kind === "vline") {
         const xx = handles.chart.timeScale().timeToCoordinate(s.time as UTCTimestamp);
         if (xx != null && Math.abs(xx - x) <= lineThreshold) return { id: s.id, field: "time" };
-      }
-    }
-
-    // Body drag for selected multi-point drawings (move entire object).
-    const selId = selectedShapeIdRef.current;
-    if (selId) {
-      for (const s of shapesRef.current) {
-        if (s.id !== selId) continue;
-        if (!canEdit(s)) continue;
-        if (s.kind === "trendline" || s.kind === "ray" || s.kind === "extended" || s.kind === "rectangle" || s.kind === "measure" || s.kind === "fib") {
-          const A = toXY(s.a);
-          const B = toXY(s.b);
-          if (A && B && distToSegment(x, y, A.x, A.y, B.x, B.y) <= lineThreshold) {
-            const originPoint = fromXY(x, y) || { time: s.a.time, price: s.a.price };
-            return { id: s.id, field: "body", originPoint, originShape: JSON.parse(JSON.stringify(s)) as Shape };
-          }
-          if (s.kind === "rectangle" && A && B) {
-            const minX = Math.min(A.x, B.x) - lineThreshold;
-            const maxX = Math.max(A.x, B.x) + lineThreshold;
-            const minY = Math.min(A.y, B.y) - lineThreshold;
-            const maxY = Math.max(A.y, B.y) + lineThreshold;
-            if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
-              const originPoint = fromXY(x, y) || { time: s.a.time, price: s.a.price };
-              return { id: s.id, field: "body", originShape: JSON.parse(JSON.stringify(s)) as Shape, originPoint };
-            }
-          }
-        }
       }
     }
 
@@ -1445,38 +1479,36 @@ export function Chart({
     if (!d || !handles) return;
     const { candles } = handles;
 
-    if (d.field === "body" && d.originShape && d.originPoint) {
-      const cur = fromXY(x, y);
+    // Drawing-engine drag (body / endpoints / rectangle handles / channel C)
+    const drawingParts = new Set([
+      "body", "a", "b", "c", "tl", "tr", "bl", "br", "top", "bottom", "left", "right",
+    ]);
+    if (drawingParts.has(d.field) && d.originShape && d.originShape.kind !== "position" && d.originShape.kind !== "hline" && d.originShape.kind !== "vline") {
+      let cur = fromXY(x, y);
       if (!cur) return;
-      const dT = cur.time - d.originPoint.time;
-      const dP = cur.price - d.originPoint.price;
-      const o = d.originShape;
-      if (o.kind === "trendline" || o.kind === "ray" || o.kind === "extended" || o.kind === "rectangle" || o.kind === "measure" || o.kind === "fib") {
-        setShapes(
-          shapesRef.current.map((s) =>
-            s.id === d.id && (s.kind === "trendline" || s.kind === "ray" || s.kind === "extended" || s.kind === "rectangle" || s.kind === "measure" || s.kind === "fib")
-              ? ({
-                  ...s,
-                  a: { time: o.a.time + dT, price: o.a.price + dP },
-                  b: { time: o.b.time + dT, price: o.b.price + dP },
-                } as Shape)
-              : s
-          )
+      // Shift-constrain for lines/rects when originPoint exists
+      if (d.originPoint && (d.field === "b" || d.field === "a")) {
+        const A = toXY(
+          d.field === "b"
+            ? (d.originShape as { a: ChartPoint }).a
+            : (d.originShape as { b: ChartPoint }).b
         );
+        const P = toXY(cur);
+        if (A && P && typeof window !== "undefined") {
+          // shift key tracked via drag - optional: skip if no shift state
+        }
       }
-      return;
-    }
-    if (d.field === "a" || d.field === "b") {
-      const newPoint = fromXY(x, y);
-      if (!newPoint) return;
-      setShapes(
-        shapesRef.current.map((s) =>
-          s.id === d.id &&
-          (s.kind === "trendline" || s.kind === "ray" || s.kind === "extended" || s.kind === "rectangle" || s.kind === "measure" || s.kind === "fib")
-            ? ({ ...s, [d.field]: newPoint } as Shape)
-            : s
-        )
+      const origin = {
+        point: d.originPoint || cur,
+        shape: d.originShape as DrawingShape,
+      };
+      const next = applyDrawingDrag(
+        d.originShape as DrawingShape,
+        d.field as HitPart,
+        cur,
+        origin
       );
+      setShapes(shapesRef.current.map((s) => (s.id === d.id ? (next as Shape) : s)));
       return;
     }
     if (d.field === "price") {
@@ -1701,6 +1733,8 @@ export function Chart({
         toolNow === "rectangle" ||
         toolNow === "measure" ||
         toolNow === "fib" ||
+        toolNow === "channel" ||
+        toolNow === "text" ||
         toolNow === "hline" ||
         toolNow === "vline";
       if (isGeometryDrawTool) {
@@ -1739,11 +1773,19 @@ export function Chart({
             shape.kind === "extended" ||
             shape.kind === "rectangle" ||
             shape.kind === "measure" ||
-            shape.kind === "fib");
+            shape.kind === "fib" ||
+            shape.kind === "channel" ||
+            shape.kind === "text");
         const alreadySelected = selectedShapeIdRef.current === hit.id;
+        if (isDrawing && shape && "locked" in shape && shape.locked) {
+          onSelectedShapeIdRef.current?.(hit.id);
+          setHint("Locked · unlock from settings bar to move");
+          ev.preventDefault();
+          return;
+        }
         if (isDrawing && !alreadySelected) {
           onSelectedShapeIdRef.current?.(hit.id);
-          setHint("Selected · drag to move, tap × or Delete to remove");
+          setHint("Selected · drag to move, Delete key or settings bar to remove");
           scheduleRedraw();
           ev.preventDefault();
           ev.stopPropagation();
@@ -2374,6 +2416,63 @@ export function Chart({
         className="chart-overlay"
         style={{ position: "absolute", inset: 0, pointerEvents: "none", touchAction: "none" }}
       />
+      {(() => {
+        const sel = shapes.find((s) => s.id === selectedShapeId);
+        if (!sel || sel.kind === "position") return null;
+        const handles = handlesRef.current;
+        let anchor: { x0: number; y0: number; x1: number; y1: number } | null = null;
+        if (handles && overlayRef.current) {
+          const project = (p: ChartPoint) => {
+            const x = handles.chart.timeScale().timeToCoordinate(p.time as UTCTimestamp);
+            const y = handles.candles.priceToCoordinate(p.price);
+            if (x == null || y == null) return null;
+            return { x, y };
+          };
+          const w = overlayRef.current.clientWidth;
+          const h = overlayRef.current.clientHeight;
+          anchor = shapeBoundsPx(sel as DrawingShape, project, { w, h });
+        }
+        const w = overlayRef.current?.clientWidth ?? 0;
+        const h = overlayRef.current?.clientHeight ?? 0;
+        return (
+          <DrawingSettingsBar
+            shape={sel as DrawingShape}
+            anchor={anchor}
+            container={{ w, h }}
+            onChange={(patch) => {
+              setShapes(
+                shapesRef.current.map((s) =>
+                  s.id === sel.id ? ({ ...s, ...patch } as Shape) : s
+                )
+              );
+            }}
+            onClone={() => {
+              const barSec =
+                barsRef.current.length >= 2
+                  ? Math.max(1, barsRef.current[1].time - barsRef.current[0].time)
+                  : 60;
+              const prices = barsRef.current.map((b) => b.high);
+              const range = prices.length ? Math.max(...prices) - Math.min(...prices) : 1;
+              const c = cloneShape(sel as DrawingShape, uid(), 5 * barSec, range * 0.01);
+              setShapes([...shapesRef.current, c as Shape]);
+              onSelectedShapeIdRef.current?.(c.id);
+            }}
+            onDelete={() => {
+              setShapes(shapesRef.current.filter((s) => s.id !== sel.id));
+              onSelectedShapeIdRef.current?.(null);
+            }}
+            onBringToFront={() => {
+              setShapes(bringToFront(shapesRef.current as DrawingShape[], sel.id) as Shape[]);
+            }}
+            onSendToBack={() => {
+              setShapes(sendToBack(shapesRef.current as DrawingShape[], sel.id) as Shape[]);
+            }}
+            onSaveAsDefault={() => {
+              if (sel.kind !== "position") saveToolDefaults(sel.kind as DrawingShape["kind"], sel as DrawingShape);
+            }}
+          />
+        );
+      })()}
       {ohlc && (
         <div
           className="ohlc-box"

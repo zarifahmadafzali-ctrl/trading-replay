@@ -314,3 +314,12 @@ Web / PWA:
 - `manifest.webmanifest` updated for installable PWA icons
 
 Installer still uses `icons/icon.ico` via `bundle.icon` + `nsis.installerIcon`.
+
+## v3.45.0 — Drawing tools v2 (TradingView-style)
+
+- Shared pure model: `lib/drawingModel.ts` + `lib/drawingRender.ts`
+- Floating `DrawingSettingsBar` for selected non-position drawings
+- Tools: trendline/ray/extended, rectangle (8 handles), measure, fib, **channel**, **text**
+- Old ray/extended/rect sessions load via `normalizeShape` (optional fields)
+- No second drawing toolbar; favorites use `IMPLEMENTED_TOOLS`
+- Does not change positions, SL/TP, journal, market data, or updater
