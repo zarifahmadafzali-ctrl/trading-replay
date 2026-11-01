@@ -348,7 +348,6 @@ export function Chart({
   activeAccountIdRef.current = activeAccountId;
   // Screen-space hit area for the on-canvas "×" delete button drawn next to
   // whichever trendline/rectangle/measure shape is currently selected.
-  const deleteButtonRef = useRef<{ id: string; x: number; y: number; r: number } | null>(null);
   const downRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const doubleTapRef = useRef<{ x: number; y: number; time: number } | null>(null);
 
@@ -801,7 +800,6 @@ export function Chart({
     if (!canvas || !handles) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    deleteButtonRef.current = null;
 
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
@@ -871,7 +869,6 @@ export function Chart({
         ctx.beginPath(); ctx.arc(A.x, A.y, r, 0, Math.PI * 2); ctx.fill();
         ctx.beginPath(); ctx.arc(B.x, B.y, r, 0, Math.PI * 2); ctx.fill();
         if (sel) {
-          drawDeleteButton(ctx, s.id, B.x + 14, B.y - 14);
         }
       } else if (s.kind === "rectangle") {
         const A = toXY(s.a);
@@ -896,7 +893,6 @@ export function Chart({
         ctx.beginPath(); ctx.arc(A.x, A.y, r, 0, Math.PI * 2); ctx.fill();
         ctx.beginPath(); ctx.arc(B.x, B.y, r, 0, Math.PI * 2); ctx.fill();
         if (sel) {
-          drawDeleteButton(ctx, s.id, x + rw + 14, y - 14);
         }
       } else if (s.kind === "measure") {
         const A = toXY(s.a);
@@ -918,7 +914,6 @@ export function Chart({
         ctx.beginPath(); ctx.arc(B.x, B.y, r, 0, Math.PI * 2); ctx.fill();
         drawMeasureLabel(ctx, s.a, s.b, A, B, sel ? "#fbbf24" : base);
         if (sel) {
-          drawDeleteButton(ctx, s.id, B.x + 14, B.y - 14);
         }
       } else if (s.kind === "hline") {
         const yy = handlesRef.current!.candles.priceToCoordinate(s.price);
@@ -933,7 +928,6 @@ export function Chart({
         ctx.stroke();
         ctx.setLineDash([]);
         drawLabel(ctx, 6, yy - 6, s.price.toFixed(2), sel ? "#fbbf24" : "#34d399");
-        if (sel) drawDeleteButton(ctx, s.id, w - 20, yy);
       } else if (s.kind === "vline") {
         const xx = handlesRef.current!.chart.timeScale().timeToCoordinate(s.time as UTCTimestamp);
         if (xx == null) continue;
@@ -947,7 +941,6 @@ export function Chart({
         ctx.stroke();
         ctx.setLineDash([]);
         drawLabel(ctx, xx + 6, 16, new Date(s.time * 1000).toLocaleTimeString(), sel ? "#fbbf24" : "#a78bfa");
-        if (sel) drawDeleteButton(ctx, s.id, xx, 20);
       } else if (s.kind === "fib") {
         const A = toXY(s.a);
         const B = toXY(s.b);
@@ -981,7 +974,6 @@ export function Chart({
         ctx.fillStyle = sel ? "#fbbf24" : "#60a5fa";
         ctx.beginPath(); ctx.arc(A.x, A.y, r, 0, Math.PI * 2); ctx.fill();
         ctx.beginPath(); ctx.arc(B.x, B.y, r, 0, Math.PI * 2); ctx.fill();
-        if (sel) drawDeleteButton(ctx, s.id, maxX + 14, Math.min(A.y, B.y) - 14);
       } else if (s.kind === "position") {
         // Position entry time is a true 1-second replay timestamp. On a 5m/15m
         // display there may be no candle with that exact timestamp, so resolving
@@ -1248,23 +1240,6 @@ export function Chart({
     }
   }
 
-  function drawDeleteButton(ctx: CanvasRenderingContext2D, id: string, x: number, y: number) {
-    // Larger visual + hit target so mobile can tap × without missing.
-    const r = 12;
-    ctx.fillStyle = "rgba(239, 83, 80, 0.9)";
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(x - 4, y - 4);
-    ctx.lineTo(x + 4, y + 4);
-    ctx.moveTo(x + 4, y - 4);
-    ctx.lineTo(x - 4, y + 4);
-    ctx.stroke();
-    deleteButtonRef.current = { id, x, y, r: r + 10 };
-  }
 
   /** Δprice, Δ%, candle count, and elapsed time between two chart points. */
   function drawMeasureLabel(
@@ -1748,15 +1723,6 @@ export function Chart({
         // do not return — continue into hit-test / place flow
       }
 
-      // Tapping the on-canvas "×" next to a selected shape deletes it immediately.
-      const btn = deleteButtonRef.current;
-      if (btn && Math.hypot(btn.x - x, btn.y - y) <= btn.r + 4) {
-        deleteShape(btn.id);
-        ev.preventDefault();
-        ev.stopPropagation();
-        return;
-      }
-
       const hit = hitTestDrag(x, y, ev.pointerType === "touch");
       if (hit) {
         const shape = shapesRef.current.find((s) => s.id === hit.id);
@@ -1917,7 +1883,7 @@ export function Chart({
           const existingId = hitTestSelect(x, y, threshold);
           if (existingId) {
             onSelectedShapeIdRef.current?.(existingId);
-            setHint("Selected · drag to move, tap × or Delete to remove");
+            setHint("Selected · drag to move, Delete key or settings bar to remove");
           } else {
             // Free continuous coordinate — not restricted to candle OHLC (v3.16.2)
             const raw = fromXY(x, y);
@@ -1931,7 +1897,7 @@ export function Chart({
               onSelectedShapeIdRef.current?.(shape.id);
               // Auto-return to cursor so the next tap selects/drags instead of placing again.
               onDrawToolChangeRef.current?.("crosshair");
-              setHint("Done · drag to move, tap × or Delete to remove");
+              setHint("Done · drag to move, Delete key or settings bar to remove");
             }
           }
         } else if (
@@ -1947,7 +1913,7 @@ export function Chart({
           const existingId = hitTestSelect(x, y, threshold);
           if (existingId && stepsRef.current.length === 0) {
             onSelectedShapeIdRef.current?.(existingId);
-            setHint("Selected · drag to move, tap × or Delete to remove");
+            setHint("Selected · drag to move, Delete key or settings bar to remove");
           } else {
             const pt = fromXY(x, y);
             if (pt) placePoint(pt);

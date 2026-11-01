@@ -323,3 +323,16 @@ Installer still uses `icons/icon.ico` via `bundle.icon` + `nsis.installerIcon`.
 - Old ray/extended/rect sessions load via `normalizeShape` (optional fields)
 - No second drawing toolbar; favorites use `IMPLEMENTED_TOOLS`
 - Does not change positions, SL/TP, journal, market data, or updater
+
+## v3.45.1 — Drawing delete UX + single desktop install identity
+
+- Removed on-canvas **×** delete control next to drawings. Delete only via
+  floating Drawing Settings bar (trash) or keyboard Delete/Backspace.
+- Windows install identity remains fixed:
+  - productName: `Trading Replay`
+  - identifier: `com.tradingreplay.afzali`
+  - NSIS only (no parallel MSI) so a new setup **upgrades** the same app
+    instead of leaving a second Start Menu icon when the same user installs.
+- If you still see two icons: uninstall both "Trading Replay" entries in
+  Settings → Apps, then install one `*-setup.exe` as the normal user (not
+  from a different admin profile / portable Downloads copy).
