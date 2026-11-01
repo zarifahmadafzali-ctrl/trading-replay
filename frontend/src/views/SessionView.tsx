@@ -778,7 +778,7 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                     + Phase
                   </button>
                   <div className="muted" style={{ fontSize: 11, margin: "6px 0 4px" }}>PROP RULES (active phase)</div>
-                  {(["accountSize", "profitTargetPct", "dailyLossLimitPct", "maxOverallLossPct", "minimumTradingDays", "consistencyPct", "leverage"] as const).map((field) => {
+                  {(["accountSize", "profitTargetPct", "dailyLossLimitPct", "maxOverallLossPct", "minimumTradingDays", "maximumTradingDays", "challengeTimeLimitDays", "consistencyPct", "leverage"] as const).map((field) => {
                     const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id))
                       || a.propProgram?.phases?.[0];
                     const rules = phase?.rules || emptyPropRules(a.balance);
@@ -1401,12 +1401,12 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
                     + Phase
                   </button>
                   <div className="muted" style={{ fontSize: 11, margin: "6px 0 4px" }}>PROP RULES (active phase)</div>
-                  {(["accountSize", "profitTargetPct", "dailyLossLimitPct", "maxOverallLossPct", "minimumTradingDays", "consistencyPct", "leverage"] as const).map((field) => {
+                  {(["accountSize", "profitTargetPct", "dailyLossLimitPct", "maxOverallLossPct", "minimumTradingDays", "maximumTradingDays", "challengeTimeLimitDays", "consistencyPct", "leverage"] as const).map((field) => {
                     const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
                     const rules = phase?.rules || emptyPropRules(a.balance);
                     const val = rules[field];
                     const key = propRulesDraftKey(a.accountId, field, phase?.id);
-                    const label = field === "accountSize" ? "Account Size" : field === "profitTargetPct" ? "Profit Target %" : field === "dailyLossLimitPct" ? "Daily Loss Limit %" : field === "maxOverallLossPct" ? "Max Overall Loss %" : field === "minimumTradingDays" ? "Minimum Trading Days" : field === "consistencyPct" ? "Consistency %" : "Leverage (phase)";
+                    const label = field === "accountSize" ? "Account Size" : field === "profitTargetPct" ? "Profit Target %" : field === "dailyLossLimitPct" ? "Daily Loss Limit %" : field === "maxOverallLossPct" ? "Max Overall Loss %" : field === "minimumTradingDays" ? "Min Trading Days (for pass)" : field === "maximumTradingDays" ? "Max Trading Days (activity cap, optional)" : field === "challengeTimeLimitDays" ? "Challenge Time Limit days (calendar, optional)" : field === "consistencyPct" ? "Consistency %" : "Leverage (phase)";
                     return (
                       <label key={field}>
                         {label}

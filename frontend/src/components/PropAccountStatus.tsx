@@ -269,7 +269,7 @@ export function PropAccountStatus({
               </span>
             </div>
             <div>
-              <span className="risk-calc-k">Trading Days</span>
+              <span className="risk-calc-k">Trading Days (min for pass)</span>
               <span className="risk-calc-v">
                 {evaluation.tradingDays}
                 {evaluation.requiredTradingDays != null
@@ -278,10 +278,25 @@ export function PropAccountStatus({
                     ? ` / ${rules.minimumTradingDays}`
                     : ""}
                 {evaluation.requiredTradingDays != null && !evaluation.minimumTradingDaysPassed
-                  ? " · NEED MORE DAYS"
-                  : ""}
+                  ? " · in progress (not a fail)"
+                  : evaluation.requiredTradingDays != null && evaluation.minimumTradingDaysPassed
+                    ? " · met (need profit target to pass)"
+                    : ""}
               </span>
             </div>
+            {evaluation.challengeTimeLimitDays != null && (
+              <div>
+                <span className="risk-calc-k">Challenge Time</span>
+                <span className="risk-calc-v">
+                  {evaluation.challengeDaysElapsed != null
+                    ? `${evaluation.challengeDaysElapsed.toFixed(1)}d`
+                    : "—"}
+                  {" / "}
+                  {evaluation.challengeTimeLimitDays}d
+                  {evaluation.challengeTimeLimitBreached ? " · TIME LIMIT FAIL" : ""}
+                </span>
+              </div>
+            )}
             {maxDaily != null && (
               <div>
                 <span className="risk-calc-k">Daily Loss</span>

@@ -30,10 +30,19 @@ export type PropRuleSet = {
   /** Local hour (0–23) in dayResetTz when the trading day rolls. Default 0. */
   dayResetHour?: number;
   /**
-   * Optional hard cap on unique trading days.
+   * Optional hard cap on unique trading days (count of activity days).
    * null / undefined / <=0 → NOT enforced (never fails solely because days > N).
+   * This is NOT the same as minimumTradingDays and NOT a calendar time limit.
    */
   maximumTradingDays?: number | null;
+  /**
+   * Optional calendar-day limit for the challenge phase.
+   * Counts from the first trade entry of the phase (unix).
+   * null / undefined / <=0 → no time limit.
+   * If exceeded before phase pass → FAIL.
+   * Independent of minimumTradingDays (activity) and maximumTradingDays (activity cap).
+   */
+  challengeTimeLimitDays?: number | null;
   /** v3.41.0 — activity rule for counting trading days. Default: fill_and_close. */
   tradingDayDefinition?: TradingDayDefinition;
   consistencyPct?: number;
@@ -115,6 +124,10 @@ export type PropRuleEvaluation = {
   requiredTradingDays: number | null;
   /** Alias: tradingDays >= required when required is set; true if unset. */
   minimumTradingDaysPassed: boolean;
+  /** Calendar days elapsed since first phase trade entry (null if no trades / no limit). */
+  challengeDaysElapsed: number | null;
+  challengeTimeLimitDays: number | null;
+  challengeTimeLimitBreached: boolean;
   /** Realized PnL for the UTC day of currentTime (same-day aggregate). */
   todayRealizedPnL: number;
   /** |today loss| as % of reference when todayRealizedPnL is negative; else 0. */
@@ -183,6 +196,7 @@ export function normalizePropProgram(prog: PropProgramConfig | null | undefined,
         maxOverallLossPct: ph.rules?.maxOverallLossPct,
         minimumTradingDays: ph.rules?.minimumTradingDays,
         maximumTradingDays: ph.rules?.maximumTradingDays,
+        challengeTimeLimitDays: ph.rules?.challengeTimeLimitDays,
         tradingDayDefinition: ph.rules?.tradingDayDefinition,
         dayResetTz: ph.rules?.dayResetTz,
         dayResetHour: ph.rules?.dayResetHour,
@@ -810,6 +824,54 @@ export function filterTradesForPhaseWindow(
 }
 
 /** Evaluation only — no mutations. */
+
+/**
+ * Earliest entryTime among account trades (phase-filtered list expected).
+ * Returns unix seconds or null.
+ */
+export function firstTradeEntryUnix(
+  trades: PropTradeLike[],
+  accountId?: string,
+  legacyOwnerId?: string
+): number | null {
+  let min: number | null = null;
+  for (const tr of trades) {
+    if (!belongsToAccount(tr, accountId, legacyOwnerId)) continue;
+    if (tr.entryTime == null || !Number.isFinite(tr.entryTime)) continue;
+    const u = toUnixSec(tr.entryTime);
+    if (min == null || u < min) min = u;
+  }
+  return min;
+}
+
+/**
+ * Calendar-day challenge time limit from first trade entry.
+ * limitDays unset/<=0 → never breached.
+ */
+export function isChallengeTimeLimitBreached(
+  firstEntryUnix: number | null,
+  currentTimeUnix: number,
+  limitDays?: number | null
+): boolean {
+  if (limitDays == null || !Number.isFinite(Number(limitDays)) || Number(limitDays) <= 0) {
+    return false;
+  }
+  if (firstEntryUnix == null || !Number.isFinite(firstEntryUnix)) return false;
+  const elapsedSec = toUnixSec(currentTimeUnix) - toUnixSec(firstEntryUnix);
+  if (elapsedSec < 0) return false;
+  const limitSec = Number(limitDays) * 86400;
+  return elapsedSec > limitSec + 1e-9;
+}
+
+export function challengeDaysElapsed(
+  firstEntryUnix: number | null,
+  currentTimeUnix: number
+): number | null {
+  if (firstEntryUnix == null || !Number.isFinite(firstEntryUnix)) return null;
+  const elapsedSec = Math.max(0, toUnixSec(currentTimeUnix) - toUnixSec(firstEntryUnix));
+  return elapsedSec / 86400;
+}
+
 export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation {
   const progress = calculatePropProgress(state);
   const rules = progress.rules;
@@ -840,6 +902,9 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
       consistencyPassed: true,
       requiredTradingDays: null,
       minimumTradingDaysPassed: true,
+      challengeDaysElapsed: null,
+      challengeTimeLimitDays: null,
+      challengeTimeLimitBreached: false,
       todayRealizedPnL: 0,
       todayLossPct: 0,
       dailyLossLimitPct: null,
@@ -879,12 +944,20 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
   if (dailyLossBreached) reasons.push("Daily loss limit breached");
   if (maxOverallLossBreached) reasons.push("Max overall loss breached");
   if (profitTargetReached) reasons.push("Profit target reached");
+  else if (rules.profitTargetPct != null && Number(rules.profitTargetPct) > 0) {
+    reasons.push(
+      `Profit target not yet reached (${progress.currentProfitPct.toFixed(2)}% / ${rules.profitTargetPct}%)`
+    );
+  }
+  // Minimum trading days = PASS GATE only. Never a failure by itself.
   if (requiredTradingDays != null) {
     if (minimumTradingDaysReached) {
-      reasons.push(`Minimum trading days met (${progress.tradingDays}/${requiredTradingDays})`);
+      reasons.push(
+        `Minimum trading days met (${progress.tradingDays}/${requiredTradingDays}) — still need profit target to pass`
+      );
     } else {
       reasons.push(
-        `Minimum trading days not met (${progress.tradingDays}/${requiredTradingDays} unique days)`
+        `Minimum trading days in progress (${progress.tradingDays}/${requiredTradingDays}) — still trading, not a failure`
       );
     }
   }
@@ -905,7 +978,40 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
       );
     } else {
       reasons.push(
-        `Within maximum trading days (${progress.tradingDays}/${maximumTradingDaysConfigured})`
+        `Within maximum trading-day cap (${progress.tradingDays}/${maximumTradingDaysConfigured})`
+      );
+    }
+  }
+
+  // Calendar challenge time limit (optional) — from first trade entry of this phase window
+  const timeLimitRaw = rules.challengeTimeLimitDays;
+  const challengeTimeLimitDaysConfigured =
+    timeLimitRaw != null && Number.isFinite(Number(timeLimitRaw)) && Number(timeLimitRaw) > 0
+      ? Number(timeLimitRaw)
+      : null;
+  const firstEntry = firstTradeEntryUnix(
+    state.trades,
+    state.account.accountId,
+    state.legacyOwnerId
+  );
+  const challengeDaysElapsedVal = challengeDaysElapsed(firstEntry, state.currentTime);
+  const challengeTimeLimitBreached = isChallengeTimeLimitBreached(
+    firstEntry,
+    state.currentTime,
+    challengeTimeLimitDaysConfigured
+  );
+  if (challengeTimeLimitDaysConfigured != null) {
+    if (challengeTimeLimitBreached) {
+      reasons.push(
+        `Challenge time limit exceeded (${(challengeDaysElapsedVal ?? 0).toFixed(1)} / ${challengeTimeLimitDaysConfigured} calendar days from first trade)`
+      );
+    } else if (firstEntry != null) {
+      reasons.push(
+        `Challenge time remaining (${(challengeDaysElapsedVal ?? 0).toFixed(1)} / ${challengeTimeLimitDaysConfigured} calendar days from first trade)`
+      );
+    } else {
+      reasons.push(
+        `Challenge time limit ${challengeTimeLimitDaysConfigured}d — starts on first trade`
       );
     }
   }
@@ -926,7 +1032,13 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
     );
   }
 
-  const failed = dailyLossBreached || maxOverallLossBreached || maximumTradingDaysBreached;
+  // SAFETY: minimumTradingDays must NEVER contribute to failed.
+  // Fail only on hard breaches: daily loss, max overall loss, max activity days, calendar time limit.
+  const failed =
+    dailyLossBreached ||
+    maxOverallLossBreached ||
+    maximumTradingDaysBreached ||
+    challengeTimeLimitBreached;
   const eligibleForPhasePass =
     profitTargetReached &&
     minimumTradingDaysReached &&
@@ -962,6 +1074,9 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
     consistencyPassed: consistency.consistencyPassed,
     requiredTradingDays,
     minimumTradingDaysPassed: minimumTradingDaysReached,
+    challengeDaysElapsed: challengeDaysElapsedVal,
+    challengeTimeLimitDays: challengeTimeLimitDaysConfigured,
+    challengeTimeLimitBreached,
     todayRealizedPnL: progress.todayRealizedPnL,
     todayLossPct:
       progress.todayRealizedPnL < 0 && ref > 0

@@ -1,6 +1,6 @@
 {
   "name": "trading-replay-pwa",
-  "version": "3.45.10",
+  "version": "3.45.11",
   "private": true,
   "type": "module",
   "scripts": {
