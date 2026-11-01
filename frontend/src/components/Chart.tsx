@@ -2405,7 +2405,7 @@ export function Chart({
             shape={sel as DrawingShape}
             anchor={anchor}
             container={{ w, h }}
-            onChange={(patch) => {
+            onChange={(patch: Partial<DrawingShape>) => {
               setShapes(
                 shapesRef.current.map((s) =>
                   s.id === sel.id ? ({ ...s, ...patch } as Shape) : s
@@ -2434,7 +2434,8 @@ export function Chart({
               setShapes(sendToBack(shapesRef.current as DrawingShape[], sel.id) as Shape[]);
             }}
             onSaveAsDefault={() => {
-              if (sel.kind !== "position") saveToolDefaults(sel.kind as DrawingShape["kind"], sel as DrawingShape);
+              // DrawingSettingsBar is only mounted for non-position drawing shapes.
+              saveToolDefaults(sel.kind as DrawingShape["kind"], sel as DrawingShape);
             }}
           />
         );

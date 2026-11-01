@@ -77,7 +77,7 @@ function Opacity(p: { label: string; value: number; onChange: (v: number) => voi
   );
 }
 
-export default function DrawingSettingsBar(props: DrawingSettingsBarProps) {
+export function DrawingSettingsBar(props: DrawingSettingsBarProps) {
   const { shape, anchor, container, onChange } = props;
   const ref = useRef<HTMLDivElement | null>(null);
   const [w, setW] = useState(360);
@@ -252,3 +252,5 @@ export default function DrawingSettingsBar(props: DrawingSettingsBarProps) {
     </div>
   );
 }
+
+export default DrawingSettingsBar;
