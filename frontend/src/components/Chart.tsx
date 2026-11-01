@@ -38,6 +38,7 @@ import {
 } from "../lib/drawingModel";
 import { drawShape } from "../lib/drawingRender";
 import { DrawingSettingsBar } from "./DrawingSettingsBar";
+import { APP_VERSION } from "../lib/storageVersions";
 
 export type IndicatorKind = "sma" | "ema" | "vwap" | "rsi";
 export type IndicatorSpec = { id: string; kind: IndicatorKind; period?: number; color: string };
@@ -1575,8 +1576,8 @@ export function Chart({
     if (!containerRef.current) return;
 
     const chart = createChart(containerRef.current, {
-      // autoSize: chart follows container — critical for mobile fullscreen flex layout
-      autoSize: true,
+      // v3.46: size is driven by forceChartResize (single owner) — avoids autoSize + applyOptions fight
+      autoSize: false,
       layout: { background: { color: "#080b0f" }, textColor: "#b7c1cf" },
       grid: {
         vertLines: { color: "#17202a" },
@@ -1979,81 +1980,59 @@ export function Chart({
     };
     window.addEventListener("keydown", onKeyDown);
 
-    const forceChartResize = () => {
-      if (!containerRef.current || !handlesRef.current) return;
-      const elc = containerRef.current;
-      const wrap = elc.parentElement; // .chart-wrap
-      const box = (wrap?.parentElement || null) as HTMLElement | null; // .chartbox
-      const fs =
-        !!document.fullscreenElement ||
-        document.documentElement.classList.contains("tr-fullscreen");
-      const vw = Math.max(window.innerWidth || 0, document.documentElement?.clientWidth || 0, 320);
-      const vh = Math.max(window.innerHeight || 0, document.documentElement?.clientHeight || 0, 480);
-      // Bottom reserve for floating replay bar + home indicator
-      const bottomPad = fs ? 88 : 24;
-      let w = Math.max(
-        elc.clientWidth || 0,
-        elc.offsetWidth || 0,
-        wrap?.clientWidth || 0,
-        box?.clientWidth || 0,
-        0
-      );
-      let h = Math.max(
-        elc.clientHeight || 0,
-        elc.offsetHeight || 0,
-        wrap?.clientHeight || 0,
-        box?.clientHeight || 0,
-        0
-      );
-      // TradingView-like: fill ALL space from chartbox top to above the replay bar.
-      // Previous logic kept a half-height box when flex reported ~42dvh.
-      if (box) {
-        const top = box.getBoundingClientRect().top;
-        const fillH = Math.floor(vh - top - bottomPad);
-        if (fillH > 120) h = Math.max(h, fillH);
-        // Stretch the flex item so the black gap under the chart disappears
-        box.style.flex = "1 1 0%";
-        box.style.height = `${h}px`;
-        box.style.minHeight = `${h}px`;
-        box.style.maxHeight = "none";
-      }
-      if (w < 120) w = vw;
-      if (h < 160) h = Math.max(220, vh - 160);
+    // v3.46 — ONE owner of chart size. Layout (CSS) decides the box; this only reads it.
+    // No inline width/height/minHeight is ever written to .chartbox/.chart-wrap/.chart
+    // (the old code wrote them, which re-triggered the ResizeObserver and locked a
+    // half-height box that could never shrink or grow again).
+    let lastW = 0;
+    let lastH = 0;
+    let retries = 0;
+    const debugOn = (() => {
       try {
-        chart.applyOptions({
-          width: w,
-          height: h,
-          rightPriceScale: {
-            visible: true,
-            borderVisible: true,
-            borderColor: "#202a35",
-            minimumWidth: 56,
-            scaleMargins: { top: 0.06, bottom: 0.08 },
-          },
-          timeScale: {
-            visible: true,
-            timeVisible: true,
-            secondsVisible: true,
-            borderVisible: true,
-            ticksVisible: true,
-            borderColor: "#202a35",
-          },
-        });
-        elc.style.width = "100%";
-        elc.style.height = `${h}px`;
-        if (wrap) {
-          wrap.style.width = "100%";
-          wrap.style.height = `${h}px`;
-          wrap.style.minHeight = `${h}px`;
+        return (
+          new URLSearchParams(window.location.search).get("fsdebug") === "1" ||
+          window.localStorage.getItem("trFsDebug") === "1"
+        );
+      } catch {
+        return false;
+      }
+    })();
+    const forceChartResize = () => {
+      const elc = containerRef.current;
+      const handles = handlesRef.current;
+      if (!elc || !handles) return;
+      const w = Math.floor(elc.clientWidth);
+      const h = Math.floor(elc.clientHeight);
+      if (debugOn && elc.parentElement) {
+        const vv = window.visualViewport;
+        const boxEl = elc.parentElement.parentElement as HTMLElement | null;
+        elc.parentElement.setAttribute(
+          "data-fsdebug",
+          `chart ${w}x${h} | box ${boxEl?.clientWidth ?? 0}x${boxEl?.clientHeight ?? 0} | inner ${window.innerWidth}x${window.innerHeight} | vv ${Math.round(vv?.width ?? 0)}x${Math.round(vv?.height ?? 0)} | fs ${document.documentElement.classList.contains("tr-fullscreen") ? "on" : "off"} | v${APP_VERSION}`
+        );
+      }
+      if (w < 2 || h < 2) {
+        // Layout not settled (fullscreen transition, hidden tab). Retry a few frames only.
+        if (retries < 30) {
+          retries += 1;
+          requestAnimationFrame(forceChartResize);
         }
-        candles.priceScale().applyOptions({ visible: true, autoScale: true });
-        if (overlayRef.current) {
+        return;
+      }
+      retries = 0;
+      if (w === lastW && h === lastH) return;
+      lastW = w;
+      lastH = h;
+      try {
+        chart.resize(w, h, true);
+        const ov = overlayRef.current;
+        if (ov) {
           const dpr = Math.min(window.devicePixelRatio || 1, 2);
-          overlayRef.current.width = Math.floor(w * dpr);
-          overlayRef.current.height = Math.floor(h * dpr);
-          overlayRef.current.style.width = `${w}px`;
-          overlayRef.current.style.height = `${h}px`;
-          const octx = overlayRef.current.getContext("2d");
+          ov.width = Math.floor(w * dpr);
+          ov.height = Math.floor(h * dpr);
+          ov.style.width = `${w}px`;
+          ov.style.height = `${h}px`;
+          const octx = ov.getContext("2d");
           if (octx) octx.setTransform(dpr, 0, 0, dpr, 0, 0);
         }
         scheduleRedraw();
@@ -2061,14 +2040,12 @@ export function Chart({
         /* chart may be disposing */
       }
     };
-    const resizeObserver = new ResizeObserver(() => forceChartResize());
+    const resizeObserver = new ResizeObserver(() => {
+      retries = 0;
+      forceChartResize();
+    });
+    // Observe ONLY the chart element — never parents (writing parent size caused feedback loops).
     resizeObserver.observe(containerRef.current);
-    if (containerRef.current.parentElement) {
-      resizeObserver.observe(containerRef.current.parentElement);
-      if (containerRef.current.parentElement.parentElement) {
-        resizeObserver.observe(containerRef.current.parentElement.parentElement);
-      }
-    }
     // Immediate size after mount (mobile FS may already be active)
     forceChartResize();
     requestAnimationFrame(() => forceChartResize());

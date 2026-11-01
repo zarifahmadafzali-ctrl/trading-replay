@@ -81,15 +81,26 @@ export function FullscreenToggle() {
     setStandalone(isStandaloneDisplay());
     setActive(!!getFullscreenElement());
 
+    const setViewportVar = () => {
+      // Prefer visualViewport — more accurate on mobile browsers / PWA / URL-bar collapse
+      const vv = window.visualViewport;
+      const h = Math.round(vv?.height || window.innerHeight || 0);
+      if (h > 0) {
+        document.documentElement.style.setProperty("--tr-vh", `${h}px`);
+      }
+    };
     const onChange = () => {
       const fs = !!getFullscreenElement();
       setActive(fs);
       // v3.35.0 — CSS hook for scrollable fullscreen layouts
       document.documentElement.classList.toggle("tr-fullscreen", fs);
       document.body.classList.toggle("tr-fullscreen", fs);
+      if (fs) setViewportVar();
+      else document.documentElement.style.removeProperty("--tr-vh");
       // Chart (lightweight-charts) + flex layout need repeated reflow after FS change
       for (const ms of [0, 50, 150, 300, 600, 1000]) {
         window.setTimeout(() => {
+          if (fs) setViewportVar();
           window.dispatchEvent(new Event("resize"));
           window.dispatchEvent(new CustomEvent("tr-fullscreen-change", { detail: { fullscreen: fs } }));
         }, ms);
@@ -98,11 +109,20 @@ export function FullscreenToggle() {
     onChange();
     document.addEventListener("fullscreenchange", onChange);
     document.addEventListener("webkitfullscreenchange", onChange as EventListener);
+    window.addEventListener("resize", setViewportVar);
+    window.addEventListener("orientationchange", setViewportVar);
+    window.visualViewport?.addEventListener("resize", setViewportVar);
+    window.visualViewport?.addEventListener("scroll", setViewportVar);
     return () => {
       document.removeEventListener("fullscreenchange", onChange);
       document.removeEventListener("webkitfullscreenchange", onChange as EventListener);
+      window.removeEventListener("resize", setViewportVar);
+      window.removeEventListener("orientationchange", setViewportVar);
+      window.visualViewport?.removeEventListener("resize", setViewportVar);
+      window.visualViewport?.removeEventListener("scroll", setViewportVar);
       document.documentElement.classList.remove("tr-fullscreen");
       document.body.classList.remove("tr-fullscreen");
+      document.documentElement.style.removeProperty("--tr-vh");
     };
   }, []);
 

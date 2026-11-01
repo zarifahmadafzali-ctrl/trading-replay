@@ -1961,44 +1961,6 @@ html:fullscreen body {
 }
 
 
-/* ===== v3.43.0 — Fullscreen chart must fill remaining viewport height =====
- * Problem: chart stayed ~half height with large empty region below.
- * Fix: replay layout uses flex column; chartbox flex:1 with min-height:0;
- * Lightweight Charts container stretches to 100% of chartbox.
- */
-html.tr-fullscreen .replay-view,
-.app:fullscreen .replay-view,
-:fullscreen .replay-view {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  max-height: 100%;
-  min-height: 0;
-  overflow: hidden;
-}
-html.tr-fullscreen .replay-view .chartbox,
-.app:fullscreen .replay-view .chartbox,
-:fullscreen .replay-view .chartbox {
-  flex: 1 1 auto;
-  min-height: 0;
-  height: auto !important;
-  max-height: none !important;
-  position: relative;
-}
-html.tr-fullscreen .replay-view .chartbox > .chart-wrap,
-.app:fullscreen .replay-view .chartbox > .chart-wrap,
-:fullscreen .replay-view .chartbox > .chart-wrap {
-  height: 100% !important;
-  width: 100% !important;
-  min-height: 0 !important;
-  position: relative !important;
-}
-html.tr-fullscreen .replay-view .chartbox > .chart-wrap > .chart,
-.app:fullscreen .replay-view .chartbox > .chart-wrap > .chart {
-  height: 100% !important;
-  width: 100% !important;
-  min-height: 0 !important;
-}
 /* Floating replay controls — hug the control buttons (no empty long strip) */
 .replay.mobile-scroll {
   position: fixed;
@@ -2071,18 +2033,6 @@ html.tr-fullscreen .replay.mobile-scroll,
 .chartbox .tv-lightweight-charts {
   width: 100% !important;
   height: 100% !important;
-}
-html.tr-fullscreen .chartbox .tv-lightweight-charts,
-.app:fullscreen .chartbox .tv-lightweight-charts {
-  width: 100% !important;
-  height: 100% !important;
-}
-/* Keep overflow hidden so flex height resolves and LWC can measure axes */
-html.tr-fullscreen .chart-wrap,
-.app:fullscreen .chart-wrap,
-html.tr-fullscreen .chartbox,
-.app:fullscreen .chartbox {
-  overflow: hidden;
 }
 
 /* Session: page is the scrollport — list first, never trap Edit/Delete */
@@ -2381,21 +2331,6 @@ html.tr-fullscreen .topbar nav,
   min-width: 0;
 }
 
-/* Replay chart: force measurable box for price/time scales */
-html.tr-fullscreen .replay-view .chartbox,
-.app:fullscreen .replay-view .chartbox {
-  flex: 1 1 auto !important;
-  min-height: 120px !important;
-  overflow: hidden !important;
-}
-
-html.tr-fullscreen .replay-view .chartbox .tv-lightweight-charts,
-.app:fullscreen .replay-view .chartbox .tv-lightweight-charts {
-  width: 100% !important;
-  height: 100% !important;
-  visibility: visible !important;
-}
-
 /* Floating replay bar stays on top of chart, never stretched full width */
 html.tr-fullscreen .replay.mobile-scroll,
 .app:fullscreen .replay.mobile-scroll {
@@ -2405,150 +2340,77 @@ html.tr-fullscreen .replay.mobile-scroll,
 }
 
 
-
 /* =============================================================================
- * v3.45.7 — Fullscreen chart axes (TradingView-like)
- * Ensure price scale + time axis remain visible after entering fullscreen.
+ * v3.46 — SINGLE fullscreen / chart layout
+ * Replaces v3.43.0 / v3.45.7 / v3.45.9 / v3.45.10 chart+fullscreen fights.
+ *
+ * Rules:
+ *  1. Fullscreen element is <html>. Only `html.tr-fullscreen` is used
+ *     (`.app:fullscreen` never matches when <html> is the fullscreen element).
+ *  2. --tr-vh = visualViewport height (set by FullscreenToggle). Gives the flex
+ *     chain a DEFINITE height so the chart row gets remaining space.
+ *  3. Only .chartbox grows (flex 1 1 0%). .chart-wrap fills it (absolute inset 0).
+ *     JS never writes inline heights (that caused half-screen lock).
+ *  4. Session / Data Engine / Journal scroll rules above stay intact.
  * ============================================================================= */
-html.tr-fullscreen .view-panel:not(.view-panel-hidden) > .replay-view,
-.app:fullscreen .view-panel:not(.view-panel-hidden) > .replay-view {
-  flex: 1 1 auto !important;
-  height: 100% !important;
-  min-height: 0 !important;
-  max-height: 100% !important;
-  overflow: hidden !important;
-  display: flex !important;
-  flex-direction: column !important;
-}
 
-html.tr-fullscreen .replay-view .chartbox,
-.app:fullscreen .replay-view .chartbox {
-  flex: 1 1 auto !important;
-  min-height: 180px !important;
-  width: 100% !important;
-  position: relative !important;
-  overflow: hidden !important;
+html.tr-fullscreen,
+html.tr-fullscreen body {
+  height: var(--tr-vh, 100dvh);
+  max-height: var(--tr-vh, 100dvh);
+  overflow: hidden;
 }
-
-/* LWC root + internal table must fill the box so right price scale + time axis layout */
-html.tr-fullscreen .chartbox .tv-lightweight-charts,
-.app:fullscreen .chartbox .tv-lightweight-charts {
-  width: 100% !important;
-  height: 100% !important;
-  min-height: 180px !important;
-  visibility: visible !important;
-  opacity: 1 !important;
+html.tr-fullscreen .app {
+  height: var(--tr-vh, 100dvh);
+  min-height: 0;
+  max-height: var(--tr-vh, 100dvh);
+  overflow: hidden;
 }
-html.tr-fullscreen .chartbox .tv-lightweight-charts table,
-.app:fullscreen .chartbox .tv-lightweight-charts table {
-  width: 100% !important;
-  height: 100% !important;
+html.tr-fullscreen .view-panel:not(.view-panel-hidden) > .replay-view {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
-html.tr-fullscreen .chartbox .tv-lightweight-charts td,
-.app:fullscreen .chartbox .tv-lightweight-charts td {
-  visibility: visible !important;
-  opacity: 1 !important;
+html.tr-fullscreen .replay-view .chartbox {
+  flex: 1 1 0%;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  visibility: visible;
+  opacity: 1;
 }
-
-/* Overlay stays full-surface without stealing layout from LWC */
-html.tr-fullscreen .chart-overlay,
-.app:fullscreen .chart-overlay {
-  position: absolute !important;
-  inset: 0 !important;
-  width: 100% !important;
-  height: 100% !important;
-  pointer-events: none !important;
+/* .chart-wrap already position:relative + .chart absolute inset 0 in base rules */
+html.tr-fullscreen .replay-view > .bar {
+  flex: 0 0 auto;
 }
-
-
-/* Session tab: main must scroll so list + form are both reachable */
-main:has(> .session-view) {
-  overflow-x: hidden !important;
-  overflow-y: auto !important;
-  min-height: 0 !important;
-  -webkit-overflow-scrolling: touch;
-}
-
-
-/* =============================================================================
- * v3.45.9 — Fullscreen black chart fix (mobile)
- * Root cause: flex min-height:0 collapsed .chartbox to ~0px → LWC painted black
- * with no price/time axes. Force a real viewport-based height.
- * ============================================================================= */
-html.tr-fullscreen .replay-view,
-.app:fullscreen .replay-view {
-  display: flex !important;
-  flex-direction: column !important;
-  height: 100% !important;
-  max-height: 100% !important;
-  min-height: 0 !important;
-  overflow: hidden !important;
-  position: relative !important;
-}
-
-html.tr-fullscreen .view-panel:not(.view-panel-hidden),
-.app:fullscreen .view-panel:not(.view-panel-hidden) {
-  display: flex !important;
-  flex-direction: column !important;
-  height: 100% !important;
-  min-height: 0 !important;
-  overflow: hidden !important;
-}
-
-html.tr-fullscreen .replay-view .chartbox,
-.app:fullscreen .replay-view .chartbox {
-  /* Grow into ALL remaining viewport under the toolbars (TradingView-like) */
-  flex: 1 1 0% !important;
-  min-height: 50dvh !important;
-  height: auto !important;
-  width: 100% !important;
-  position: relative !important;
-  overflow: hidden !important;
-  visibility: visible !important;
-  opacity: 1 !important;
-}
-
-html.tr-fullscreen .replay-view .chartbox .chart-wrap,
-.app:fullscreen .replay-view .chartbox .chart-wrap,
-html.tr-fullscreen .replay-view .chartbox .chart,
-.app:fullscreen .replay-view .chartbox .chart {
-  width: 100% !important;
-  height: 100% !important;
-  min-height: 100% !important;
-  visibility: visible !important;
-  opacity: 1 !important;
-}
-
-html.tr-fullscreen .chartbox .tv-lightweight-charts,
-.app:fullscreen .chartbox .tv-lightweight-charts {
-  width: 100% !important;
-  height: 100% !important;
-  min-height: 100% !important;
-  visibility: visible !important;
-  opacity: 1 !important;
-}
-
-html.tr-fullscreen .chartbox .tv-lightweight-charts table,
-.app:fullscreen .chartbox .tv-lightweight-charts table,
-html.tr-fullscreen .chartbox .tv-lightweight-charts td,
-.app:fullscreen .chartbox .tv-lightweight-charts td {
-  visibility: visible !important;
-  opacity: 1 !important;
-}
-
-
-/* v3.45.10 — chart fills remaining fullscreen height (no half-screen gap) */
-html.tr-fullscreen .replay-view > .bar,
-.app:fullscreen .replay-view > .bar {
-  flex: 0 0 auto !important;
-}
-html.tr-fullscreen .replay-view > .chartbox,
-.app:fullscreen .replay-view > .chartbox {
-  flex: 1 1 0% !important;
-}
-html.tr-fullscreen .replay-view > .replay-info,
-.app:fullscreen .replay-view > .replay-info {
-  flex: 0 0 auto !important;
+html.tr-fullscreen .replay-view > .replay-info {
+  flex: 0 0 auto;
   max-height: 30vh;
   overflow: auto;
+}
+html.tr-fullscreen .chartbox .tv-lightweight-charts {
+  width: 100% !important;
+  height: 100% !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+html.tr-fullscreen .chart-overlay {
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+/* Optional on-screen diagnostics: open the app with ?fsdebug=1 or localStorage.trFsDebug=1 */
+.chart-wrap[data-fsdebug]::after {
+  content: attr(data-fsdebug);
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  z-index: 200;
+  font: 10px/1.3 monospace;
+  color: #7CFC00;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 2px 5px;
+  pointer-events: none;
 }
