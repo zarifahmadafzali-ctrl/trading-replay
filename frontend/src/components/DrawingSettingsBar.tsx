@@ -82,7 +82,7 @@ export function DrawingSettingsBar(props: DrawingSettingsBarProps) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [w, setW] = useState(360);
   const [h, setH] = useState(40);
-  const [open, setOpen] = useState<null | "color" | "fill" | "fib" | "text">(null);
+  const [open, setOpen] = useState<null | "color" | "fill" | "fib" | "text" | "width" | "style" | "more">(null);
   const [drag, setDrag] = useState({ dx: 0, dy: 0 });
   const dragRef = useRef<{ x: number; y: number; dx: number; dy: number } | null>(null);
   const lastId = useRef<string | null>(null);
@@ -109,11 +109,10 @@ export function DrawingSettingsBar(props: DrawingSettingsBarProps) {
   const levels: FibLevel[] = (k === "fib" && (shape as { levels?: FibLevel[] }).levels?.length)
     ? (shape as { levels: FibLevel[] }).levels : DEFAULT_FIB_LEVELS;
 
-  // position: above the shape, below it if there is no room, clamped to the container
-  const box = anchor || { x0: container.w / 2, x1: container.w / 2, y0: 60, y1: 60 };
-  let left = (box.x0 + box.x1) / 2 - w / 2 + drag.dx;
-  let top = box.y0 - h - 12 + drag.dy;
-  if (top < 4 && !drag.dy) top = box.y1 + 14;
+  // Fixed floating strip near top-center (user can drag). Not glued to the shape.
+  void anchor;
+  let left = container.w / 2 - w / 2 + drag.dx;
+  let top = 10 + drag.dy;
   left = Math.max(4, Math.min(left, Math.max(4, container.w - w - 4)));
   top = Math.max(4, Math.min(top, Math.max(4, container.h - h - 4)));
 
@@ -133,7 +132,7 @@ export function DrawingSettingsBar(props: DrawingSettingsBarProps) {
     <div ref={ref} style={{ ...BAR, left, top }} onPointerDown={stop} onPointerUp={stop} onMouseDown={stop} onTouchStart={stop}
       role="toolbar" aria-label="Drawing settings">
       <div title="Drag" aria-label="Drag toolbar" onPointerDown={onGripDown} onPointerMove={onGripMove} onPointerUp={onGripUp}
-        style={{ width: 14, height: 28, cursor: "grab", color: "#787B86", display: "flex", alignItems: "center", justifyContent: "center" }}>⋮⋮</div>
+        style={{ width: 22, height: 32, cursor: "grab", color: "#B2B5BE", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, background: "#2a2e39" }}>⠿</div>
 
       <div style={{ position: "relative" }}>
         <Btn title="Line color" active={open === "color"} onClick={() => setOpen(open === "color" ? null : "color")}>
@@ -164,57 +163,106 @@ export function DrawingSettingsBar(props: DrawingSettingsBarProps) {
       {hasLine && (
         <>
           <Sep />
-          {[1, 2, 3, 4].map((n) => (
-            <Btn key={n} title={`Line width ${n}`} active={Math.round(st.lineWidth) === n} onClick={() => set({ lineWidth: n })}>
-              <span style={{ display: "inline-block", width: 16, height: n, background: "currentColor" }} />
+          <div style={{ position: "relative" }}>
+            <Btn title={`Line width ${Math.round(st.lineWidth)}`} active={open === "width"} onClick={() => setOpen(open === "width" ? null : "width")}>
+              <span style={{ display: "inline-block", width: 18, height: Math.max(1, Math.round(st.lineWidth)), background: "currentColor", borderRadius: 1 }} />
             </Btn>
-          ))}
-          {(["solid", "dashed", "dotted"] as LineStyle[]).map((ls) => (
-            <Btn key={ls} title={ls} active={st.lineStyle === ls} onClick={() => set({ lineStyle: ls })}>
-              {ls === "solid" ? "──" : ls === "dashed" ? "– –" : "···"}
+            {open === "width" && (
+              <div style={POP}>
+                {[1, 2, 3, 4].map((n) => (
+                  <button key={n} type="button" onClick={() => { set({ lineWidth: n }); setOpen(null); }}
+                    style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 8px", background: Math.round(st.lineWidth) === n ? "#2a2e39" : "transparent", border: "none", color: "#d1d4dc", cursor: "pointer", borderRadius: 4 }}>
+                    <span style={{ width: 24, height: n, background: "currentColor" }} /> {n}px
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div style={{ position: "relative" }}>
+            <Btn title={`Line style: ${st.lineStyle}`} active={open === "style"} onClick={() => setOpen(open === "style" ? null : "style")}>
+              {st.lineStyle === "solid" ? "━━" : st.lineStyle === "dashed" ? "╍╍" : "···"}
             </Btn>
-          ))}
+            {open === "style" && (
+              <div style={POP}>
+                {([
+                  ["solid", "━━ Solid"],
+                  ["dashed", "╍╍ Dashed"],
+                  ["dotted", "··· Dotted"],
+                ] as [LineStyle, string][]).map(([ls, label]) => (
+                  <button key={ls} type="button" onClick={() => { set({ lineStyle: ls }); setOpen(null); }}
+                    style={{ display: "block", width: "100%", textAlign: "left", padding: "6px 8px", background: st.lineStyle === ls ? "#2a2e39" : "transparent", border: "none", color: "#d1d4dc", cursor: "pointer", borderRadius: 4 }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </>
       )}
 
       {(isTrend || k === "channel" || k === "fib" || k === "rectangle") && (
-        <>
-          <Sep />
-          {k !== "rectangle" && (
-            <Btn title="Extend left" active={flag("extendLeft")} onClick={() => toggle("extendLeft")}>⇤</Btn>
+        <div style={{ position: "relative" }}>
+          <Btn title="More options" active={open === "more"} onClick={() => setOpen(open === "more" ? null : "more")}>⋯</Btn>
+          {open === "more" && (
+            <div style={{ ...POP, minWidth: 180 }}>
+              {k !== "rectangle" && (
+                <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer" }}>
+                  <input type="checkbox" checked={flag("extendLeft")} onChange={() => toggle("extendLeft")} /> Extend left
+                </label>
+              )}
+              <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer" }}>
+                <input type="checkbox" checked={flag("extendRight")} onChange={() => toggle("extendRight")} /> Extend right
+              </label>
+              {isTrend && (
+                <>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer" }}>
+                    <input type="checkbox" checked={flag("arrowStart")} onChange={() => toggle("arrowStart")} /> Arrow start
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer" }}>
+                    <input type="checkbox" checked={flag("arrowEnd")} onChange={() => toggle("arrowEnd")} /> Arrow end
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer" }}>
+                    <input type="checkbox" checked={flag("showStats")} onChange={() => toggle("showStats")} /> Price / bars
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer" }}>
+                    <input type="checkbox" checked={flag("showAngle")} onChange={() => toggle("showAngle")} /> Angle
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer" }}>
+                    <input type="checkbox" checked={flag("showMidpoint")} onChange={() => toggle("showMidpoint")} /> Midpoint
+                  </label>
+                </>
+              )}
+              {k === "rectangle" && (
+                <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer" }}>
+                  <input type="checkbox" checked={flag("showStats")} onChange={() => toggle("showStats")} /> Show range
+                </label>
+              )}
+              {k === "channel" && (
+                <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer" }}>
+                  <input type="checkbox" checked={flag("showMiddle")} onChange={() => toggle("showMiddle")} /> Middle line
+                </label>
+              )}
+            </div>
           )}
-          <Btn title="Extend right" active={flag("extendRight")} onClick={() => toggle("extendRight")}>⇥</Btn>
-        </>
+        </div>
       )}
-      {isTrend && (
-        <>
-          <Btn title="Arrow at start" active={flag("arrowStart")} onClick={() => toggle("arrowStart")}>◀</Btn>
-          <Btn title="Arrow at end" active={flag("arrowEnd")} onClick={() => toggle("arrowEnd")}>▶</Btn>
-          <Btn title="Show price / bars" active={flag("showStats")} onClick={() => toggle("showStats")}>Δ</Btn>
-          <Btn title="Show angle" active={flag("showAngle")} onClick={() => toggle("showAngle")}>∠</Btn>
-          <Btn title="Midpoint" active={flag("showMidpoint")} onClick={() => toggle("showMidpoint")}>•</Btn>
-        </>
-      )}
-      {k === "rectangle" && <Btn title="Show price range" active={flag("showStats")} onClick={() => toggle("showStats")}>Δ</Btn>}
-      {k === "channel" && <Btn title="Middle line" active={flag("showMiddle")} onClick={() => toggle("showMiddle")}>═</Btn>}
 
       {k === "fib" && (
         <div style={{ position: "relative" }}>
-          <Btn title="Fibonacci levels" active={open === "fib"} onClick={() => setOpen(open === "fib" ? null : "fib")}>Levels</Btn>
+          <Btn title="Fibonacci levels" active={open === "fib"} onClick={() => setOpen(open === "fib" ? null : "fib")}>Fib</Btn>
           {open === "fib" && (
             <div style={{ ...POP, maxHeight: 260, overflowY: "auto" }}>
-              {levels.map((l, i) => (
-                <label key={l.value} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0" }}>
-                  <input type="checkbox" checked={l.enabled}
-                    onChange={() => set({ levels: levels.map((x, j) => (j === i ? { ...x, enabled: !x.enabled } : x)) } as Partial<DrawingShape>)} />
-                  <span style={{ width: 44 }}>{l.value}</span>
-                  <input type="color" value={/^#[0-9a-f]{6}$/i.test(l.color) ? l.color : "#787B86"} aria-label={`color ${l.value}`}
-                    onChange={(e) => set({ levels: levels.map((x, j) => (j === i ? { ...x, color: e.target.value } : x)) } as Partial<DrawingShape>)}
-                    style={{ width: 24, height: 20, padding: 0, border: "none", background: "none" }} />
+              {levels.map((lv, i) => (
+                <label key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 0" }}>
+                  <input type="checkbox" checked={lv.enabled !== false} onChange={() => {
+                    const next = levels.map((x, j) => j === i ? { ...x, enabled: x.enabled === false } : x);
+                    set({ levels: next } as Partial<DrawingShape>);
+                  }} />
+                  <span style={{ width: 10, height: 10, background: lv.color, borderRadius: 2 }} />
+                  {lv.value}
                 </label>
               ))}
-              <hr style={{ borderColor: "#363a45" }} />
-              <label style={{ display: "block" }}><input type="checkbox" checked={flag("reverse")} onChange={() => toggle("reverse")} /> Reverse</label>
+              <label style={{ display: "block", marginTop: 6 }}><input type="checkbox" checked={flag("reverse")} onChange={() => toggle("reverse")} /> Reverse</label>
               <label style={{ display: "block" }}><input type="checkbox" checked={flag("showPercents", true)} onChange={() => toggle("showPercents", true)} /> Show levels</label>
               <label style={{ display: "block" }}><input type="checkbox" checked={flag("showPrices", true)} onChange={() => toggle("showPrices", true)} /> Show prices</label>
               <label style={{ display: "block" }}><input type="checkbox" checked={flag("trendLine", true)} onChange={() => toggle("trendLine", true)} /> Trend line</label>

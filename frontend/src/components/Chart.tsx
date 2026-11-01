@@ -29,7 +29,6 @@ import {
   applyDrag as applyDrawingDrag,
   createShape,
   cloneShape,
-  shapeBoundsPx,
   bringToFront,
   sendToBack,
   loadToolDefaults,
@@ -1170,72 +1169,75 @@ export function Chart({
       }
     }
 
-    for (const p of stepsRef.current) {
-      const P = toXY(p);
-      if (!P) continue;
-      ctx.fillStyle = "#fbbf24";
-      ctx.beginPath();
-      ctx.arc(P.x, P.y, 4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Live rubber-band preview after first point (trendline / ray / extended /
-    // rectangle / fib / measure): Point A ────── cursor until second click.
+    // Live placement preview: same visual language as finished shapes (8 rect handles, etc.)
     if (stepsRef.current.length === 1 && crosshairRef.current) {
       const tool = drawToolRef.current;
       const a = stepsRef.current[0];
       const b = crosshairRef.current;
       const A = toXY(a);
       const B = toXY(b);
+      const drawHandle = (px: number, py: number, stroke = "#2962FF") => {
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#ffffff";
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(px, py, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      };
       if (A && B) {
-        if (tool === "measure") {
-          ctx.strokeStyle = "#c084fc";
+        if (tool === "rectangle" || tool === "measure") {
+          const x0 = Math.min(A.x, B.x), y0 = Math.min(A.y, B.y);
+          const x1 = Math.max(A.x, B.x), y1 = Math.max(A.y, B.y);
+          const col = tool === "measure" ? "#c084fc" : "#2962FF";
+          ctx.fillStyle = tool === "measure" ? "rgba(192, 132, 252, 0.12)" : "rgba(41, 98, 255, 0.12)";
+          ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+          ctx.strokeStyle = col;
           ctx.lineWidth = 1.5;
-          ctx.setLineDash([6, 4]);
-          ctx.beginPath();
-          ctx.moveTo(A.x, A.y);
-          ctx.lineTo(B.x, B.y);
-          ctx.stroke();
           ctx.setLineDash([]);
-          drawMeasureLabel(ctx, a, b, A, B, "#c084fc");
+          ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+          // 8 handles while dragging (corners + edge midpoints) — no legacy 2-dot mode
+          const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+          for (const p of [
+            { x: x0, y: y0 }, { x: x1, y: y0 }, { x: x0, y: y1 }, { x: x1, y: y1 },
+            { x: mx, y: y0 }, { x: mx, y: y1 }, { x: x0, y: my }, { x: x1, y: my },
+          ]) drawHandle(p.x, p.y, col);
+          if (tool === "measure") drawMeasureLabel(ctx, a, b, A, B, col);
         } else if (tool === "trendline" || tool === "ray" || tool === "extended") {
-          ctx.strokeStyle = "rgba(96, 165, 250, 0.95)";
+          ctx.strokeStyle = "#2962FF";
           ctx.lineWidth = 1.75;
-          ctx.setLineDash([8, 5]);
+          ctx.setLineDash([]);
           ctx.beginPath();
           ctx.moveTo(A.x, A.y);
           ctx.lineTo(B.x, B.y);
           ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.fillStyle = "#60a5fa";
-          ctx.beginPath();
-          ctx.arc(A.x, A.y, 5, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.beginPath();
-          ctx.arc(B.x, B.y, 4, 0, Math.PI * 2);
-          ctx.fill();
-        } else if (tool === "rectangle") {
-          const x = Math.min(A.x, B.x);
-          const y = Math.min(A.y, B.y);
-          const rw = Math.abs(B.x - A.x);
-          const rh = Math.abs(B.y - A.y);
-          ctx.fillStyle = "rgba(96, 165, 250, 0.1)";
-          ctx.strokeStyle = "rgba(96, 165, 250, 0.95)";
-          ctx.lineWidth = 1.5;
-          ctx.setLineDash([6, 4]);
-          ctx.fillRect(x, y, rw, rh);
-          ctx.strokeRect(x, y, rw, rh);
-          ctx.setLineDash([]);
+          drawHandle(A.x, A.y);
+          drawHandle(B.x, B.y);
         } else if (tool === "fib") {
-          ctx.strokeStyle = "rgba(251, 191, 36, 0.95)";
+          ctx.strokeStyle = "#FF9800";
           ctx.lineWidth = 1.5;
-          ctx.setLineDash([6, 4]);
+          ctx.setLineDash([]);
           ctx.beginPath();
           ctx.moveTo(A.x, A.y);
           ctx.lineTo(B.x, B.y);
           ctx.stroke();
-          ctx.setLineDash([]);
+          drawHandle(A.x, A.y, "#FF9800");
+          drawHandle(B.x, B.y, "#FF9800");
         }
+      }
+    } else if (stepsRef.current.length >= 1) {
+      // First corner only (before mouse moves): single handle, not legacy dual dots
+      const P = toXY(stepsRef.current[0]);
+      if (P) {
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#ffffff";
+        ctx.strokeStyle = "#2962FF";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(P.x, P.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
       }
     }
   }
@@ -2386,24 +2388,13 @@ export function Chart({
         const sel = shapes.find((s) => s.id === selectedShapeId);
         if (!sel || sel.kind === "position") return null;
         const handles = handlesRef.current;
-        let anchor: { x0: number; y0: number; x1: number; y1: number } | null = null;
-        if (handles && overlayRef.current) {
-          const project = (p: ChartPoint) => {
-            const x = handles.chart.timeScale().timeToCoordinate(p.time as UTCTimestamp);
-            const y = handles.candles.priceToCoordinate(p.price);
-            if (x == null || y == null) return null;
-            return { x, y };
-          };
-          const w = overlayRef.current.clientWidth;
-          const h = overlayRef.current.clientHeight;
-          anchor = shapeBoundsPx(sel as DrawingShape, project, { w, h });
-        }
+                // Floating settings bar is fixed near top-center — NOT glued to the shape bounds.
         const w = overlayRef.current?.clientWidth ?? 0;
         const h = overlayRef.current?.clientHeight ?? 0;
         return (
           <DrawingSettingsBar
             shape={sel as DrawingShape}
-            anchor={anchor}
+            anchor={null}
             container={{ w, h }}
             onChange={(patch: Partial<DrawingShape>) => {
               setShapes(
