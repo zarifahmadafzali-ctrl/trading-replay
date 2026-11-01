@@ -33,6 +33,58 @@ import { getLastRangeLoad, getLastReplayWindow } from "../lib/replayDiagnostics"
 
 import { SYMBOLS } from "../lib/types";
 
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+function monthKeyFromDay(day: string): string {
+  return day.slice(0, 7); // YYYY-MM
+}
+
+function monthLabel(ym: string): string {
+  const [ys, ms] = ym.split("-");
+  const mi = Number(ms) - 1;
+  if (!ys || Number.isNaN(mi) || mi < 0 || mi > 11) return ym;
+  return `${MONTH_NAMES[mi]} ${ys}`;
+}
+
+type MonthGroup = {
+  key: string;
+  label: string;
+  days: MarketDayInfo[];
+  bars: number;
+  complete: number;
+  partial: number;
+  empty: number;
+  failed: number;
+};
+
+function groupDaysByMonth(days: MarketDayInfo[]): MonthGroup[] {
+  const map = new Map<string, MarketDayInfo[]>();
+  for (const d of days) {
+    const k = monthKeyFromDay(d.day);
+    const arr = map.get(k) || [];
+    arr.push(d);
+    map.set(k, arr);
+  }
+  const keys = [...map.keys()].sort((a, b) => b.localeCompare(a));
+  return keys.map((key) => {
+    const list = (map.get(key) || []).slice().sort((a, b) => a.day.localeCompare(b.day));
+    return {
+      key,
+      label: monthLabel(key),
+      days: list,
+      bars: list.reduce((s, d) => s + (d.barCount || 0), 0),
+      complete: list.filter((d) => d.status === "COMPLETE").length,
+      partial: list.filter((d) => d.status === "PARTIAL").length,
+      empty: list.filter((d) => d.status === "EMPTY").length,
+      failed: list.filter((d) => d.status === "FAILED").length,
+    };
+  });
+}
+
 function isoDaysAgo(days: number) {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() - days);
@@ -82,6 +134,10 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
   const [marketDays, setMarketDays] = useState<MarketDayInfo[]>([]);
   const [marketBusy, setMarketBusy] = useState(false);
   const [selectedMarketDays, setSelectedMarketDays] = useState<Record<string, boolean>>({});
+  /** "all" or YYYY-MM */
+  const [monthFilter, setMonthFilter] = useState<string>("all");
+  const [expandedMonths, setExpandedMonths] = useState<Record<string, boolean>>({});
+  const [daySearch, setDaySearch] = useState("");
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importProgress, setImportProgress] = useState<string>("");
   const [diagTick, setDiagTick] = useState(0);
@@ -845,54 +901,176 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
           {marketDays.length === 0 ? (
             <p className="hint">No local market-data days cached.</p>
           ) : (
-            <div className="market-day-list">
-              {marketDays.slice(0, 60).map((d) => (
-                <div key={d.id} className="market-day-row">
-                  <label className="market-day-check">
-                    <input
-                      type="checkbox"
-                      checked={!!selectedMarketDays[d.id]}
-                      onChange={(e) =>
-                        setSelectedMarketDays((prev) => ({ ...prev, [d.id]: e.target.checked }))
-                      }
-                    />
-                  </label>
-                  <span className="market-day-sym">{d.symbol}</span>
-                  <span>{d.day}</span>
-                  <span className={`market-day-status st-${d.status.toLowerCase()}`}>{d.status}</span>
-                  <span>{d.barCount.toLocaleString()} bars</span>
-                  <span>~{(d.estimatedBytes / 1024).toFixed(1)} KB est.</span>
-                  <span className="muted">
-                    {d.savedAt ? new Date(d.savedAt).toISOString().slice(0, 16).replace("T", " ") : "—"}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={marketBusy}
-                    onClick={() => {
-                      if (
-                        !window.confirm(
-                          `Delete ${d.symbol} ${d.day}?\n\nThis deletes market data only. Sessions, Journal, Accounts, Prop data, and drawings are not deleted.`
-                        )
-                      )
-                        return;
-                      setMarketBusy(true);
-                      void cacheDeleteDay(d.symbol, d.day)
-                        .then(() => {
-                          pushLog(`Deleted cache ${d.symbol}|${d.day}`);
-                          return refreshMarketDays();
+            <div className="market-day-browser">
+              {(() => {
+                const q = daySearch.trim().toLowerCase();
+                const filtered = marketDays.filter((d) => {
+                  if (monthFilter !== "all" && monthKeyFromDay(d.day) !== monthFilter) return false;
+                  if (!q) return true;
+                  return (
+                    d.day.includes(q) ||
+                    d.symbol.toLowerCase().includes(q) ||
+                    d.status.toLowerCase().includes(q) ||
+                    monthLabel(monthKeyFromDay(d.day)).toLowerCase().includes(q)
+                  );
+                });
+                const groups = groupDaysByMonth(filtered);
+                const allMonthKeys = groupDaysByMonth(marketDays).map((g) => g.key);
+                return (
+                  <>
+                    <div className="market-day-toolbar">
+                      <span className="hint">
+                        {filtered.length} of {marketDays.length} day(s)
+                        {monthFilter !== "all" ? ` · ${monthLabel(monthFilter)}` : ""}
+                      </span>
+                      <select
+                        value={monthFilter}
+                        onChange={(e) => setMonthFilter(e.target.value)}
+                        aria-label="Filter by month"
+                      >
+                        <option value="all">All months</option>
+                        {allMonthKeys.map((k) => (
+                          <option key={k} value={k}>
+                            {monthLabel(k)}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="search"
+                        placeholder="Search day / symbol…"
+                        value={daySearch}
+                        onChange={(e) => setDaySearch(e.target.value)}
+                        aria-label="Search cached days"
+                      />
+                      <button
+                        type="button"
+                        disabled={marketBusy || filtered.length === 0}
+                        onClick={() => {
+                          setSelectedMarketDays((prev) => {
+                            const next = { ...prev };
+                            for (const d of filtered) next[d.id] = true;
+                            return next;
+                          });
+                        }}
+                      >
+                        Select visible
+                      </button>
+                      <button
+                        type="button"
+                        disabled={marketBusy}
+                        onClick={() => setSelectedMarketDays({})}
+                      >
+                        Clear selection
+                      </button>
+                    </div>
+                    <div className="market-day-list">
+                      {groups.length === 0 ? (
+                        <p className="hint">No days match this filter.</p>
+                      ) : (
+                        groups.map((g) => {
+                          const expanded = expandedMonths[g.key] ?? (monthFilter !== "all" || groups.length <= 3);
+                          const allSelected = g.days.every((d) => selectedMarketDays[d.id]);
+                          const someSelected = g.days.some((d) => selectedMarketDays[d.id]);
+                          return (
+                            <div key={g.key} className="market-month-folder">
+                              <div className="market-month-header">
+                                <label className="market-day-check" title="Select all days in this month">
+                                  <input
+                                    type="checkbox"
+                                    checked={allSelected}
+                                    ref={(el) => {
+                                      if (el) el.indeterminate = someSelected && !allSelected;
+                                    }}
+                                    onChange={(e) => {
+                                      const on = e.target.checked;
+                                      setSelectedMarketDays((prev) => {
+                                        const next = { ...prev };
+                                        for (const d of g.days) next[d.id] = on;
+                                        return next;
+                                      });
+                                    }}
+                                  />
+                                </label>
+                                <button
+                                  type="button"
+                                  className="market-month-toggle"
+                                  onClick={() =>
+                                    setExpandedMonths((prev) => ({ ...prev, [g.key]: !expanded }))
+                                  }
+                                >
+                                  {expanded ? "▾" : "▸"} {g.label}
+                                </button>
+                                <span className="muted">
+                                  {g.days[0]?.day} → {g.days[g.days.length - 1]?.day}
+                                </span>
+                                <span>
+                                  {g.days.length} day(s) · {g.bars.toLocaleString()} bars
+                                </span>
+                                <span className="muted">
+                                  {g.complete ? `${g.complete} ok` : ""}
+                                  {g.partial ? ` · ${g.partial} partial` : ""}
+                                  {g.empty ? ` · ${g.empty} empty` : ""}
+                                  {g.failed ? ` · ${g.failed} failed` : ""}
+                                </span>
+                              </div>
+                              {expanded &&
+                                g.days.map((d) => (
+                                  <div key={d.id} className="market-day-row">
+                                    <label className="market-day-check">
+                                      <input
+                                        type="checkbox"
+                                        checked={!!selectedMarketDays[d.id]}
+                                        onChange={(e) =>
+                                          setSelectedMarketDays((prev) => ({
+                                            ...prev,
+                                            [d.id]: e.target.checked,
+                                          }))
+                                        }
+                                      />
+                                    </label>
+                                    <span className="market-day-sym">{d.symbol}</span>
+                                    <span>{d.day}</span>
+                                    <span className={`market-day-status st-${d.status.toLowerCase()}`}>
+                                      {d.status}
+                                    </span>
+                                    <span>{d.barCount.toLocaleString()} bars</span>
+                                    <span>~{(d.estimatedBytes / 1024).toFixed(1)} KB est.</span>
+                                    <span className="muted">
+                                      {d.savedAt
+                                        ? new Date(d.savedAt).toISOString().slice(0, 16).replace("T", " ")
+                                        : "—"}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      disabled={marketBusy}
+                                      onClick={() => {
+                                        if (
+                                          !window.confirm(
+                                            `Delete ${d.symbol} ${d.day}?\n\nThis deletes market data only. Sessions, Journal, Accounts, Prop data, and drawings are not deleted.`
+                                          )
+                                        )
+                                          return;
+                                        setMarketBusy(true);
+                                        void cacheDeleteDay(d.symbol, d.day)
+                                          .then(() => {
+                                            pushLog(`Deleted cache ${d.symbol}|${d.day}`);
+                                            return refreshMarketDays();
+                                          })
+                                          .finally(() => setMarketBusy(false));
+                                      }}
+                                    >
+                                      Delete day
+                                    </button>
+                                  </div>
+                                ))}
+                            </div>
+                          );
                         })
-                        .finally(() => setMarketBusy(false));
-                    }}
-                  >
-                    Delete day
-                  </button>
-                </div>
-              ))}
-              {marketDays.length > 60 ? (
-                <p className="hint">
-                  Showing 60 of {marketDays.length} days…
-                </p>
-              ) : null}
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           )}
         </div>

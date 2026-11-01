@@ -1498,13 +1498,67 @@ footer {
 
 /* v3.22.0 Market Data Management */
 .market-data-mgmt { margin-top: 12px; }
+.market-day-browser {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.market-day-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.market-day-toolbar input[type="search"] {
+  min-width: 10rem;
+  flex: 1;
+  max-width: 16rem;
+}
 .market-day-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  max-height: 280px;
+  gap: 8px;
+  max-height: min(55vh, 520px);
   overflow: auto;
-  margin-top: 8px;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  margin-top: 4px;
+  padding-right: 4px;
+  min-height: 120px;
+}
+.market-month-folder {
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  background: #0b1220;
+  overflow: hidden;
+}
+.market-month-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 8px 10px;
+  background: #111827;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  font-size: 12px;
+}
+.market-month-toggle {
+  background: transparent;
+  border: none;
+  color: #e2e8f0;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  font-size: 13px;
+}
+.market-month-folder .market-day-row {
+  border-top: 1px solid #1e293b;
+  border-radius: 0;
 }
 .market-day-row {
   display: grid;
