@@ -2085,17 +2085,67 @@ html.tr-fullscreen .chartbox,
   overflow: hidden;
 }
 
-/* Session: whole page is the scrollport — never trap Edit/Delete under nested max-height */
+/* Session: page is the scrollport — list first, never trap Edit/Delete */
 .session-view {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
+  height: auto !important;
+  max-height: none !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
   overscroll-behavior-y: contain;
-  padding: 12px 12px 120px;
-  max-height: none;
+  padding: 12px 12px 140px;
+}
+#session-list-heading,
+#session-create-heading {
+  margin: 16px 0 8px;
+  font-size: 14px;
+  color: #c5d0dc;
+}
+.session-list-scroll {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  max-height: none !important;
+  overflow: visible !important;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+}
+.session-items {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 10px !important;
+  visibility: visible !important;
+}
+.session-items li {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: flex-start !important;
+  justify-content: space-between !important;
+  gap: 10px !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  min-height: 52px;
+}
+.session-items .session-actions {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  position: relative !important;
+  z-index: 5 !important;
+}
+.session-items .session-actions button {
+  display: inline-flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  min-height: 34px;
+  padding: 6px 12px;
 }
 .session-list-scroll {
   overflow: visible;
@@ -2408,4 +2458,13 @@ html.tr-fullscreen .chart-overlay,
   width: 100% !important;
   height: 100% !important;
   pointer-events: none !important;
+}
+
+
+/* Session tab: main must scroll so list + form are both reachable */
+main:has(> .session-view) {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  min-height: 0 !important;
+  -webkit-overflow-scrolling: touch;
 }

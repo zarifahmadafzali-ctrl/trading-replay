@@ -343,6 +343,10 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
       setActiveId(meta.id);
       emitSessionChanged(meta.id);
       setError(null);
+      // Keep the session list visible (form is long — list is above create form).
+      requestAnimationFrame(() => {
+        document.getElementById("session-list-heading")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
     } catch {
       setError("Could not create session");
     }
@@ -540,6 +544,574 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
         </span>
       </div>
 
+
+      <h3 id="session-list-heading">Your sessions</h3>
+      {loading ? (
+        <p>Loading…</p>
+      ) : sessions.length === 0 ? (
+        <p className="empty-state">No sessions yet. Create one to start an isolated backtest.</p>
+      ) : (
+        <div className="session-list-scroll" role="region" aria-label="Session list">
+        <ul className="session-items">
+          {sessions.map((s) => {
+            const full = ensureSessionAccounts(s);
+            const acc = full.accounts?.find((a) => a.accountId === full.activeAccountId) || full.accounts?.[0];
+            return (
+              <li key={s.id} className={s.id === activeId ? "session-active" : undefined}>
+                <div>
+                  <b>{s.name}</b>
+                  <span className="muted">
+                    {" "}
+                    · {s.sessionType || "backtest"} · {s.symbol} · {s.start} → {s.end}
+                    {s.strategy ? ` · ${s.strategy}` : ""}
+                    {s.id === activeId ? " · ACTIVE" : ""}
+                  </span>
+                  {acc ? (
+                    <div className="muted">
+                      Acct {acc.name}: {acc.currency} {acc.balance.toLocaleString()} · 1:{acc.leverage}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="session-actions">
+                  <button
+                    type="button"
+                    className={s.id === activeId ? "on" : undefined}
+                    onClick={() => void handleActivate(s.id)}
+                  >
+                    {s.id === activeId ? "Active" : "Open"}
+                  </button>
+                  <button type="button" onClick={() => void startEditAccounts(s)}>
+                    Edit
+                  </button>
+                  <button type="button" onClick={() => void handleDelete(s.id)}>
+                    Delete
+                  </button>
+                </div>
+                {editingId === s.id && (
+                  <div className="account-edit-panel">
+                    <h4>{`Edit accounts (max ${MAX_SESSION_ACCOUNTS})`}</h4>
+                    {editAccounts.map((a) => (
+                      <div className="account-card" key={a.accountId}>
+                        <div className="session-form-grid">
+                          <label>
+                            Name
+                            <input value={a.name} onChange={(e) => updateEditAccount(a.accountId, { name: e.target.value })} />
+                          </label>
+                          <label>
+                            Balance
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={editBalDraft[a.accountId] ?? String(a.balance)}
+                              onChange={(e) => setEditBalDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                              onBlur={() => {
+                                const raw = editBalDraft[a.accountId] ?? String(a.balance);
+                                const v = commitBalance(raw, a.balance);
+                                if (v == null) {
+                                  setEditBalDraft((d) => ({ ...d, [a.accountId]: String(a.balance) }));
+                                  return;
+                                }
+                                updateEditAccount(a.accountId, { balance: v });
+                                setEditBalDraft((d) => ({ ...d, [a.accountId]: String(v) }));
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                              }}
+                            />
+                          </label>
+                          <label>
+                            Currency
+                            <input value={a.currency} onChange={(e) => updateEditAccount(a.accountId, { currency: e.target.value })} />
+                          </label>
+                          <label>
+                            Leverage (1:N)
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={editLevDraft[a.accountId] ?? String(a.leverage)}
+                              onChange={(e) => setEditLevDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                              onBlur={() => {
+                                const raw = editLevDraft[a.accountId] ?? String(a.leverage);
+                                const v = commitLeverage(raw, a.leverage);
+                                if (v == null) {
+                                  setEditLevDraft((d) => ({ ...d, [a.accountId]: String(a.leverage) }));
+                                  return;
+                                }
+                                updateEditAccount(a.accountId, { leverage: v });
+                                setEditLevDraft((d) => ({ ...d, [a.accountId]: String(v) }));
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                              }}
+                            />
+                          </label>
+                          <label>
+                            Min Lot
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={editMinLotDraft[a.accountId] ?? String(a.minLot ?? 0.01)}
+                              onChange={(e) => setEditMinLotDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                              onBlur={() => {
+                                const raw = editMinLotDraft[a.accountId] ?? String(a.minLot ?? 0.01);
+                                const v = commitLot(raw, a.minLot ?? 0.01);
+                                if (v == null) {
+                                  setEditMinLotDraft((d) => ({ ...d, [a.accountId]: String(a.minLot ?? 0.01) }));
+                                  return;
+                                }
+                                updateEditAccount(a.accountId, { minLot: v });
+                                setEditMinLotDraft((d) => ({ ...d, [a.accountId]: String(v) }));
+                              }}
+                            />
+                          </label>
+                          <label>
+                            Max Lot
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={editMaxLotDraft[a.accountId] ?? String(a.maxLot ?? 100)}
+                              onChange={(e) => setEditMaxLotDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                              onBlur={() => {
+                                const raw = editMaxLotDraft[a.accountId] ?? String(a.maxLot ?? 100);
+                                const v = commitLot(raw, a.maxLot ?? 100);
+                                if (v == null) {
+                                  setEditMaxLotDraft((d) => ({ ...d, [a.accountId]: String(a.maxLot ?? 100) }));
+                                  return;
+                                }
+                                updateEditAccount(a.accountId, { maxLot: v });
+                                setEditMaxLotDraft((d) => ({ ...d, [a.accountId]: String(v) }));
+                              }}
+                            />
+                          </label>
+                          <label>
+                            Lot Step
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={editStepDraft[a.accountId] ?? String(a.lotStep ?? 0.01)}
+                              onChange={(e) => setEditStepDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
+                              onBlur={() => {
+                                const raw = editStepDraft[a.accountId] ?? String(a.lotStep ?? 0.01);
+                                const v = commitLot(raw, a.lotStep ?? 0.01);
+                                if (v == null) {
+                                  setEditStepDraft((d) => ({ ...d, [a.accountId]: String(a.lotStep ?? 0.01) }));
+                                  return;
+                                }
+                                updateEditAccount(a.accountId, { lotStep: v });
+                                setEditStepDraft((d) => ({ ...d, [a.accountId]: String(v) }));
+                              }}
+                            />
+                          </label>
+
+              <label>
+                Account Type
+                <select
+                  value={a.accountType || "personal"}
+                  onChange={(e) => setAccountType(a.accountId, e.target.value as "personal" | "prop", true)}
+                >
+                  <option value="personal">Personal</option>
+                  <option value="prop">Prop</option>
+                </select>
+              </label>
+              {(a.accountType || "personal") === "prop" && (
+                <div className="prop-rules-box">
+                  <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>PROP PROGRAM</div>
+                  <label>
+                    Prop Firm
+                    <input
+                      value={a.propFirmName || a.propProgram?.firmName || ""}
+                      onChange={(e) => {
+                        const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.balance);
+                        const next = { ...prog, firmName: e.target.value };
+                        updateEditAccount(a.accountId, {
+                          propFirmName: e.target.value,
+                          propProgram: next,
+                          propProgramId: next.id,
+                        });
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Program
+                    <input
+                      value={a.propProgramName || a.propProgram?.programName || ""}
+                      onChange={(e) => {
+                        const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.balance);
+                        const next = { ...prog, programName: e.target.value };
+                        updateEditAccount(a.accountId, {
+                          propProgramName: e.target.value,
+                          propProgram: next,
+                          propProgramId: next.id,
+                        });
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Phase
+                    <select
+                      value={a.activePropPhaseId || a.propProgram?.phases?.[0]?.id || ""}
+                      onChange={(e) => updateEditAccount(a.accountId, { activePropPhaseId: e.target.value })}
+                    >
+                      {(a.propProgram?.phases || ensurePropProgram({ ...a, accountType: "prop" })?.phases || []).map((ph) => (
+                        <option key={ph.id} value={ph.id}>{ph.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={() => {
+                      const size = a.initialBalance || a.balance || 5000;
+                      const prog = normalizePropProgram(
+                        ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(size),
+                        size
+                      );
+                      const n = prog.phases.length + 1;
+                      const ph = createIndependentPhase(n, size);
+                      const next = {
+                        ...prog,
+                        phases: [...prog.phases.map((p) => ({ ...p, rules: clonePropRules(p.rules) })), ph],
+                      };
+                      updateEditAccount(a.accountId, { propProgram: next, activePropPhaseId: ph.id });
+                    }}
+                  >
+                    + Phase
+                  </button>
+                  <div className="muted" style={{ fontSize: 11, margin: "6px 0 4px" }}>PROP RULES (active phase)</div>
+                  {(["accountSize", "profitTargetPct", "dailyLossLimitPct", "maxOverallLossPct", "minimumTradingDays", "consistencyPct", "leverage"] as const).map((field) => {
+                    const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id))
+                      || a.propProgram?.phases?.[0];
+                    const rules = phase?.rules || emptyPropRules(a.balance);
+                    const val = rules[field];
+                    const key = propRulesDraftKey(a.accountId, field, phase?.id);
+                    const label =
+                      field === "accountSize" ? "Account Size" :
+                      field === "profitTargetPct" ? "Profit Target %" :
+                      field === "dailyLossLimitPct" ? "Daily Loss Limit %" :
+                      field === "maxOverallLossPct" ? "Max Overall Loss %" :
+                      field === "minimumTradingDays" ? "Minimum Trading Days" :
+                      field === "consistencyPct" ? "Consistency %" :
+                      "Leverage (phase)";
+                    return (
+                      <label key={field}>
+                        {label}
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={propNumDraft[key] ?? (val != null ? String(val) : "")}
+                          onChange={(e) => setPropNumDraft((d) => ({ ...d, [key]: e.target.value }))}
+                          onBlur={(e) => {
+                            const raw = e.currentTarget.value;
+                            setPropNumDraft((d) => ({ ...d, [key]: raw }));
+                            if (raw.trim() === "") {
+                              if (field === "accountSize") {
+                                setPropNumDraft((d) => ({ ...d, [key]: val != null ? String(val) : "" }));
+                                return;
+                              }
+                              patchActivePhaseRules(a.accountId, { [field]: undefined }, true);
+                              return;
+                            }
+                            const n = Number(raw);
+                            if (!Number.isFinite(n) || n < 0) {
+                              setPropNumDraft((d) => ({ ...d, [key]: val != null ? String(val) : "" }));
+                              return;
+                            }
+                            patchActivePhaseRules(a.accountId, { [field]: n }, true);
+                            setPropNumDraft((d) => ({ ...d, [key]: String(n) }));
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          }}
+                        />
+                      </label>
+                    );
+                  })}
+                  {(() => {
+                    const phase =
+                      (a.propProgram?.phases || []).find(
+                        (p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)
+                      ) || a.propProgram?.phases?.[0];
+                    const def = phase?.rules?.tradingDayDefinition || "fill_and_close";
+                    return (
+                      <label>
+                        Trading Day Definition
+                        <select
+                          value={def}
+                          onChange={(e) =>
+                            patchActivePhaseRules(
+                              a.accountId,
+                              {
+                                tradingDayDefinition: e.target.value as
+                                  | "fill_and_close"
+                                  | "any_fill"
+                                  | "any_close",
+                              },
+                              true
+                            )
+                          }
+                        >
+                          <option value="fill_and_close">Filled + Closed</option>
+                          <option value="any_fill">Any Filled Trade</option>
+                          <option value="any_close">Any Closed Trade</option>
+                        </select>
+                      </label>
+                    );
+                  })()}
+
+                  {(() => {
+                    const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
+                    const isFundedPhase = (phase?.type || "").toLowerCase() === "funded" || /funded/i.test(phase?.name || "");
+                    if (!isFundedPhase) {
+                      return (
+                        <p className="muted" style={{ fontSize: 11, margin: "8px 0 4px" }}>
+                          Payout rules apply on the Funded phase only — not required to pass challenge phases.
+                        </p>
+                      );
+                    }
+                    return null;
+                  })()}
+                  {(() => {
+                    const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
+                    const isFundedPhase = (phase?.type || "").toLowerCase() === "funded" || /funded/i.test(phase?.name || "");
+                    if (!isFundedPhase) return null;
+                    const sch = normalizePayoutSchedule(phase?.rules?.payout || { mode: "on_demand" });
+                    const mode = sch.mode || "on_demand";
+                    const numField = (field: keyof PayoutSchedule, label: string) => {
+                      const key = propRulesDraftKey(a.accountId, `payout_${String(field)}`, phase?.id);
+                      const val = sch[field];
+                      return (
+                        <label key={String(field)}>
+                          {label}
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={propNumDraft[key] ?? (val != null && typeof val !== "boolean" ? String(val) : "")}
+                            onChange={(e) => setPropNumDraft((d) => ({ ...d, [key]: e.target.value }))}
+                            onBlur={(e) => {
+                              const raw = e.currentTarget.value;
+                              setPropNumDraft((d) => ({ ...d, [key]: raw }));
+                              if (raw.trim() === "") {
+                                patchActivePhasePayout(a.accountId, { [field]: undefined }, true);
+                                return;
+                              }
+                              const n = Number(raw);
+                              if (!Number.isFinite(n) || n < 0) {
+                                setPropNumDraft((d) => ({ ...d, [key]: val != null ? String(val) : "" }));
+                                return;
+                              }
+                              patchActivePhasePayout(a.accountId, { [field]: n } as Partial<PayoutSchedule>, true);
+                              setPropNumDraft((d) => ({ ...d, [key]: String(n) }));
+                            }}
+                            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                          />
+                        </label>
+                      );
+                    };
+                    return (
+                      <>
+                        <label>
+                          Payout Mode
+                          <select
+                            value={mode}
+                            onChange={(e) =>
+                              patchActivePhasePayout(a.accountId, { mode: e.target.value as PayoutScheduleMode }, true)
+                            }
+                          >
+                            <option value="on_demand">On Demand</option>
+                            <option value="weekly">Weekly</option>
+                            <option value="biweekly">Bi-Weekly</option>
+                            <option value="monthly">Monthly</option>
+                            <option value="interval">Interval</option>
+                          </select>
+                        </label>
+                        {(mode === "weekly" || mode === "biweekly") && (
+                          <label>
+                            Payout Day
+                            <select
+                              value={sch.weekday != null ? String(sch.weekday) : "5"}
+                              onChange={(e) =>
+                                patchActivePhasePayout(a.accountId, { weekday: Number(e.target.value) }, true)
+                              }
+                            >
+                              <option value="1">Monday</option>
+                              <option value="2">Tuesday</option>
+                              <option value="3">Wednesday</option>
+                              <option value="4">Thursday</option>
+                              <option value="5">Friday</option>
+                              <option value="6">Saturday</option>
+                              <option value="0">Sunday</option>
+                            </select>
+                          </label>
+                        )}
+                        {mode === "biweekly" && (
+                          <label>
+                            Anchor Date (YYYY-MM-DD)
+                            <input
+                              type="date"
+                              value={
+                                sch.anchorDate
+                                  ? new Date(sch.anchorDate * 1000).toISOString().slice(0, 10)
+                                  : ""
+                              }
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                if (!v) {
+                                  patchActivePhasePayout(a.accountId, { anchorDate: undefined, anchor: "fixed_date" }, true);
+                                  return;
+                                }
+                                const sec = Math.floor(new Date(v + "T00:00:00Z").getTime() / 1000);
+                                patchActivePhasePayout(a.accountId, { anchorDate: sec, anchor: "fixed_date" }, true);
+                              }}
+                            />
+                          </label>
+                        )}
+                        {mode === "monthly" && numField("monthDay", "Day of Month (1–31)")}
+                        {mode === "interval" && (
+                          <>
+                            {numField("intervalDays", "Interval Days")}
+                            <label>
+                              Count From
+                              <select
+                                value={sch.anchor || "funded_start"}
+                                onChange={(e) =>
+                                  patchActivePhasePayout(
+                                    a.accountId,
+                                    { anchor: e.target.value as PayoutSchedule["anchor"] },
+                                    false
+                                  )
+                                }
+                              >
+                                <option value="funded_start">Funded Start</option>
+                                <option value="first_funded_trade">First Funded Trade</option>
+                                <option value="last_payout">Last Payout</option>
+                                <option value="fixed_date">Fixed Date</option>
+                              </select>
+                            </label>
+                          </>
+                        )}
+                        {numField("firstPayoutDelayDays", "First Payout Delay (days)")}
+                        {numField("minimumTradingDays", "Min Trading Days (payout)")}
+                        {numField("minimumPayoutPct", "Minimum Payout %")}
+                        {numField("minimumPayoutAmount", "Minimum Payout Amount")}
+                        {numField("profitSplitPct", "Profit Split % (trader)")}
+                        {numField("fixedPayoutAmount", "Fixed Payout Amount (optional)")}
+                        {numField("processingDays", "Processing Days")}
+                        {numField("cooldownDays", "Cooldown Days")}
+                        <label>
+                          Post-Payout Behavior
+                          <select
+                            value={sch.postPayoutBehavior || "no_reset"}
+                            onChange={(e) =>
+                              patchActivePhasePayout(
+                                a.accountId,
+                                {
+                                  postPayoutBehavior: e.target.value as
+                                    | "no_reset"
+                                    | "reset_equity_to_baseline"
+                                    | "reset_profit_tracking",
+                                },
+                                true
+                              )
+                            }
+                          >
+                            <option value="no_reset">No Reset (deduct only)</option>
+                            <option value="reset_equity_to_baseline">Reset Equity to Baseline</option>
+                            <option value="reset_profit_tracking">Reset Profit Tracking Only</option>
+                          </select>
+                        </label>
+                      </>
+                    );
+                  })()}
+                  <label>
+                    News Trading
+                    <select
+                      value={(
+                        (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id))?.rules.newsTradingAllowed
+                      ) ? "1" : "0"}
+                      onChange={(e) =>
+                        patchActivePhaseRules(a.accountId, { newsTradingAllowed: e.target.value === "1" }, true)
+                      }
+                    >
+                      <option value="1">Allowed</option>
+                      <option value="0">Not allowed</option>
+                    </select>
+                  </label>
+                  <label>
+                    Weekend Holding
+                    <select
+                      value={(
+                        (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id))?.rules.weekendHoldingAllowed
+                      ) ? "1" : "0"}
+                      onChange={(e) =>
+                        patchActivePhaseRules(a.accountId, { weekendHoldingAllowed: e.target.value === "1" }, true)
+                      }
+                    >
+                      <option value="1">Allowed</option>
+                      <option value="0">Not allowed</option>
+                    </select>
+                  </label>
+                </div>
+              )}
+                          {(a.accountType || "personal") === "prop" && (
+                            <PropAccountStatus
+                              account={a}
+                              trades={statusTrades}
+                              replayTime={statusReplayTime}
+                              onAccountChange={(next) => updateEditAccount(next.accountId, next)}
+                            />
+                          )}
+                          <label>
+                            Enabled
+                            <select
+                              value={a.enabled !== false ? "1" : "0"}
+                              onChange={(e) => updateEditAccount(a.accountId, { enabled: e.target.value === "1" })}
+                            >
+                              <option value="1">Yes</option>
+                              <option value="0">No</option>
+                            </select>
+                          </label>
+                        </div>
+                        <div className="session-actions">
+                          <label>
+                            <input
+                              type="radio"
+                              name={`edit-active-${s.id}`}
+                              checked={editActiveId === a.accountId}
+                              onChange={() => setEditActiveId(a.accountId)}
+                            />{" "}
+                            Active
+                          </label>
+                          {editAccounts.length > 1 && (
+                            <button type="button" onClick={() => removeEditAccount(a.accountId)}>
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {editAccounts.length < MAX_SESSION_ACCOUNTS && (
+                      <button type="button" onClick={addEditAccount}>
+                        + Add account
+                      </button>
+                    )}
+                    <div className="session-actions">
+                      <button type="button" className="on" onClick={() => void saveEditAccounts()}>
+                        Save accounts
+                      </button>
+                      <button type="button" onClick={() => setEditingId(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+        </div>
+      )}
+
+      <h3 id="session-create-heading">Create new session</h3>
       <div className="session-form">
         <div className="session-form-grid">
           <label>
@@ -1131,700 +1703,11 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
           ))}
         </div>
 
-        {sessionType === "prop" && (
-          <div className="prop-block">
-            <h3>Legacy session Prop defaults (optional · does not override Account phases)</h3>
-            <p className="muted" style={{ fontSize: 11 }}>Canonical Prop rules live on each Account → Prop Program → Phases below. This block is legacy session metadata only and does not override per-phase RuleSets.</p>
-            <div className="session-form-grid">
-              <label>
-                Account size
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={pfDraft["accountSize"] ?? String(propFirm.accountSize ?? "")}
-                  onChange={(e) => setPfDraft((d) => ({ ...d, accountSize: e.target.value }))}
-                  onBlur={(e) => {
-                    const raw = e.currentTarget.value;
-                    setPfDraft((d) => ({ ...d, accountSize: raw }));
-                    if (raw.trim() === "") {
-                      setPfDraft((d) => ({ ...d, accountSize: String(propFirm.accountSize ?? "") }));
-                      return;
-                    }
-                    const n = Number(raw);
-                    if (!Number.isFinite(n) || n < 0) {
-                      setPfDraft((d) => ({ ...d, accountSize: String(propFirm.accountSize ?? "") }));
-                      return;
-                    }
-                    setPropFirm({ ...propFirm, accountSize: n });
-                    setPfDraft((d) => ({ ...d, accountSize: String(n) }));
-                  }}
-                  onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                />
-              </label>
-              <label>
-                Phase
-                <select value={propFirm.phase} onChange={(e) => setPropFirm({ ...propFirm, phase: e.target.value })}>
-                  <option>Single</option>
-                  <option>Phase 1</option>
-                  <option>Phase 2</option>
-                  <option>Custom</option>
-                </select>
-              </label>
-              {([
-                ["profitTargetPercent", "Profit target %"],
-                ["dailyDdPercent", "Daily DD %"],
-                ["overallDdPercent", "Overall DD %"],
-                ["minTradingDays", "Min trading days"],
-              ] as const).map(([key, label]) => (
-                <label key={key}>
-                  {label}
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={pfDraft[key] ?? String((propFirm as any)[key] ?? "")}
-                    onChange={(e) => setPfDraft((d) => ({ ...d, [key]: e.target.value }))}
-                    onBlur={(e) => {
-                      const raw = e.currentTarget.value;
-                      setPfDraft((d) => ({ ...d, [key]: raw }));
-                      if (raw.trim() === "") {
-                        setPfDraft((d) => ({ ...d, [key]: String((propFirm as any)[key] ?? "") }));
-                        return;
-                      }
-                      const n = Number(raw);
-                      if (!Number.isFinite(n) || n < 0) {
-                        setPfDraft((d) => ({ ...d, [key]: String((propFirm as any)[key] ?? "") }));
-                        return;
-                      }
-                      setPropFirm({ ...propFirm, [key]: n });
-                      setPfDraft((d) => ({ ...d, [key]: String(n) }));
-                    }}
-                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                  />
-                </label>
-              ))}
-              <label>
-                Max trading days
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={pfDraft["maxTradingDays"] ?? (propFirm.maxTradingDays != null ? String(propFirm.maxTradingDays) : "")}
-                  placeholder="optional"
-                  onChange={(e) => setPfDraft((d) => ({ ...d, maxTradingDays: e.target.value }))}
-                  onBlur={(e) => {
-                    const raw = e.currentTarget.value;
-                    setPfDraft((d) => ({ ...d, maxTradingDays: raw }));
-                    if (raw.trim() === "") {
-                      setPropFirm({ ...propFirm, maxTradingDays: null });
-                      return;
-                    }
-                    const n = Number(raw);
-                    if (!Number.isFinite(n) || n < 0) {
-                      setPfDraft((d) => ({ ...d, maxTradingDays: propFirm.maxTradingDays != null ? String(propFirm.maxTradingDays) : "" }));
-                      return;
-                    }
-                    setPropFirm({ ...propFirm, maxTradingDays: n });
-                    setPfDraft((d) => ({ ...d, maxTradingDays: String(n) }));
-                  }}
-                  onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                />
-              </label>
-              <label>
-                Consistency %
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={pfDraft["consistencyRulePercent"] ?? (propFirm.consistencyRulePercent != null ? String(propFirm.consistencyRulePercent) : "")}
-                  placeholder="optional"
-                  onChange={(e) => setPfDraft((d) => ({ ...d, consistencyRulePercent: e.target.value }))}
-                  onBlur={(e) => {
-                    const raw = e.currentTarget.value;
-                    setPfDraft((d) => ({ ...d, consistencyRulePercent: raw }));
-                    if (raw.trim() === "") {
-                      setPropFirm({ ...propFirm, consistencyRulePercent: null });
-                      return;
-                    }
-                    const n = Number(raw);
-                    if (!Number.isFinite(n) || n < 0) {
-                      setPfDraft((d) => ({ ...d, consistencyRulePercent: propFirm.consistencyRulePercent != null ? String(propFirm.consistencyRulePercent) : "" }));
-                      return;
-                    }
-                    setPropFirm({ ...propFirm, consistencyRulePercent: n });
-                    setPfDraft((d) => ({ ...d, consistencyRulePercent: String(n) }));
-                  }}
-                  onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                />
-              </label>
-            </div>
-          </div>
-        )}
-
         <button id="session-create" type="button" className="on" onClick={() => void handleCreate()}>
           Create session
         </button>
       </div>
 
-      {loading ? (
-        <p>Loading…</p>
-      ) : sessions.length === 0 ? (
-        <p className="empty-state">No sessions yet. Create one to start an isolated backtest.</p>
-      ) : (
-        <div className="session-list-scroll" role="region" aria-label="Session list">
-        <ul className="session-items">
-          {sessions.map((s) => {
-            const full = ensureSessionAccounts(s);
-            const acc = full.accounts?.find((a) => a.accountId === full.activeAccountId) || full.accounts?.[0];
-            return (
-              <li key={s.id} className={s.id === activeId ? "session-active" : undefined}>
-                <div>
-                  <b>{s.name}</b>
-                  <span className="muted">
-                    {" "}
-                    · {s.sessionType || "backtest"} · {s.symbol} · {s.start} → {s.end}
-                    {s.strategy ? ` · ${s.strategy}` : ""}
-                    {s.id === activeId ? " · ACTIVE" : ""}
-                  </span>
-                  {acc ? (
-                    <div className="muted">
-                      Acct {acc.name}: {acc.currency} {acc.balance.toLocaleString()} · 1:{acc.leverage}
-                    </div>
-                  ) : null}
-                </div>
-                <div className="session-actions">
-                  {s.id !== activeId && (
-                    <button type="button" className="on" onClick={() => void handleActivate(s.id)}>
-                      Open
-                    </button>
-                  )}
-                  <button type="button" onClick={() => void startEditAccounts(s)}>
-                    Edit
-                  </button>
-                  <button type="button" onClick={() => void handleDelete(s.id)}>
-                    Delete
-                  </button>
-                </div>
-                {editingId === s.id && (
-                  <div className="account-edit-panel">
-                    <h4>{`Edit accounts (max ${MAX_SESSION_ACCOUNTS})`}</h4>
-                    {editAccounts.map((a) => (
-                      <div className="account-card" key={a.accountId}>
-                        <div className="session-form-grid">
-                          <label>
-                            Name
-                            <input value={a.name} onChange={(e) => updateEditAccount(a.accountId, { name: e.target.value })} />
-                          </label>
-                          <label>
-                            Balance
-                            <input
-                              type="text"
-                              inputMode="decimal"
-                              value={editBalDraft[a.accountId] ?? String(a.balance)}
-                              onChange={(e) => setEditBalDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
-                              onBlur={() => {
-                                const raw = editBalDraft[a.accountId] ?? String(a.balance);
-                                const v = commitBalance(raw, a.balance);
-                                if (v == null) {
-                                  setEditBalDraft((d) => ({ ...d, [a.accountId]: String(a.balance) }));
-                                  return;
-                                }
-                                updateEditAccount(a.accountId, { balance: v });
-                                setEditBalDraft((d) => ({ ...d, [a.accountId]: String(v) }));
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                              }}
-                            />
-                          </label>
-                          <label>
-                            Currency
-                            <input value={a.currency} onChange={(e) => updateEditAccount(a.accountId, { currency: e.target.value })} />
-                          </label>
-                          <label>
-                            Leverage (1:N)
-                            <input
-                              type="text"
-                              inputMode="numeric"
-                              value={editLevDraft[a.accountId] ?? String(a.leverage)}
-                              onChange={(e) => setEditLevDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
-                              onBlur={() => {
-                                const raw = editLevDraft[a.accountId] ?? String(a.leverage);
-                                const v = commitLeverage(raw, a.leverage);
-                                if (v == null) {
-                                  setEditLevDraft((d) => ({ ...d, [a.accountId]: String(a.leverage) }));
-                                  return;
-                                }
-                                updateEditAccount(a.accountId, { leverage: v });
-                                setEditLevDraft((d) => ({ ...d, [a.accountId]: String(v) }));
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                              }}
-                            />
-                          </label>
-                          <label>
-                            Min Lot
-                            <input
-                              type="text"
-                              inputMode="decimal"
-                              value={editMinLotDraft[a.accountId] ?? String(a.minLot ?? 0.01)}
-                              onChange={(e) => setEditMinLotDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
-                              onBlur={() => {
-                                const raw = editMinLotDraft[a.accountId] ?? String(a.minLot ?? 0.01);
-                                const v = commitLot(raw, a.minLot ?? 0.01);
-                                if (v == null) {
-                                  setEditMinLotDraft((d) => ({ ...d, [a.accountId]: String(a.minLot ?? 0.01) }));
-                                  return;
-                                }
-                                updateEditAccount(a.accountId, { minLot: v });
-                                setEditMinLotDraft((d) => ({ ...d, [a.accountId]: String(v) }));
-                              }}
-                            />
-                          </label>
-                          <label>
-                            Max Lot
-                            <input
-                              type="text"
-                              inputMode="decimal"
-                              value={editMaxLotDraft[a.accountId] ?? String(a.maxLot ?? 100)}
-                              onChange={(e) => setEditMaxLotDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
-                              onBlur={() => {
-                                const raw = editMaxLotDraft[a.accountId] ?? String(a.maxLot ?? 100);
-                                const v = commitLot(raw, a.maxLot ?? 100);
-                                if (v == null) {
-                                  setEditMaxLotDraft((d) => ({ ...d, [a.accountId]: String(a.maxLot ?? 100) }));
-                                  return;
-                                }
-                                updateEditAccount(a.accountId, { maxLot: v });
-                                setEditMaxLotDraft((d) => ({ ...d, [a.accountId]: String(v) }));
-                              }}
-                            />
-                          </label>
-                          <label>
-                            Lot Step
-                            <input
-                              type="text"
-                              inputMode="decimal"
-                              value={editStepDraft[a.accountId] ?? String(a.lotStep ?? 0.01)}
-                              onChange={(e) => setEditStepDraft((d) => ({ ...d, [a.accountId]: e.target.value }))}
-                              onBlur={() => {
-                                const raw = editStepDraft[a.accountId] ?? String(a.lotStep ?? 0.01);
-                                const v = commitLot(raw, a.lotStep ?? 0.01);
-                                if (v == null) {
-                                  setEditStepDraft((d) => ({ ...d, [a.accountId]: String(a.lotStep ?? 0.01) }));
-                                  return;
-                                }
-                                updateEditAccount(a.accountId, { lotStep: v });
-                                setEditStepDraft((d) => ({ ...d, [a.accountId]: String(v) }));
-                              }}
-                            />
-                          </label>
-
-              <label>
-                Account Type
-                <select
-                  value={a.accountType || "personal"}
-                  onChange={(e) => setAccountType(a.accountId, e.target.value as "personal" | "prop", true)}
-                >
-                  <option value="personal">Personal</option>
-                  <option value="prop">Prop</option>
-                </select>
-              </label>
-              {(a.accountType || "personal") === "prop" && (
-                <div className="prop-rules-box">
-                  <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>PROP PROGRAM</div>
-                  <label>
-                    Prop Firm
-                    <input
-                      value={a.propFirmName || a.propProgram?.firmName || ""}
-                      onChange={(e) => {
-                        const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.balance);
-                        const next = { ...prog, firmName: e.target.value };
-                        updateEditAccount(a.accountId, {
-                          propFirmName: e.target.value,
-                          propProgram: next,
-                          propProgramId: next.id,
-                        });
-                      }}
-                    />
-                  </label>
-                  <label>
-                    Program
-                    <input
-                      value={a.propProgramName || a.propProgram?.programName || ""}
-                      onChange={(e) => {
-                        const prog = ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(a.balance);
-                        const next = { ...prog, programName: e.target.value };
-                        updateEditAccount(a.accountId, {
-                          propProgramName: e.target.value,
-                          propProgram: next,
-                          propProgramId: next.id,
-                        });
-                      }}
-                    />
-                  </label>
-                  <label>
-                    Phase
-                    <select
-                      value={a.activePropPhaseId || a.propProgram?.phases?.[0]?.id || ""}
-                      onChange={(e) => updateEditAccount(a.accountId, { activePropPhaseId: e.target.value })}
-                    >
-                      {(a.propProgram?.phases || ensurePropProgram({ ...a, accountType: "prop" })?.phases || []).map((ph) => (
-                        <option key={ph.id} value={ph.id}>{ph.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    type="button"
-                    className="btn-ghost"
-                    onClick={() => {
-                      const size = a.initialBalance || a.balance || 5000;
-                      const prog = normalizePropProgram(
-                        ensurePropProgram({ ...a, accountType: "prop" }) || defaultPropProgram(size),
-                        size
-                      );
-                      const n = prog.phases.length + 1;
-                      const ph = createIndependentPhase(n, size);
-                      const next = {
-                        ...prog,
-                        phases: [...prog.phases.map((p) => ({ ...p, rules: clonePropRules(p.rules) })), ph],
-                      };
-                      updateEditAccount(a.accountId, { propProgram: next, activePropPhaseId: ph.id });
-                    }}
-                  >
-                    + Phase
-                  </button>
-                  <div className="muted" style={{ fontSize: 11, margin: "6px 0 4px" }}>PROP RULES (active phase)</div>
-                  {(["accountSize", "profitTargetPct", "dailyLossLimitPct", "maxOverallLossPct", "minimumTradingDays", "consistencyPct", "leverage"] as const).map((field) => {
-                    const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id))
-                      || a.propProgram?.phases?.[0];
-                    const rules = phase?.rules || emptyPropRules(a.balance);
-                    const val = rules[field];
-                    const key = propRulesDraftKey(a.accountId, field, phase?.id);
-                    const label =
-                      field === "accountSize" ? "Account Size" :
-                      field === "profitTargetPct" ? "Profit Target %" :
-                      field === "dailyLossLimitPct" ? "Daily Loss Limit %" :
-                      field === "maxOverallLossPct" ? "Max Overall Loss %" :
-                      field === "minimumTradingDays" ? "Minimum Trading Days" :
-                      field === "consistencyPct" ? "Consistency %" :
-                      "Leverage (phase)";
-                    return (
-                      <label key={field}>
-                        {label}
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          value={propNumDraft[key] ?? (val != null ? String(val) : "")}
-                          onChange={(e) => setPropNumDraft((d) => ({ ...d, [key]: e.target.value }))}
-                          onBlur={(e) => {
-                            const raw = e.currentTarget.value;
-                            setPropNumDraft((d) => ({ ...d, [key]: raw }));
-                            if (raw.trim() === "") {
-                              if (field === "accountSize") {
-                                setPropNumDraft((d) => ({ ...d, [key]: val != null ? String(val) : "" }));
-                                return;
-                              }
-                              patchActivePhaseRules(a.accountId, { [field]: undefined }, true);
-                              return;
-                            }
-                            const n = Number(raw);
-                            if (!Number.isFinite(n) || n < 0) {
-                              setPropNumDraft((d) => ({ ...d, [key]: val != null ? String(val) : "" }));
-                              return;
-                            }
-                            patchActivePhaseRules(a.accountId, { [field]: n }, true);
-                            setPropNumDraft((d) => ({ ...d, [key]: String(n) }));
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                          }}
-                        />
-                      </label>
-                    );
-                  })}
-                  {(() => {
-                    const phase =
-                      (a.propProgram?.phases || []).find(
-                        (p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)
-                      ) || a.propProgram?.phases?.[0];
-                    const def = phase?.rules?.tradingDayDefinition || "fill_and_close";
-                    return (
-                      <label>
-                        Trading Day Definition
-                        <select
-                          value={def}
-                          onChange={(e) =>
-                            patchActivePhaseRules(
-                              a.accountId,
-                              {
-                                tradingDayDefinition: e.target.value as
-                                  | "fill_and_close"
-                                  | "any_fill"
-                                  | "any_close",
-                              },
-                              true
-                            )
-                          }
-                        >
-                          <option value="fill_and_close">Filled + Closed</option>
-                          <option value="any_fill">Any Filled Trade</option>
-                          <option value="any_close">Any Closed Trade</option>
-                        </select>
-                      </label>
-                    );
-                  })()}
-
-                  {(() => {
-                    const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
-                    const isFundedPhase = (phase?.type || "").toLowerCase() === "funded" || /funded/i.test(phase?.name || "");
-                    if (!isFundedPhase) {
-                      return (
-                        <p className="muted" style={{ fontSize: 11, margin: "8px 0 4px" }}>
-                          Payout rules apply on the Funded phase only — not required to pass challenge phases.
-                        </p>
-                      );
-                    }
-                    return null;
-                  })()}
-                  {(() => {
-                    const phase = (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id)) || a.propProgram?.phases?.[0];
-                    const isFundedPhase = (phase?.type || "").toLowerCase() === "funded" || /funded/i.test(phase?.name || "");
-                    if (!isFundedPhase) return null;
-                    const sch = normalizePayoutSchedule(phase?.rules?.payout || { mode: "on_demand" });
-                    const mode = sch.mode || "on_demand";
-                    const numField = (field: keyof PayoutSchedule, label: string) => {
-                      const key = propRulesDraftKey(a.accountId, `payout_${String(field)}`, phase?.id);
-                      const val = sch[field];
-                      return (
-                        <label key={String(field)}>
-                          {label}
-                          <input
-                            type="text"
-                            inputMode="decimal"
-                            value={propNumDraft[key] ?? (val != null && typeof val !== "boolean" ? String(val) : "")}
-                            onChange={(e) => setPropNumDraft((d) => ({ ...d, [key]: e.target.value }))}
-                            onBlur={(e) => {
-                              const raw = e.currentTarget.value;
-                              setPropNumDraft((d) => ({ ...d, [key]: raw }));
-                              if (raw.trim() === "") {
-                                patchActivePhasePayout(a.accountId, { [field]: undefined }, true);
-                                return;
-                              }
-                              const n = Number(raw);
-                              if (!Number.isFinite(n) || n < 0) {
-                                setPropNumDraft((d) => ({ ...d, [key]: val != null ? String(val) : "" }));
-                                return;
-                              }
-                              patchActivePhasePayout(a.accountId, { [field]: n } as Partial<PayoutSchedule>, true);
-                              setPropNumDraft((d) => ({ ...d, [key]: String(n) }));
-                            }}
-                            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                          />
-                        </label>
-                      );
-                    };
-                    return (
-                      <>
-                        <label>
-                          Payout Mode
-                          <select
-                            value={mode}
-                            onChange={(e) =>
-                              patchActivePhasePayout(a.accountId, { mode: e.target.value as PayoutScheduleMode }, true)
-                            }
-                          >
-                            <option value="on_demand">On Demand</option>
-                            <option value="weekly">Weekly</option>
-                            <option value="biweekly">Bi-Weekly</option>
-                            <option value="monthly">Monthly</option>
-                            <option value="interval">Interval</option>
-                          </select>
-                        </label>
-                        {(mode === "weekly" || mode === "biweekly") && (
-                          <label>
-                            Payout Day
-                            <select
-                              value={sch.weekday != null ? String(sch.weekday) : "5"}
-                              onChange={(e) =>
-                                patchActivePhasePayout(a.accountId, { weekday: Number(e.target.value) }, true)
-                              }
-                            >
-                              <option value="1">Monday</option>
-                              <option value="2">Tuesday</option>
-                              <option value="3">Wednesday</option>
-                              <option value="4">Thursday</option>
-                              <option value="5">Friday</option>
-                              <option value="6">Saturday</option>
-                              <option value="0">Sunday</option>
-                            </select>
-                          </label>
-                        )}
-                        {mode === "biweekly" && (
-                          <label>
-                            Anchor Date (YYYY-MM-DD)
-                            <input
-                              type="date"
-                              value={
-                                sch.anchorDate
-                                  ? new Date(sch.anchorDate * 1000).toISOString().slice(0, 10)
-                                  : ""
-                              }
-                              onChange={(e) => {
-                                const v = e.target.value;
-                                if (!v) {
-                                  patchActivePhasePayout(a.accountId, { anchorDate: undefined, anchor: "fixed_date" }, true);
-                                  return;
-                                }
-                                const sec = Math.floor(new Date(v + "T00:00:00Z").getTime() / 1000);
-                                patchActivePhasePayout(a.accountId, { anchorDate: sec, anchor: "fixed_date" }, true);
-                              }}
-                            />
-                          </label>
-                        )}
-                        {mode === "monthly" && numField("monthDay", "Day of Month (1–31)")}
-                        {mode === "interval" && (
-                          <>
-                            {numField("intervalDays", "Interval Days")}
-                            <label>
-                              Count From
-                              <select
-                                value={sch.anchor || "funded_start"}
-                                onChange={(e) =>
-                                  patchActivePhasePayout(
-                                    a.accountId,
-                                    { anchor: e.target.value as PayoutSchedule["anchor"] },
-                                    false
-                                  )
-                                }
-                              >
-                                <option value="funded_start">Funded Start</option>
-                                <option value="first_funded_trade">First Funded Trade</option>
-                                <option value="last_payout">Last Payout</option>
-                                <option value="fixed_date">Fixed Date</option>
-                              </select>
-                            </label>
-                          </>
-                        )}
-                        {numField("firstPayoutDelayDays", "First Payout Delay (days)")}
-                        {numField("minimumTradingDays", "Min Trading Days (payout)")}
-                        {numField("minimumPayoutPct", "Minimum Payout %")}
-                        {numField("minimumPayoutAmount", "Minimum Payout Amount")}
-                        {numField("profitSplitPct", "Profit Split % (trader)")}
-                        {numField("fixedPayoutAmount", "Fixed Payout Amount (optional)")}
-                        {numField("processingDays", "Processing Days")}
-                        {numField("cooldownDays", "Cooldown Days")}
-                        <label>
-                          Post-Payout Behavior
-                          <select
-                            value={sch.postPayoutBehavior || "no_reset"}
-                            onChange={(e) =>
-                              patchActivePhasePayout(
-                                a.accountId,
-                                {
-                                  postPayoutBehavior: e.target.value as
-                                    | "no_reset"
-                                    | "reset_equity_to_baseline"
-                                    | "reset_profit_tracking",
-                                },
-                                true
-                              )
-                            }
-                          >
-                            <option value="no_reset">No Reset (deduct only)</option>
-                            <option value="reset_equity_to_baseline">Reset Equity to Baseline</option>
-                            <option value="reset_profit_tracking">Reset Profit Tracking Only</option>
-                          </select>
-                        </label>
-                      </>
-                    );
-                  })()}
-                  <label>
-                    News Trading
-                    <select
-                      value={(
-                        (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id))?.rules.newsTradingAllowed
-                      ) ? "1" : "0"}
-                      onChange={(e) =>
-                        patchActivePhaseRules(a.accountId, { newsTradingAllowed: e.target.value === "1" }, true)
-                      }
-                    >
-                      <option value="1">Allowed</option>
-                      <option value="0">Not allowed</option>
-                    </select>
-                  </label>
-                  <label>
-                    Weekend Holding
-                    <select
-                      value={(
-                        (a.propProgram?.phases || []).find((p) => p.id === (a.activePropPhaseId || a.propProgram?.phases?.[0]?.id))?.rules.weekendHoldingAllowed
-                      ) ? "1" : "0"}
-                      onChange={(e) =>
-                        patchActivePhaseRules(a.accountId, { weekendHoldingAllowed: e.target.value === "1" }, true)
-                      }
-                    >
-                      <option value="1">Allowed</option>
-                      <option value="0">Not allowed</option>
-                    </select>
-                  </label>
-                </div>
-              )}
-                          {(a.accountType || "personal") === "prop" && (
-                            <PropAccountStatus
-                              account={a}
-                              trades={statusTrades}
-                              replayTime={statusReplayTime}
-                              onAccountChange={(next) => updateEditAccount(next.accountId, next)}
-                            />
-                          )}
-                          <label>
-                            Enabled
-                            <select
-                              value={a.enabled !== false ? "1" : "0"}
-                              onChange={(e) => updateEditAccount(a.accountId, { enabled: e.target.value === "1" })}
-                            >
-                              <option value="1">Yes</option>
-                              <option value="0">No</option>
-                            </select>
-                          </label>
-                        </div>
-                        <div className="session-actions">
-                          <label>
-                            <input
-                              type="radio"
-                              name={`edit-active-${s.id}`}
-                              checked={editActiveId === a.accountId}
-                              onChange={() => setEditActiveId(a.accountId)}
-                            />{" "}
-                            Active
-                          </label>
-                          {editAccounts.length > 1 && (
-                            <button type="button" onClick={() => removeEditAccount(a.accountId)}>
-                              Remove
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                    {editAccounts.length < MAX_SESSION_ACCOUNTS && (
-                      <button type="button" onClick={addEditAccount}>
-                        + Add account
-                      </button>
-                    )}
-                    <div className="session-actions">
-                      <button type="button" className="on" onClick={() => void saveEditAccounts()}>
-                        Save accounts
-                      </button>
-                      <button type="button" onClick={() => setEditingId(null)}>
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-        </div>
-      )}
     </section>
   );
 }
