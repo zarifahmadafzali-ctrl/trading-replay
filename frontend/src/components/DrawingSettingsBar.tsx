@@ -284,7 +284,7 @@ export function DrawingSettingsBar(props: DrawingSettingsBarProps) {
         </div>
       )}
 
-      {(isTrend || k === "rectangle" || k === "text") && (
+      {(isTrend || k === "rectangle" || k === "measure" || k === "fib" || k === "channel" || k === "text" || k === "hline" || k === "vline") && (
         <div style={{ position: "relative" }}>
           <Btn title="Text" active={open === "text" || !!shape.text} onClick={() => setOpen(open === "text" ? null : "text")}>T</Btn>
           {open === "text" && (
@@ -323,7 +323,7 @@ export function DrawingSettingsBar(props: DrawingSettingsBarProps) {
         <Btn title="Templates / save appearance" active={open === "template"} onClick={() => setOpen(open === "template" ? null : "template")}>★</Btn>
         {open === "template" && (
           <div style={{ ...POP, minWidth: 220, right: 0, left: "auto" }}>
-            <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 6 }}>Appearance only (not size/position)</div>
+            <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 6 }}>Saves color, style, opacity, text &amp; label options — not size/position of the drawing</div>
             {props.onSaveAsDefault && (
               <button type="button" onClick={() => { props.onSaveAsDefault?.(); setOpen(null); }}
                 style={{ width: "100%", textAlign: "left", padding: "6px 8px", marginBottom: 4, background: "#2a2e39", border: "1px solid #363a45", borderRadius: 4, color: "#d1d4dc", cursor: "pointer" }}>

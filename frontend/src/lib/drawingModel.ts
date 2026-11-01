@@ -513,7 +513,7 @@ export function shapeBoundsPx(s: DrawingShape, project: Project, bounds: Bounds)
 
 /* ───────────── creation + per-tool defaults ───────────── */
 
-const GEOMETRY_KEYS = new Set(["id", "kind", "a", "b", "c", "time", "price", "text"]); // text content excluded; appearance-only templates
+const GEOMETRY_KEYS = new Set(["id", "kind", "a", "b", "c", "time", "price"]); // geometry only — text/style ARE part of appearance templates
 const DEFAULTS_KEY = "tr-draw-defaults-v2";
 
 export function loadToolDefaults(kind: DrawingKind): Partial<DrawingShape> {
@@ -537,7 +537,11 @@ export function saveToolDefaults(kind: DrawingKind, shape: DrawingShape): void {
   }
 }
 
-/** Appearance-only fields (no geometry/size). Used for defaults + named templates. */
+/** Appearance fields for defaults + named templates.
+ * Includes: color, strokeOpacity, lineWidth, lineStyle, fill*, text, textColor, fontSize, textAlign,
+ * extend flags, arrows, fib levels, etc.
+ * Excludes geometry only: id, kind, a/b/c anchors, time, price (size/position of the drawn object).
+ */
 export function extractAppearance(shape: DrawingShape): Record<string, unknown> {
   const clean: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(shape)) {

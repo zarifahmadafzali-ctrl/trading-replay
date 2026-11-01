@@ -192,6 +192,14 @@ export function drawShape(ctx: CanvasRenderingContext2D, shape: DrawingShape, en
       const l2 = `${ms.bars != null ? `${ms.bars >= 0 ? "" : "-"}${Math.abs(ms.bars)} bars, ` : ""}${ms.durationSec < 0 ? "-" : ""}${formatDuration(ms.durationSec)}`;
       const above = ms.up;
       labelBox(ctx, [l1, l2], mx, above ? y0 - 44 : y1 + 8, withAlpha(base, 0.95), "#ffffff", bounds);
+      if (s.text) {
+        const ta = textAnchorInRect(s.textAlign, x0, y0, x1, y1);
+        ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
+        ctx.fillStyle = s.textColor || base;
+        ctx.textAlign = ta.textAlign;
+        ctx.textBaseline = ta.textBaseline;
+        ctx.fillText(s.text, ta.x, ta.y);
+      }
       if (selected) { handle(ctx, A, base); handle(ctx, B, base); }
       return true;
     }
@@ -230,6 +238,14 @@ export function drawShape(ctx: CanvasRenderingContext2D, shape: DrawingShape, en
         applyLine(ctx, "#787B86", 1, "dashed");
         seg(ctx, A, B);
       }
+      if (s.text) {
+        const mid = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 };
+        ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
+        ctx.fillStyle = s.textColor || st.color;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(s.text, mid.x, mid.y - 6);
+      }
       if (selected) { handle(ctx, A, "#787B86"); handle(ctx, B, "#787B86"); }
       return true;
     }
@@ -261,6 +277,14 @@ export function drawShape(ctx: CanvasRenderingContext2D, shape: DrawingShape, en
         const mid = clipLineToRect(M1, M2, bounds, eL, eR);
         applyLine(ctx, st.color, 1, "dashed");
         if (mid) seg(ctx, mid[0], mid[1]);
+      }
+      if (s.text) {
+        const mid = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 };
+        ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
+        ctx.fillStyle = s.textColor || st.color;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(s.text, mid.x, mid.y - 8);
       }
       if (selected) { handle(ctx, A, st.color); handle(ctx, B, st.color); handle(ctx, C, st.color); }
       return true;
