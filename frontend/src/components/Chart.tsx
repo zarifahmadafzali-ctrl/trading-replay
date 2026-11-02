@@ -618,8 +618,11 @@ export function Chart({
       screenshot,
       entryScreenshot: s.entryScreenshot,
     };
-    setShapes(shapesRef.current.filter((x) => x.id !== id));
+    const next = shapesRef.current.filter((x) => x.id !== id);
+    shapesRef.current = next;
+    setShapes(next);
     onPositionClosedRef.current?.(closed);
+    scheduleRedraw();
     window.dispatchEvent(
       new CustomEvent("tr-workspace-event", {
         detail: {
@@ -2409,8 +2412,13 @@ export function Chart({
     }
 
     if (!mutated && !closed.length) return;
+    // Sync ref IMMEDIATELY so a second effect tick (fast replay / offline catch-up)
+    // cannot re-see the just-closed position and leave it drawn until the next
+    // parent render. Parent state still owns the canonical list via onShapesChange.
+    shapesRef.current = working;
     onShapesChangeRef.current(working);
     for (const c of closed) onPositionClosedRef.current?.(c);
+    scheduleRedraw();
     if (closed.length) {
       setHint(
         closed
