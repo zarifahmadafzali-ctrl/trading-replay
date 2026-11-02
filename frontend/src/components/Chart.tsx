@@ -381,6 +381,7 @@ export function Chart({
   onDrawToolChangeRef.current = onDrawToolChange;
   const onPositionClosedRef = useRef(onPositionClosed);
   onPositionClosedRef.current = onPositionClosed;
+  const canFillRef = useRef<((s: PositionShape, bar: { time: number }) => boolean) | null>(null);
   canFillRef.current = canFillPosition ?? null;
   const captureRiskSnapshotRef = useRef(captureRiskSnapshot);
   captureRiskSnapshotRef.current = captureRiskSnapshot;
@@ -389,7 +390,6 @@ export function Chart({
   // Screen-space hit area for the on-canvas "×" delete button drawn next to
   // whichever trendline/rectangle/measure shape is currently selected.
   const capturingRef = useRef(false);
-  const canFillRef = useRef<((s: PositionShape, bar: { time: number }) => boolean) | null>(null);
   const downRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const doubleTapRef = useRef<{ x: number; y: number; time: number } | null>(null);
 
@@ -1030,7 +1030,7 @@ export function Chart({
         const handles = handlesRef.current;
         if (!handles) continue;
         const toX = (time: number) => {
-          const x = handles.candles.timeToCoordinate(time as never);
+          const x = handles.chart.timeScale().timeToCoordinate(time as UTCTimestamp);
           return x == null || !Number.isFinite(x) ? null : x;
         };
         const toY = (price: number) => {
