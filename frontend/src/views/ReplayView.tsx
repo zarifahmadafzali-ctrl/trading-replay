@@ -1381,13 +1381,17 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         const levSnap = Math.max(1, Number((s.riskSnapshot as any)?.leverage) || lev);
         usedMargin += (s.entry.price * (instrument.contractSize || 1) * lot) / levSnap;
       }
-      const mode = account.riskMode || "percent_equity";
+      // v3.47: per-position risk frozen on draft beats live order-panel values
+      const posRisk = (pos as { risk?: { mode?: string; percent?: number; amount?: number; lot?: number } }).risk;
+      const mode = (posRisk?.mode as string) || orderRiskMode || account.riskMode || "percent_equity";
       const pct =
-        mode === "percent_equity"
-          ? account.riskPercent != null && Number.isFinite(account.riskPercent)
-            ? account.riskPercent
-            : riskPercent
-          : riskPercent;
+        posRisk?.percent != null && Number.isFinite(posRisk.percent)
+          ? posRisk.percent
+          : mode === "percent_equity" || mode === "percent_balance"
+            ? account.riskPercent != null && Number.isFinite(account.riskPercent)
+              ? account.riskPercent
+              : riskPercent
+            : riskPercent;
       const result = calculateRisk({
         account: accountForRisk,
         instrument,
@@ -1397,14 +1401,14 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         takeProfitPrice: pos.takeProfit.price,
         side: pos.side,
         usedMargin,
-        riskMode: orderRiskMode || mode,
+        riskMode: (mode as "percent_equity" | "percent_balance" | "fixed_money" | "fixed_lot"),
         fixedRiskAmount:
-          orderRiskMode === "fixed_money"
-            ? Number(fixedRiskInput) || account.fixedRiskAmount
+          mode === "fixed_money"
+            ? (posRisk?.amount != null ? posRisk.amount : Number(fixedRiskInput) || account.fixedRiskAmount)
             : account.fixedRiskAmount,
         fixedLot:
-          orderRiskMode === "fixed_lot"
-            ? Number(fixedLotInput) || account.fixedLot
+          mode === "fixed_lot"
+            ? (posRisk?.lot != null ? posRisk.lot : Number(fixedLotInput) || account.fixedLot)
             : account.fixedLot,
       });
       const propSnap = buildPropRuleSnapshot(account);
@@ -2369,6 +2373,23 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           captureRiskSnapshot={captureRiskSnapshot}
           activeAccountId={sessionMeta?.activeAccountId ?? null}
           indicators={indicators}
+          barSeconds={timeframeSeconds}
+          getDraftRisk={() => ({
+            mode: orderRiskMode,
+            percent: riskPercent,
+            amount: Number(fixedRiskInput) || undefined,
+            lot: Number(fixedLotInput) || undefined,
+          })}
+          canFillPosition={(pos, bar) => {
+            if (!sessionMeta) return true;
+            const full = ensureSessionAccounts(sessionMeta);
+            const acc =
+              (pos.accountId
+                ? full.accounts?.find((a) => a.accountId === pos.accountId)
+                : null) || getActiveAccount(full);
+            if (!acc || (acc.accountType || "personal") !== "prop") return true;
+            return canOpenNewTrades(acc, acc.lifecycleEvents, bar.time);
+          }}
         />
       </div>
 

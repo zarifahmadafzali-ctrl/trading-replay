@@ -1,12 +1,13 @@
 {
   "name": "trading-replay-pwa",
-  "version": "3.46.1",
+  "version": "3.47.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test:position": "node scripts/run-position-tests.mjs",
     "test:risk-model": "node scripts/test-risk-model.mjs",
     "test:prop-rules": "node scripts/test-prop-rules.mjs",
     "test:lifecycle": "node scripts/test-lifecycle.mjs",

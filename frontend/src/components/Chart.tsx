@@ -38,7 +38,29 @@ import {
 } from "../lib/drawingModel";
 import { drawShape } from "../lib/drawingRender";
 import { DrawingSettingsBar } from "./DrawingSettingsBar";
+import { PositionSettingsBar } from "./PositionSettingsBar";
 import { APP_VERSION } from "../lib/storageVersions";
+import {
+  normalizePosition,
+  draftBoxExtras,
+  validatePosition,
+  hasErrors,
+  prepareConfirm,
+  resolveStyle,
+  loadPositionDefaults,
+  savePositionDefaults,
+  buildPositionTexts,
+  compactCenter,
+  positionBox,
+  hitTestPosition,
+  applyPositionDrag,
+  tickFromDecimals,
+  type PositionRiskInput,
+  type PositionStyle,
+  type PositionPart,
+} from "../lib/positionModel";
+import { runPositionBars, manualClose as engineManualClose } from "../lib/positionEngine";
+import { drawPosition } from "../lib/positionRender";
 
 export type IndicatorKind = "sma" | "ema" | "vwap" | "rsi";
 export type IndicatorSpec = { id: string; kind: IndicatorKind; period?: number; color: string };
@@ -107,6 +129,14 @@ export type PositionShape = {
   riskSnapshot?: Record<string, unknown>;
   /** Chart PNG at the moment the position became open (entry/confirm). */
   entryScreenshot?: string;
+  /** v3.47 TradingView-style box right edge (unix sec). Absent = legacy full-width lines. */
+  rightTime?: number;
+  /** Per-position style overrides (colors, fonts, flags). */
+  style?: Partial<PositionStyle>;
+  /** Risk inputs frozen on this order at draft time (panel edits later must not change them). */
+  risk?: PositionRiskInput;
+  /** When true, only selection is allowed — no drag. */
+  locked?: boolean;
 };
 
 export type ClosedPosition = {
@@ -278,6 +308,9 @@ export function Chart({
   onSelectedShapeId,
   onDrawToolChange,
   onPositionClosed,
+  canFillPosition,
+  getDraftRisk,
+  barSeconds = 60,
   captureRiskSnapshot,
   activeAccountId,
   indicators = [],
@@ -302,6 +335,12 @@ export function Chart({
   /** Parent can reset the active tool (e.g. back to crosshair after placing a line). */
   onDrawToolChange?: (tool: DrawTool) => void;
   onPositionClosed?: (closed: ClosedPosition) => void;
+  /** Return false to cancel a pending fill (e.g. prop account blocked). */
+  canFillPosition?: (pos: PositionShape, bar: { time: number }) => boolean;
+  /** Copy order-panel risk into a new draft so later panel edits do not affect it. */
+  getDraftRisk?: () => PositionRiskInput | undefined;
+  /** Display timeframe seconds — used for default box width. */
+  barSeconds?: number;
   /** Build immutable risk snapshot at fill time (v3.16.1). */
   captureRiskSnapshot?: (pos: PositionShape) => Record<string, unknown> | null;
   /** Active account when drafting (stamped onto position; not changed by later switches). */
@@ -342,12 +381,15 @@ export function Chart({
   onDrawToolChangeRef.current = onDrawToolChange;
   const onPositionClosedRef = useRef(onPositionClosed);
   onPositionClosedRef.current = onPositionClosed;
+  canFillRef.current = canFillPosition ?? null;
   const captureRiskSnapshotRef = useRef(captureRiskSnapshot);
   captureRiskSnapshotRef.current = captureRiskSnapshot;
   const activeAccountIdRef = useRef(activeAccountId);
   activeAccountIdRef.current = activeAccountId;
   // Screen-space hit area for the on-canvas "×" delete button drawn next to
   // whichever trendline/rectangle/measure shape is currently selected.
+  const capturingRef = useRef(false);
+  const canFillRef = useRef<((s: PositionShape, bar: { time: number }) => boolean) | null>(null);
   const downRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const doubleTapRef = useRef<{ x: number; y: number; time: number } | null>(null);
 
@@ -360,7 +402,11 @@ export function Chart({
   } | null>(null);
   const [hint, setHint] = useState("");
 
-  shapesRef.current = shapes.map((s) => (s.kind === "position" ? s : (normalizeShape(s as DrawingShape) as Shape)));
+  shapesRef.current = shapes.map((s) =>
+    s.kind === "position"
+      ? (normalizePosition(s as PositionShape) as Shape)
+      : (normalizeShape(s as DrawingShape) as Shape)
+  );
   drawToolRef.current = drawTool;
   orderTypeRef.current = orderType;
   marketRef.current = { price: marketPrice, time: marketTime };
@@ -547,6 +593,8 @@ export function Chart({
       return dataUrl;
     } catch {
       return undefined;
+    } finally {
+      capturingRef.current = false;
     }
   }
 
@@ -978,201 +1026,77 @@ export function Chart({
         ctx.beginPath(); ctx.arc(A.x, A.y, r, 0, Math.PI * 2); ctx.fill();
         ctx.beginPath(); ctx.arc(B.x, B.y, r, 0, Math.PI * 2); ctx.fill();
       } else if (s.kind === "position") {
-        // Position entry time is a true 1-second replay timestamp. On a 5m/15m
-        // display there may be no candle with that exact timestamp, so resolving
-        // entry through timeToCoordinate() can make the whole position disappear.
-        // Positions are horizontal, therefore only the price coordinate is needed.
-        const entryY = handlesRef.current!.candles.priceToCoordinate(s.entry.price);
-        const stopY = handlesRef.current!.candles.priceToCoordinate(s.stop.price);
-        const tpY = handlesRef.current!.candles.priceToCoordinate(s.takeProfit.price);
-        if (entryY == null) continue;
-        const E = { x: 0, y: entryY };
-        const S = stopY == null ? null : { x: 0, y: stopY };
-        const T = tpY == null ? null : { x: 0, y: tpY };
-        const long = s.side === "long";
-        const entryColor = long ? "#26a69a" : "#ef5350";
-        const draft = s.status === "draft";
-        const pending = s.status === "pending";
-        const isStopLimit =
-          s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit";
-
-        // Protective SL/TP zone only once filled (open)
-        if (S && T && s.status === "open") {
-          ctx.fillStyle = long ? "rgba(38,166,154,0.10)" : "rgba(239,83,80,0.10)";
-          ctx.fillRect(0, Math.min(E.y, T.y), w, Math.abs(T.y - E.y));
-          ctx.fillStyle = "rgba(245,158,11,0.12)";
-          ctx.fillRect(0, Math.min(E.y, S.y), w, Math.abs(S.y - E.y));
-        }
-
-        const hLine = (y: number, color: string, dash: number[], width = 1.5) => {
-          ctx.strokeStyle = color;
-          ctx.lineWidth = draft ? 2 : width;
-          ctx.setLineDash(dash);
-          ctx.beginPath();
-          ctx.moveTo(0, y);
-          ctx.lineTo(w, y);
-          ctx.stroke();
-          ctx.setLineDash([]);
+        // v3.47 — single painter (positionRender). Old full-width line branch removed.
+        const handles = handlesRef.current;
+        if (!handles) continue;
+        const toX = (time: number) => {
+          const x = handles.candles.timeToCoordinate(time as never);
+          return x == null || !Number.isFinite(x) ? null : x;
         };
-
-        // Stop-Limit: draw distinct stop + limit lines while unfilled
-        if (isStopLimit && s.status !== "open" && s.stopPrice != null && s.limitPrice != null) {
-          const sy = handlesRef.current!.candles.priceToCoordinate(s.stopPrice);
-          const ly = handlesRef.current!.candles.priceToCoordinate(s.limitPrice);
-          if (sy != null) {
-            hLine(sy, "#f97316", [2, 3], 1.5);
-            ctx.fillStyle = "#f97316";
-            ctx.font = "11px system-ui, sans-serif";
-            const trig = s.stopTriggered ? "STOP HIT → wait limit" : "STOP";
-            ctx.fillText(`${trig} ${s.stopPrice.toFixed(2)}`, 8, Math.max(14, sy - 8));
-            // Drag handle for independent stopPrice (v3.15.2.5)
-            if (draft || pending) {
-              ctx.fillStyle = "#f97316";
-              ctx.fillRect(w - 28, sy - 10, 20, 20);
-            }
-          }
-          if (ly != null) {
-            hLine(ly, entryColor, [6, 4], 1.5);
-            ctx.fillStyle = entryColor;
-            ctx.fillText(`LIMIT ${s.limitPrice.toFixed(2)}`, 8, Math.max(14, ly - 8));
-            if (draft || pending) {
-              ctx.fillStyle = entryColor;
-              ctx.fillRect(w - 28, ly - 10, 20, 20);
-            }
-          }
-        } else {
-          // Entry: solid only when filled open; dashed for draft/pending
-          const entryDash = s.status === "open" ? [] : [6, 4];
-          hLine(E.y, entryColor, entryDash);
-        }
-
-        if (S && (s.status === "open" || draft)) {
-          hLine(S.y, "#f59e0b", [4, 4]);
-          ctx.fillStyle = "#f59e0b";
-          ctx.fillRect(w - 28, S.y - 10, 20, 20);
-          const slDist = Math.abs(s.entry.price - s.stop.price);
-          ctx.font = "10px system-ui, sans-serif";
-          ctx.fillText(`SL ${slDist.toFixed(1)} pts`, 8, Math.min(h - 4, S.y + 14));
-        }
-        if (T && (s.status === "open" || draft)) {
-          hLine(T.y, "#38bdf8", [4, 4]);
-          ctx.fillStyle = "#38bdf8";
-          ctx.fillRect(w - 28, T.y - 10, 20, 20);
-          const tpDist = Math.abs(s.takeProfit.price - s.entry.price);
-          ctx.font = "10px system-ui, sans-serif";
-          ctx.fillText(`TP ${tpDist.toFixed(1)} pts`, 8, Math.max(14, T.y - 8));
-        }
-        // Entry handle editable while draft or pending (non-market)
-        if ((draft || pending) && s.orderType !== "market") {
-          ctx.fillStyle = entryColor;
-          ctx.fillRect(w - 28, E.y - 10, 20, 20);
-        }
-
-        // Live metrics from centralized risk model (draft / pending / open)
-        const liveSnap = captureRiskSnapshotRef.current?.(s) as
+        const toY = (price: number) => {
+          const y = handles.candles.priceToCoordinate(price);
+          return y == null || !Number.isFinite(y) ? null : y;
+        };
+        const box = positionBox(s as never, {
+          xOf: (tm: number) => toX(tm),
+          yOf: (pr: number) => toY(pr),
+          w,
+        });
+        if (!box) continue;
+        const liveSnap = captureRiskSnapshotRef.current?.(s as PositionShape) as
           | {
-              actualRiskAmount?: number | null;
-              actualRiskPercent?: number | null;
-              potentialProfit?: number | null;
-              actualRewardPercent?: number | null;
               rr?: number | null;
+              actualRiskAmount?: number | null;
+              potentialProfit?: number | null;
               finalLot?: number | null;
+              actualRiskPercent?: number | null;
+              actualRewardPercent?: number | null;
             }
           | null
           | undefined;
-        const rr =
-          liveSnap?.rr != null && Number.isFinite(liveSnap.rr)
-            ? liveSnap.rr
-            : riskReward(s.entry.price, s.stop.price, s.takeProfit.price);
-        const rrText = rr != null ? `R:R ${rr.toFixed(2)}` : "R:R —";
-        const st =
-          s.status === "draft" ? "DRAFT" : s.status === "pending" ? "PENDING" : "OPEN";
-        let liveText = "";
+        let openPnL: number | null = null;
         if (s.status === "open" && marketRef.current.price != null) {
           const px = marketRef.current.price;
-          const live = long ? px - s.entry.price : s.entry.price - px;
-          liveText = ` · ${live >= 0 ? "+" : ""}${live.toFixed(2)}`;
+          openPnL = s.side === "long" ? px - s.entry.price : s.entry.price - px;
+          // Prefer currency PnL when lot is known
+          if (liveSnap?.finalLot != null && Number.isFinite(liveSnap.finalLot)) {
+            // leave openPnL as points; texts layer can show risk amounts separately
+          }
         }
-        if (liveSnap?.finalLot != null) liveText += ` · L${liveSnap.finalLot}`;
-
-        // Collision-aware label Y positions (left side of chart)
-        const labels: { key: string; y: number; text: string; color: string; prio: number }[] = [];
-        labels.push({
-          key: "entry",
-          y: E.y,
-          text: `${st} ${s.side.toUpperCase()} ${s.orderType} @ ${s.entry.price.toFixed(2)}${liveText}`,
-          color: entryColor,
-          prio: 1,
+        const priceDecimals = 2;
+        const ctxT = {
+          priceDecimals,
+          tick: tickFromDecimals(priceDecimals),
+          lot: liveSnap?.finalLot ?? null,
+          riskAmount: liveSnap?.actualRiskAmount ?? null,
+          rewardAmount: liveSnap?.potentialProfit ?? null,
+          openPnL,
+        };
+        const issues = validatePosition(s as never, marketRef.current.price);
+        const isStopLimit =
+          s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit";
+        drawPosition(ctx, s as never, {
+          box,
+          w,
+          h,
+          style: resolveStyle(s as never, loadPositionDefaults()),
+          texts: buildPositionTexts(s as never, ctxT),
+          compactCenter: compactCenter(s as never, ctxT),
+          selected: selectedShapeIdRef.current === s.id,
+          warning: hasErrors(issues) ? issues[0].message : null,
+          stopTriggerY:
+            isStopLimit && s.status !== "open" && s.stopPrice != null
+              ? toY(s.stopPrice)
+              : null,
+          limitY:
+            isStopLimit && s.status !== "open" && s.limitPrice != null
+              ? toY(s.limitPrice)
+              : null,
+          priceDecimals,
+          forScreenshot: capturingRef.current,
         });
-        if (S && (s.status === "open" || draft || pending)) {
-          let slText = `SL ${s.stop.price.toFixed(2)}`;
-          if (liveSnap?.actualRiskAmount != null) {
-            slText += ` -$${Number(liveSnap.actualRiskAmount).toFixed(2)}`;
-          }
-          if (liveSnap?.actualRiskPercent != null) {
-            slText += ` -${Number(liveSnap.actualRiskPercent).toFixed(2)}%`;
-          }
-          labels.push({
-            key: "sl",
-            y: S.y,
-            text: slText,
-            color: "#f59e0b",
-            prio: 2,
-          });
-        }
-        if (T && (s.status === "open" || draft || pending)) {
-          let tpText = `TP ${s.takeProfit.price.toFixed(2)}`;
-          if (liveSnap?.potentialProfit != null) {
-            tpText += ` +$${Number(liveSnap.potentialProfit).toFixed(2)}`;
-          }
-          if (liveSnap?.actualRewardPercent != null) {
-            tpText += ` +${Number(liveSnap.actualRewardPercent).toFixed(2)}%`;
-          }
-          labels.push({
-            key: "tp",
-            y: T.y,
-            text: tpText,
-            color: "#38bdf8",
-            prio: 3,
-          });
-        }
-        if (s.status === "open" || draft || pending) {
-          const rrY =
-            T && E ? (E.y + T.y) / 2 : E.y - 18;
-          labels.push({
-            key: "rr",
-            y: rrY,
-            text: rrText,
-            color: "#a78bfa",
-            prio: 4,
-          });
-        }
-        // Sort by y, then separate vertically if closer than 14px
-        labels.sort((a, b) => a.y - b.y || a.prio - b.prio);
-        const minGap = 14;
-        for (let i = 1; i < labels.length; i++) {
-          if (labels[i].y - labels[i - 1].y < minGap) {
-            labels[i].y = labels[i - 1].y + minGap;
-          }
-        }
-        // Clamp into chart
-        for (const lb of labels) {
-          lb.y = Math.max(12, Math.min(h - 6, lb.y));
-        }
-        // Second pass bottom-up if clamped caused overlap
-        for (let i = labels.length - 2; i >= 0; i--) {
-          if (labels[i + 1].y - labels[i].y < minGap) {
-            labels[i].y = Math.max(12, labels[i + 1].y - minGap);
-          }
-        }
-        ctx.font = "11px system-ui, sans-serif";
-        for (const lb of labels) {
-          ctx.fillStyle = lb.color;
-          ctx.fillText(lb.text, 8, lb.y);
-        }
       }
     }
-
     // Live placement preview: same visual language as finished shapes (8 rect handles, etc.)
     if (stepsRef.current.length === 1 && crosshairRef.current) {
       const tool = drawToolRef.current;
@@ -1510,25 +1434,37 @@ export function Chart({
       );
       return;
     }
-    const price = candles.coordinateToPrice(y);
-    if (price == null) return;
     const s = shapesRef.current.find((x) => x.kind === "position" && x.id === d.id) as
       | PositionShape
       | undefined;
     if (!s) return;
-    if (d.field === "stop") updatePosition(d.id, { stop: { ...s.stop, price } });
-    else if (d.field === "takeProfit") updatePosition(d.id, { takeProfit: { ...s.takeProfit, price } });
-    else if (d.field === "stopTrigger") {
-      // Independent Stop-Limit trigger — does not move limit/entry or protective SL.
-      updatePosition(d.id, { stopPrice: price });
-    } else if (d.field === "entry") {
-      // For stop-limit drafts/pending, entry line tracks the limit price only.
-      const patch: Partial<PositionShape> = { entry: { ...s.entry, price } };
-      if (s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit") {
-        patch.limitPrice = price;
+    if (s.locked) return;
+    const pt = fromXY(x, y);
+    if (!pt) {
+      const price = candles.coordinateToPrice(y);
+      if (price == null) return;
+      // Fallback price-only drag for legacy fields
+      if (d.field === "stop") updatePosition(d.id, { stop: { ...s.stop, price } });
+      else if (d.field === "takeProfit") updatePosition(d.id, { takeProfit: { ...s.takeProfit, price } });
+      else if (d.field === "stopTrigger") updatePosition(d.id, { stopPrice: price });
+      else if (d.field === "entry") {
+        const patch: Partial<PositionShape> = { entry: { ...s.entry, price } };
+        if (s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit") patch.limitPrice = price;
+        updatePosition(d.id, patch);
       }
-      updatePosition(d.id, patch);
+      return;
     }
+    const part = d.field as PositionPart;
+    const origin = {
+      pt: d.originPoint || pt,
+      pos: (d.originShape as PositionShape) || s,
+    };
+    const next = applyPositionDrag(s as never, part, pt, origin as never, {
+      tick: tickFromDecimals(2),
+      market: marketRef.current.price,
+      barSec: Math.max(1, barSeconds || 60),
+    });
+    setShapes(shapesRef.current.map((x) => (x.id === d.id ? (next as Shape) : x)));
   }
 
   function setChartInteraction(enabled: boolean) {
@@ -2237,8 +2173,7 @@ export function Chart({
 
   // Execution engine: exact 1-second bars only — never aggregated TF.
   // Order: (1) pending entry / stop-limit stages → (2) SL/TP on open only.
-  // When Replay Step > 1s, execBars holds every intermediate 1s bar.
-  // Same-second SL+TP → SL wins (OHLC has no intrasecond order).
+  // Engine lives in positionEngine.ts — single source of truth (no duplicate inline loop).
   useEffect(() => {
     const sequence: Bar[] =
       execBars && execBars.length
@@ -2254,175 +2189,43 @@ export function Chart({
     );
     if (!hasWork) return;
 
-    let working: Shape[] = shapesRef.current.slice();
-    const closed: ClosedPosition[] = [];
-    let mutated = false;
-
-    for (const bar of sequence) {
-      const nextWorking: Shape[] = [];
-      for (const s of working) {
-        if (s.kind !== "position") {
-          nextWorking.push(s);
-          continue;
-        }
-
-        // ----- PENDING: entry / stop-limit (never SL/TP) -----
-        if (s.status === "pending") {
-          const hi = bar.high;
-          const lo = bar.low;
-          const isStopLimit =
-            s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit";
-
-          if (isStopLimit) {
-            const stopPx = s.stopPrice;
-            const limitPx = s.limitPrice;
-            if (stopPx == null || limitPx == null) {
-              nextWorking.push(s);
-              continue;
-            }
-            let triggered = !!s.stopTriggered;
-            // Stage 1: stop trigger (does not fill)
-            if (!triggered) {
-              if (s.orderType === "buy_stop_limit" && hi >= stopPx) triggered = true;
-              if (s.orderType === "sell_stop_limit" && lo <= stopPx) triggered = true;
-            }
-            // Stage 2: limit fill only after stop is armed
-            if (triggered) {
-              const limitHit =
-                s.orderType === "buy_stop_limit"
-                  ? lo <= limitPx
-                  : hi >= limitPx;
-              if (limitHit) {
-                mutated = true;
-                const filled: PositionShape = {
-                  ...s,
-                  status: "open",
-                  stopTriggered: true,
-                  entry: { time: bar.time, price: limitPx },
-                };
-                const snap = captureRiskSnapshotRef.current?.(filled);
-                const entryShot = capturePositionScreenshot(filled);
-                nextWorking.push({
-                  ...filled,
-                  ...(snap ? { riskSnapshot: snap } : {}),
-                  ...(entryShot ? { entryScreenshot: entryShot } : {}),
-                });
-                window.dispatchEvent(
-                  new CustomEvent("tr-workspace-event", {
-                    detail: {
-                      text: `Filled · ${s.side.toUpperCase()} stop-limit @ ${limitPx.toFixed(2)}`,
-                    },
-                  })
-                );
-                continue;
-              }
-            }
-            if (triggered !== !!s.stopTriggered) {
-              mutated = true;
-              nextWorking.push({ ...s, stopTriggered: triggered });
-            } else {
-              nextWorking.push(s);
-            }
-            continue;
-          }
-
-          // Simple stop / limit: fill when 1s OHLC touches entry
-          if (pendingEntryTouched(s.orderType, s.entry.price, hi, lo)) {
-            mutated = true;
-            const filled: PositionShape = {
-              ...s,
-              status: "open",
-              entry: { time: bar.time, price: s.entry.price },
-            };
-            const snap = captureRiskSnapshotRef.current?.(filled);
-            const entryShot = capturePositionScreenshot(filled);
-            nextWorking.push({
-              ...filled,
-              ...(snap ? { riskSnapshot: snap } : {}),
-              ...(entryShot ? { entryScreenshot: entryShot } : {}),
-            });
-            window.dispatchEvent(
-              new CustomEvent("tr-workspace-event", {
-                detail: {
-                  text: `Filled · ${s.side.toUpperCase()} ${(s.orderType || "").replace(/_/g, " ")} @ ${s.entry.price.toFixed(2)}`,
-                },
-              })
-            );
-          } else {
-            nextWorking.push(s);
-          }
-          continue;
-        }
-
-        // ----- OPEN: SL/TP only -----
-        if (s.status !== "open") {
-          nextWorking.push(s);
-          continue;
-        }
-
-        const sameSecondAsEntry = bar.time <= s.entry.time;
-        const hi = sameSecondAsEntry ? bar.close : bar.high;
-        const lo = sameSecondAsEntry ? bar.close : bar.low;
-        const long = s.side === "long";
-        let reason: "sl" | "tp" | null = null;
-        let exitPrice = bar.close;
-
-        if (long) {
-          if (lo <= s.stop.price) {
-            reason = "sl";
-            exitPrice = s.stop.price;
-          } else if (hi >= s.takeProfit.price) {
-            reason = "tp";
-            exitPrice = s.takeProfit.price;
-          }
-        } else {
-          if (hi >= s.stop.price) {
-            reason = "sl";
-            exitPrice = s.stop.price;
-          } else if (lo <= s.takeProfit.price) {
-            reason = "tp";
-            exitPrice = s.takeProfit.price;
-          }
-        }
-
-        if (!reason) {
-          nextWorking.push(s);
-          continue;
-        }
-        mutated = true;
-        const pnlPoints = long ? exitPrice - s.entry.price : s.entry.price - exitPrice;
-        const screenshot = capturePositionScreenshot(s, exitPrice);
-        closed.push({
-          id: s.id,
-          side: s.side,
-          orderType: s.orderType,
-          entry: s.entry,
-          stop: s.stop,
-          takeProfit: s.takeProfit,
-          exitPrice,
-          exitTime: bar.time,
-          reason,
-          pnlPoints,
-          riskSnapshot: s.riskSnapshot,
-          screenshot,
-          entryScreenshot: s.entryScreenshot,
-        });
-      }
-      working = nextWorking;
+    const res = runPositionBars(
+      shapesRef.current,
+      sequence,
+      {
+        onFill: (f) => {
+          const filled = f as PositionShape;
+          return {
+            riskSnapshot: captureRiskSnapshotRef.current?.(filled) ?? undefined,
+            entryScreenshot: capturePositionScreenshot(filled) ?? undefined,
+          };
+        },
+        onClose: (s, px) => ({
+          screenshot: capturePositionScreenshot(s as PositionShape, px) ?? undefined,
+        }),
+        canFill: (s, bar) => {
+          const fn = canFillRef.current;
+          if (!fn) return true;
+          return fn(s as PositionShape, bar);
+        },
+      },
+      { gapFill: false }
+    );
+    if (!res.mutated) return;
+    // v3.46.1: sync ref before parent re-render so fast ticks cannot ghost-draw closed positions
+    shapesRef.current = res.shapes as Shape[];
+    onShapesChangeRef.current(res.shapes as Shape[]);
+    for (const c of res.closed) {
+      onPositionClosedRef.current?.(c as unknown as ClosedPosition);
     }
-
-    if (!mutated && !closed.length) return;
-    // Sync ref IMMEDIATELY so a second effect tick (fast replay / offline catch-up)
-    // cannot re-see the just-closed position and leave it drawn until the next
-    // parent render. Parent state still owns the canonical list via onShapesChange.
-    shapesRef.current = working;
-    onShapesChangeRef.current(working);
-    for (const c of closed) onPositionClosedRef.current?.(c);
+    for (const e of res.events) {
+      window.dispatchEvent(new CustomEvent("tr-workspace-event", { detail: { text: e.text } }));
+    }
     scheduleRedraw();
-    if (closed.length) {
+    if (res.closed.length) {
       setHint(
-        closed
-          .map((c) => `${c.side.toUpperCase()} ${c.reason.toUpperCase()} @ ${c.exitPrice.toFixed(2)}`)
+        res.closed
+          .map((c) => `${String(c.side).toUpperCase()} ${String(c.reason).toUpperCase()} @ ${Number(c.exitPrice).toFixed(2)}`)
           .join(" · ")
       );
     }
@@ -2444,8 +2247,31 @@ export function Chart({
       />
       {(() => {
         const sel = shapes.find((s) => s.id === selectedShapeId);
-        if (!sel || sel.kind === "position") return null;
+        if (!sel) return null;
         const handles = handlesRef.current;
+        if (sel.kind === "position") {
+          const wBox = containerRef.current?.clientWidth ?? 640;
+          const hBox = containerRef.current?.clientHeight ?? 360;
+          const issues = validatePosition(sel as never, marketPrice);
+          return (
+            <PositionSettingsBar
+              position={sel as never}
+              container={{ w: wBox, h: hBox }}
+              priceDecimals={2}
+              tick={tickFromDecimals(2)}
+              barSec={Math.max(1, barSeconds || 60)}
+              issues={issues}
+              savedDefaults={loadPositionDefaults()}
+              onChange={(patch) => updatePosition(sel.id, patch as Partial<PositionShape>)}
+              onClosePosition={() => manualCloseById(sel.id)}
+              onCancelOrder={() => {
+                setShapes(shapesRef.current.filter((x) => x.id !== sel.id));
+                onSelectedShapeIdRef.current?.(null as never);
+              }}
+              onSaveStyleAsDefault={(st) => savePositionDefaults(st)}
+            />
+          );
+        }
                 // Floating settings bar is fixed near top-center — NOT glued to the shape bounds.
         const w = overlayRef.current?.clientWidth ?? 0;
         const h = overlayRef.current?.clientHeight ?? 0;
