@@ -482,6 +482,12 @@ export function Chart({
       };
     }
 
+    const barSec = Math.max(
+      1,
+      barsRef.current.length >= 2
+        ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
+        : 60
+    );
     const draft: PositionShape = {
       id: uid(),
       kind: "position",
@@ -489,14 +495,17 @@ export function Chart({
       orderType: ot,
       status: "draft",
       ...levels,
+      ...draftBoxExtras(levels.entry.time, barSec, 24),
       ...(stopPrice != null ? { stopPrice, limitPrice, stopTriggered: false } : {}),
       ...(activeAccountIdRef.current ? { accountId: activeAccountIdRef.current } : {}),
     };
     setShapes([...kept, draft]);
+    // Select so PositionSettingsBar mounts (floating settings above chart).
+    onSelectedShapeIdRef.current?.(draft.id);
     if (ot === "market") {
-      setHint("MARKET draft · drag SL (orange) & TP (blue) · then Confirm");
+      setHint("MARKET draft · drag SL (orange) & TP (blue) · then Confirm · settings bar open");
     } else {
-      setHint(`${ot} draft · drag Entry / SL / TP · then Confirm`);
+      setHint(`${ot} draft · drag Entry / SL / TP · then Confirm · settings bar open`);
     }
   }
 
@@ -1506,6 +1515,15 @@ export function Chart({
       } else if (s.kind === "vline") {
         const xx = handles.chart.timeScale().timeToCoordinate(s.time as UTCTimestamp);
         if (xx != null && Math.abs(xx - x) <= threshold) return s.id;
+      } else if (s.kind === "position") {
+        // Select position by clicking entry/SL/TP band so PositionSettingsBar can open.
+        const sy = handles.candles.priceToCoordinate(s.stop.price);
+        const ty = handles.candles.priceToCoordinate(s.takeProfit.price);
+        const ey = handles.candles.priceToCoordinate(s.entry.price);
+        if (ey == null || sy == null || ty == null) continue;
+        const top = Math.min(ey, sy, ty) - threshold;
+        const bottom = Math.max(ey, sy, ty) + threshold;
+        if (y >= top && y <= bottom) return s.id;
       }
     }
     return null;
@@ -1700,6 +1718,10 @@ export function Chart({
           ev.preventDefault();
           ev.stopPropagation();
           return;
+        }
+        // Positions: select on interaction so PositionSettingsBar mounts.
+        if (shape && shape.kind === "position") {
+          onSelectedShapeIdRef.current?.(hit.id);
         }
         dragRef.current = hit;
         setChartInteraction(false);
