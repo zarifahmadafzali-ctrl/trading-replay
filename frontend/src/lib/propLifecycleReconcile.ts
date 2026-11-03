@@ -381,6 +381,11 @@ export function reconcilePropLifecycle(
       failed = true;
       allChallengePassed = false;
       reconciledState = "FAILED";
+      const hardNotes = evaluation.reasons.filter(
+        (r) =>
+          /breached|exceeded/i.test(r) &&
+          !/not yet reached|still trading|in progress|Within maximum/i.test(r)
+      );
       rebuilt.push(
         makeLifecycleEvent({
           accountId,
@@ -388,7 +393,13 @@ export function reconcilePropLifecycle(
           timestamp: t,
           phaseId: phase.id,
           phaseName: phase.name,
-          note: evaluation.reasons.join("; ") || "Rule breach (reconciled)",
+          note:
+            hardNotes.join("; ") ||
+            (evaluation.dailyLossBreached && "Daily loss limit breached") ||
+            (evaluation.maxOverallLossBreached && "Max overall loss breached") ||
+            (evaluation.maximumTradingDaysBreached && "Maximum trading days exceeded") ||
+            (evaluation.challengeTimeLimitBreached && "Challenge time limit exceeded") ||
+            "Hard rule breach (reconciled)",
         })
       );
       break;

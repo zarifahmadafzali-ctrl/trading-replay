@@ -2,7 +2,7 @@
  * v3.18.1 — Prop lifecycle + payout status UI (derived view only).
  * Source of truth: accountLifecycle + propRules + payoutSchedule.
  */
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import type { AccountProfile } from "../lib/riskModel";
 import {
   evaluatePropRules,
@@ -151,6 +151,24 @@ export function PropAccountStatus({
   );
 
   const [reconReport, setReconReport] = useState<ReconciliationReport | null>(null);
+  const staleFailed =
+    derived.state === "FAILED" && evaluation != null && evaluation.failed === false;
+
+  // Auto-preview when stored FAILED is not justified by current hard rules.
+  useEffect(() => {
+    if (!isProp || !staleFailed) return;
+    try {
+      const report = reconcilePropLifecycle(
+        account,
+        accountTrades,
+        replayTime > 0 ? replayTime : 1e12
+      );
+      setReconReport(report);
+    } catch {
+      /* ignore preview errors */
+    }
+  }, [isProp, staleFailed, account, accountTrades, replayTime]);
+
   const [reconMsg, setReconMsg] = useState<string | null>(null);
 
   function runReconciliationPreview() {
@@ -401,10 +419,40 @@ export function PropAccountStatus({
                 : derived.reasons[0]
                   ? ` · ${derived.reasons[0]}`
                   : ""}
-              {evaluation && !evaluation.failed
-                ? " · (stored FAILED; current rules may not fail — use Preview reconciliation)"
+              {staleFailed
+                ? " · stored state is stale (no hard breach under current rules)"
                 : ""}
             </p>
+          )}
+          {staleFailed && onAccountChange && (
+            <div style={{ marginTop: 8, padding: 8, border: "1px solid #f59e0b", borderRadius: 6 }}>
+              <p className="muted" style={{ fontSize: 12, margin: "0 0 6px" }}>
+                This account was marked FAILED, but under current rules it should still be{" "}
+                <strong>TRADING</strong>
+                {reconReport ? ` → ${reconReport.reconciledState}` : ""}.
+                Profit target not reached is not a fail. Apply reconciliation to restore trading.
+              </p>
+              <button
+                type="button"
+                className="on prop-payout-btn"
+                onClick={() => {
+                  const report =
+                    reconReport ||
+                    reconcilePropLifecycle(
+                      account,
+                      accountTrades,
+                      replayTime > 0 ? replayTime : 1e12
+                    );
+                  setReconReport(report);
+                  if (report.needsReconciliation || report.reconciledState !== "FAILED") {
+                    const next = applyPropLifecycleReconciliation(account, report);
+                    onAccountChange(next);
+                  }
+                }}
+              >
+                Restore TRADING (apply reconciliation)
+              </button>
+            </div>
           )}
         </div>
       )}
