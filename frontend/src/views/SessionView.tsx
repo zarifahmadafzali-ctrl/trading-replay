@@ -8,7 +8,7 @@ import {
   MAX_SESSION_ACCOUNTS,
   type SessionMeta,
 } from "../lib/sessionStore";
-import { getSessionStorageAdapter } from "../lib/storageAdapter";
+import { getSessionStorageAdapter, onSessionStorageAdapterReady } from "../lib/storageAdapter";
 import {
   defaultAccount,
   defaultInstrument,
@@ -158,6 +158,14 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  // Desktop: SQLite adapter may register after first paint; re-list so the UI
+  // does not stay stuck on an empty IndexedDB snapshot.
+  useEffect(() => {
+    return onSessionStorageAdapterReady(() => {
+      void refresh();
+    });
   }, [refresh]);
 
   function updateAccount(id: string, patch: Partial<AccountProfile>) {

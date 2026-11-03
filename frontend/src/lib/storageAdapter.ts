@@ -99,9 +99,34 @@ export const indexedDbSessionAdapter: SessionStorageAdapter = {
  */
 let desktopAdapterOverride: SessionStorageAdapter | null = null;
 
+type AdapterReadyListener = () => void;
+const adapterReadyListeners = new Set<AdapterReadyListener>();
+
+/** Subscribe to desktop SQLite adapter registration (SessionView re-lists sessions). */
+export function onSessionStorageAdapterReady(cb: AdapterReadyListener): () => void {
+  adapterReadyListeners.add(cb);
+  if (desktopAdapterOverride) {
+    try {
+      cb();
+    } catch {
+      /* ignore */
+    }
+  }
+  return () => {
+    adapterReadyListeners.delete(cb);
+  };
+}
+
 /** Called once from desktop boot after SQLite driver is ready. */
 export function registerDesktopSessionAdapter(adapter: SessionStorageAdapter): void {
   desktopAdapterOverride = adapter;
+  for (const cb of [...adapterReadyListeners]) {
+    try {
+      cb();
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 export function getSessionStorageAdapter(): SessionStorageAdapter {

@@ -20,10 +20,10 @@ import {
   getActiveSessionId,
   getSession,
   upsertSession,
-  listSessions,
   SESSION_CHANGED_EVENT,
   type SessionMeta,
 } from "../lib/sessionStore";
+import { getSessionStorageAdapter } from "../lib/storageAdapter";
 
 type SortKey =
   | "exitTime"
@@ -90,7 +90,7 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
     (async () => {
       const sid = getActiveSessionId();
       if (!sid) return;
-      const meta = await getSession(sid);
+      const meta = await getSessionStorageAdapter().getSession(sid);
       if (!cancelled && meta) {
         setSnapCfg(normalizeJournalSnapshotConfig(meta.journalSnapshotConfig));
       }
@@ -101,9 +101,9 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
     setSnapCfg(next);
     const sid = getActiveSessionId();
     if (!sid) return;
-    const meta = await getSession(sid);
+    const meta = await getSessionStorageAdapter().getSession(sid);
     if (!meta) return;
-    await upsertSession({ ...meta, journalSnapshotConfig: next, updatedAt: Date.now() });
+    await getSessionStorageAdapter().upsertSession({ ...meta, journalSnapshotConfig: next, updatedAt: Date.now() });
   }
 
   const [sortKey, setSortKey] = useState<SortKey>("exitTime");
@@ -120,7 +120,7 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
   const reload = useCallback(async () => {
     const sid = getActiveSessionId();
     setSessionId(sid);
-    const [rows, sess] = await Promise.all([loadJournalForSession(sid), listSessions()]);
+    const [rows, sess] = await Promise.all([loadJournalForSession(sid), getSessionStorageAdapter().listSessions()]);
     setTrades(rows);
     setSessions(sess);
   }, []);

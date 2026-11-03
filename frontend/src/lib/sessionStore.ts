@@ -262,15 +262,20 @@ export async function createSession(input: {
     propFirm: prop,
     sessionType: input.sessionType || "backtest",
   };
-  await upsertSession(meta);
-  await putRuntime(
+  // Always persist via the active storage adapter (IndexedDB on web, SQLite on desktop).
+  // Writing IDB directly on desktop made SessionView listSessions() (SQLite) look empty
+  // while Journal/Replay still saw the active session id in memory.
+  const { getSessionStorageAdapter } = await import("./storageAdapter");
+  const ad = getSessionStorageAdapter();
+  await ad.upsertSession(meta);
+  await ad.putRuntime(
     defaultRuntime(id, {
       message: `${meta.name} · ready`,
     })
   );
-  await putSessionTrades(id, []);
-  await putSessionShapes(id, []);
-  setActiveSessionId(id);
+  await ad.putTrades(id, []);
+  await ad.putShapes(id, []);
+  ad.setActiveSessionId(id);
   return meta;
 }
 

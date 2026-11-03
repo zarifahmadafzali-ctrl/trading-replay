@@ -26,9 +26,9 @@ import {
   ensureSessionAccounts,
   getActiveSessionId,
   getSession,
-  listSessions,
   type SessionMeta,
 } from "../lib/sessionStore";
+import { getSessionStorageAdapter } from "../lib/storageAdapter";
 import type { AccountProfile } from "../lib/riskModel";
 
 function EquitySvg({
@@ -171,7 +171,7 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
     let cancelled = false;
     (async () => {
       setLoading(true);
-      const sess = await listSessions();
+      const sess = await getSessionStorageAdapter().listSessions();
       if (cancelled) return;
       setSessions(sess);
       const active = getActiveSessionId();
@@ -216,7 +216,7 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
       setSessionFilter((prev) => prev); // no-op state
       // explicit reload
       void (async () => {
-        const sess = await listSessions();
+        const sess = await getSessionStorageAdapter().listSessions();
         setSessions(sess);
         const active = getActiveSessionId();
         let all: JournalTrade[] = [];

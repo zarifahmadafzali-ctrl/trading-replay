@@ -39,6 +39,7 @@ import {
   getActiveAccount,
   type SessionMeta,
 } from "../lib/sessionStore";
+import { getSessionStorageAdapter } from "../lib/storageAdapter";
 import { isRiskMode, type RiskMode,
   applyRealizedPnL,
   calculateRisk,
@@ -273,7 +274,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     const sid = sessionIdRef.current;
     // Only persist once bootstrap has fully applied this session's shapes
     if (!sid || !sessionReady || loadedSessionRef.current !== sid) return;
-    void putSessionShapes(sid, shapes);
+    void getSessionStorageAdapter().putShapes(sid, shapes);
     try {
       localStorage.setItem(`tr-shapes-${symbol}`, JSON.stringify(shapes));
     } catch { /* */ }
@@ -307,14 +308,14 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       }
       sessionIdRef.current = id;
       setActiveSessionId(id);
-      const meta = await getSession(id);
-      const rt = (await getRuntime(id)) || defaultRuntime(id);
-      const sh = (await getSessionShapes(id)) as Shape[];
+      const meta = await getSessionStorageAdapter().getSession(id);
+      const rt = (await getSessionStorageAdapter().getRuntime(id)) || defaultRuntime(id);
+      const sh = (await getSessionStorageAdapter().getShapes(id)) as Shape[];
       if (cancelled) return;
       if (meta) {
         const full = ensureSessionAccounts(meta);
         if (JSON.stringify(full) !== JSON.stringify(meta)) {
-          void upsertSession(full);
+          void getSessionStorageAdapter().upsertSession(full);
         }
         setSessionMeta(full);
         setSymbol(full.symbol);
@@ -389,7 +390,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     const sid = sessionIdRef.current;
     if (sid) {
       const barT = baseBars[Math.max(0, cursor - 1)]?.time;
-      void putRuntime({
+      void getSessionStorageAdapter().putRuntime({
         sessionId: sid,
         timeframeSeconds,
         customTfs,
@@ -406,9 +407,9 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         playing: false,
         updatedAt: Date.now(),
       });
-      void getSession(sid).then((meta) => {
+      void getSessionStorageAdapter().getSession(sid).then((meta) => {
         if (!meta) return;
-        void upsertSession({
+        void getSessionStorageAdapter().upsertSession({
           ...meta,
           symbol,
           start,
@@ -1190,7 +1191,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         });
         const nextMeta = { ...full, accounts: nextAccounts, updatedAt: Date.now() };
         setSessionMeta(nextMeta);
-        void upsertSession(nextMeta);
+        void getSessionStorageAdapter().upsertSession(nextMeta);
       }
     } catch {
       /* non-fatal */
@@ -1744,7 +1745,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                       if (!full.accounts?.some((a) => a.accountId === id && a.enabled !== false)) return;
                       const next = { ...full, activeAccountId: id, updatedAt: Date.now() };
                       setSessionMeta(next);
-                      void upsertSession(next);
+                      void getSessionStorageAdapter().upsertSession(next);
                     }}
                     title="Active account for new trades"
                   >
@@ -1777,7 +1778,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                             const full = ensureSessionAccounts(sessionMeta);
                             const next = { ...full, activeAccountId: a.accountId, updatedAt: Date.now() };
                             setSessionMeta(next);
-                            void upsertSession(next);
+                            void getSessionStorageAdapter().upsertSession(next);
                           }}
                         >
                           {a.accountId === sessionMeta.activeAccountId ? "🟢" : a.enabled === false ? "⛔" : "⚪"}{" "}
@@ -1892,7 +1893,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                       );
                       const nextMeta = { ...full, accounts: nextAccounts, updatedAt: Date.now() };
                       setSessionMeta(nextMeta);
-                      void upsertSession(nextMeta);
+                      void getSessionStorageAdapter().upsertSession(nextMeta);
                     }}
                   />
                 );
