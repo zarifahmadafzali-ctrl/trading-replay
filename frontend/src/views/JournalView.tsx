@@ -66,15 +66,16 @@ function durationLabel(sec: number | undefined): string {
 function HtfSnapshotCanvas({ snap }: { snap: HtfSnapshot }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => {
-    if (ref.current) renderHtfSnapshotToCanvas(ref.current, snap, { width: 640, height: 260 });
+    // Higher resolution + TF-aware framing (see renderHtfSnapshotToCanvas)
+    if (ref.current) renderHtfSnapshotToCanvas(ref.current, snap, { width: 960, height: 360 });
   }, [snap]);
   return (
     <canvas
       ref={ref}
-      width={640}
-      height={260}
+      width={960}
+      height={360}
       className="journal-screenshot"
-      style={{ width: "100%", maxWidth: 640, height: "auto", background: "#0b1220", borderRadius: 6 }}
+      style={{ width: "100%", maxWidth: 960, height: "auto", background: "#0b1220", borderRadius: 6 }}
     />
   );
 }

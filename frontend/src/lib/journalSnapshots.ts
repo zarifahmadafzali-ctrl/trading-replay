@@ -105,6 +105,30 @@ export function normalizeHtfSnapshots(raw: unknown): HtfSnapshot[] | undefined {
  * Build compact HTF snapshots from 1s bars.
  * `cursorIndex` is exclusive end index into bars1s (ReplayView aggregateVisible convention).
  */
+/** How many HTF candles to keep — denser on low TF, fewer on Daily so bars are not huge. */
+export function suggestedCandleCount(tfSeconds: number, override?: number): number {
+  if (override != null && Number.isFinite(override) && override > 0) {
+    return Math.floor(override);
+  }
+  const tf = Math.max(1, Math.floor(tfSeconds || 1));
+  if (tf <= 60) return 120; // 1m
+  if (tf <= 300) return 100; // 5m
+  if (tf <= 900) return 80; // 15m
+  if (tf <= 1800) return 72; // 30m
+  if (tf <= 3600) return 72; // 1H
+  if (tf <= 14400) return 60; // 4H
+  if (tf <= 86400) return 48; // Daily — fewer bars → readable body width
+  return 40; // weekly+
+}
+
+export function formatTfLabel(tfSeconds: number): string {
+  const tf = Math.max(1, Math.floor(tfSeconds || 1));
+  if (tf >= 86400 && tf % 86400 === 0) return `${tf / 86400}D`;
+  if (tf >= 3600 && tf % 3600 === 0) return `${tf / 3600}H`;
+  if (tf >= 60 && tf % 60 === 0) return `${tf / 60}m`;
+  return `${tf}s`;
+}
+
 export function buildHtfSnapshots(opts: {
   bars1s: Bar[];
   cursorIndex: number;
@@ -115,10 +139,10 @@ export function buildHtfSnapshots(opts: {
   sl: number;
   tp: number;
   exit?: number;
+  /** Optional global override; when omitted each TF uses suggestedCandleCount(tf). */
   maxCandles?: number;
   aggregateVisible: (rows: Bar[], cursorIndex: number, timeframeSeconds: number) => Bar[];
 }): HtfSnapshot[] {
-  const maxCandles = opts.maxCandles ?? 120;
   const cursor = Math.max(0, Math.min(opts.cursorIndex, opts.bars1s.length));
   const last1s = cursor > 0 ? opts.bars1s[cursor - 1]?.time : undefined;
   const out: HtfSnapshot[] = [];
@@ -128,7 +152,8 @@ export function buildHtfSnapshots(opts: {
     const agg = opts.aggregateVisible(opts.bars1s, cursor, tf);
     // No look-ahead: drop any bar whose open time is after the last visible 1s bar.
     const trimmed = last1s != null ? agg.filter((b) => b.time <= last1s) : agg;
-    const window = trimmed.slice(-maxCandles);
+    const keep = suggestedCandleCount(tf, opts.maxCandles);
+    const window = trimmed.slice(-keep);
     out.push({
       tf,
       event: opts.event,
@@ -209,28 +234,47 @@ export async function compressScreenshotDataUrlAsync(
  * Draw an HTF snapshot onto a canvas (candles + Entry/SL/TP + optional exit).
  * Used by JournalView — does not create a second lightweight-charts instance.
  */
+/**
+ * Professional framing for journal HTF canvases:
+ * - per-TF bar density (via suggestedCandleCount at capture time)
+ * - ~15% price padding so Entry/SL/TP are not glued to edges
+ * - capped candle body width so Daily is not one fat bar per slot
+ * - sparse windows are centered instead of stretched full-width
+ */
 export function renderHtfSnapshotToCanvas(
   canvas: HTMLCanvasElement,
   snap: HtfSnapshot,
   opts?: { width?: number; height?: number }
 ): void {
-  const w = opts?.width ?? (canvas.width || 640);
-  const h = opts?.height ?? (canvas.height || 280);
+  const w = opts?.width ?? (canvas.width || 960);
+  const h = opts?.height ?? (canvas.height || 360);
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d");
-  if (!ctx || !snap.bars.length) return;
+  if (!ctx) return;
 
   ctx.fillStyle = "#0b1220";
   ctx.fillRect(0, 0, w, h);
 
-  const padL = 8;
-  const padR = 8;
-  const padT = 16;
-  const padB = 20;
-  const plotW = w - padL - padR;
-  const plotH = h - padT - padB;
+  const padL = 12;
+  const padR = 12;
+  const padT = 22;
+  const padB = 18;
+  const plotW = Math.max(1, w - padL - padR);
+  const plotH = Math.max(1, h - padT - padB);
   const n = snap.bars.length;
+
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "12px system-ui, sans-serif";
+  const header = `${formatTfLabel(snap.tf)} · ${snap.event}${n ? ` · ${n} bars` : ""}`;
+  ctx.fillText(header, padL, 14);
+
+  if (!n) {
+    ctx.fillStyle = "#64748b";
+    ctx.fillText("No bars in window", padL, padT + 24);
+    return;
+  }
+
   const prices: number[] = [];
   for (const b of snap.bars) {
     prices.push(b[1], b[2], b[3], b[4]);
@@ -243,13 +287,35 @@ export function renderHtfSnapshotToCanvas(
     lo -= 1;
     hi += 1;
   }
+  // 15% vertical padding so levels stay readable
+  const rawSpan = hi - lo;
+  const pad = Math.max(rawSpan * 0.15, rawSpan * 0.05 + 1e-6);
+  lo -= pad;
+  hi += pad;
   const span = hi - lo;
   const yOf = (p: number) => padT + ((hi - p) / span) * plotH;
-  const candleW = Math.max(1, (plotW / n) * 0.7);
 
+  // Horizontal layout: avoid over-stretching sparse Daily windows
+  const idealSlot = 11;
+  const naturalWidth = n * idealSlot;
+  let xAt: (i: number) => number;
+  let slot: number;
+  if (naturalWidth < plotW * 0.85) {
+    const total = n * idealSlot;
+    const start = padL + (plotW - total) / 2;
+    slot = idealSlot;
+    xAt = (i) => start + (i + 0.5) * idealSlot;
+  } else {
+    slot = plotW / n;
+    xAt = (i) => padL + (i + 0.5) * slot;
+  }
+  // Cap body width so higher TFs never look like huge blocks
+  const candleW = Math.min(10, Math.max(2, slot * 0.62));
+
+  ctx.lineWidth = 1;
   for (let i = 0; i < n; i++) {
     const [, o, high, low, c] = snap.bars[i];
-    const x = padL + ((i + 0.5) / n) * plotW;
+    const x = xAt(i);
     const up = c >= o;
     ctx.strokeStyle = up ? "#22c55e" : "#ef4444";
     ctx.fillStyle = up ? "#22c55e" : "#ef4444";
@@ -263,34 +329,24 @@ export function renderHtfSnapshotToCanvas(
   }
 
   const line = (price: number, color: string, label: string) => {
+    if (!Number.isFinite(price)) return;
     const y = yOf(price);
     ctx.strokeStyle = color;
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 3]);
+    ctx.lineWidth = 1.25;
+    ctx.setLineDash([5, 3]);
     ctx.beginPath();
     ctx.moveTo(padL, y);
     ctx.lineTo(w - padR, y);
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = color;
-    ctx.font = "10px sans-serif";
-    ctx.fillText(`${label} ${price.toFixed(2)}`, padL + 4, y - 2);
+    ctx.font = "11px system-ui, sans-serif";
+    const text = `${label} ${price.toFixed(2)}`;
+    ctx.fillText(text, padL + 4, Math.max(padT + 10, y - 3));
   };
 
   line(snap.entry, "#38bdf8", "Entry");
   line(snap.sl, "#f87171", "SL");
   line(snap.tp, "#4ade80", "TP");
   if (snap.exit != null) line(snap.exit, "#fbbf24", "Exit");
-
-  ctx.fillStyle = "#94a3b8";
-  ctx.font = "11px sans-serif";
-  const tfLabel =
-    snap.tf >= 86400
-      ? `${snap.tf / 86400}D`
-      : snap.tf >= 3600
-        ? `${snap.tf / 3600}H`
-        : snap.tf >= 60
-          ? `${snap.tf / 60}m`
-          : `${snap.tf}s`;
-  ctx.fillText(`${tfLabel} · ${snap.event} · ${n} bars`, padL, 12);
 }
