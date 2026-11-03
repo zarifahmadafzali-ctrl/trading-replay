@@ -128,6 +128,9 @@ export type PropRuleEvaluation = {
   challengeDaysElapsed: number | null;
   challengeTimeLimitDays: number | null;
   challengeTimeLimitBreached: boolean;
+  /** Activity-day cap (not calendar time limit); null if unset. */
+  maximumTradingDays: number | null;
+  maximumTradingDaysBreached: boolean;
   /** Realized PnL for the UTC day of currentTime (same-day aggregate). */
   todayRealizedPnL: number;
   /** |today loss| as % of reference when todayRealizedPnL is negative; else 0. */
@@ -905,6 +908,8 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
       challengeDaysElapsed: null,
       challengeTimeLimitDays: null,
       challengeTimeLimitBreached: false,
+      maximumTradingDays: null,
+      maximumTradingDaysBreached: false,
       todayRealizedPnL: 0,
       todayLossPct: 0,
       dailyLossLimitPct: null,
@@ -1077,6 +1082,8 @@ export function evaluatePropRules(state: PropProgressState): PropRuleEvaluation 
     challengeDaysElapsed: challengeDaysElapsedVal,
     challengeTimeLimitDays: challengeTimeLimitDaysConfigured,
     challengeTimeLimitBreached,
+    maximumTradingDays: maximumTradingDaysConfigured,
+    maximumTradingDaysBreached,
     todayRealizedPnL: progress.todayRealizedPnL,
     todayLossPct:
       progress.todayRealizedPnL < 0 && ref > 0

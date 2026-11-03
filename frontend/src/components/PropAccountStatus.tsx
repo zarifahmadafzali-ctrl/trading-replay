@@ -74,6 +74,46 @@ function fmtDay(unix: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** Human-readable fail cause only — never "profit target not yet reached". */
+function failCauseSummary(evaluation: {
+  failed?: boolean;
+  dailyLossBreached?: boolean;
+  maxOverallLossBreached?: boolean;
+  maximumTradingDaysBreached?: boolean;
+  challengeTimeLimitBreached?: boolean;
+  todayLossPct?: number;
+  dailyLossLimitPct?: number | null;
+  reasons?: string[];
+}): string {
+  const parts: string[] = [];
+  if (evaluation.dailyLossBreached) {
+    const lim = evaluation.dailyLossLimitPct;
+    const day = evaluation.todayLossPct;
+    parts.push(
+      lim != null && day != null
+        ? `Daily loss ${day.toFixed(2)}% > ${lim}%`
+        : "Daily loss limit breached"
+    );
+  }
+  if (evaluation.maxOverallLossBreached) parts.push("Max overall loss breached");
+  if (evaluation.maximumTradingDaysBreached) {
+    const r = evaluation.reasons?.find((x) => x.startsWith("Maximum trading days exceeded"));
+    parts.push(r || "Maximum trading days exceeded");
+  }
+  if (evaluation.challengeTimeLimitBreached) {
+    const r = evaluation.reasons?.find((x) => x.startsWith("Challenge time limit exceeded"));
+    parts.push(r || "Challenge time limit exceeded");
+  }
+  if (parts.length) return parts.join(" · ");
+  const hard = evaluation.reasons?.find(
+    (r) =>
+      /breached|exceeded/i.test(r) &&
+      !/not yet reached|still trading|in progress|Within maximum/i.test(r)
+  );
+  return hard || "Hard rule breach (not profit target)";
+}
+
+
 export function PropAccountStatus({
   account,
   trades,
@@ -356,7 +396,14 @@ export function PropAccountStatus({
           {derived.state === "FAILED" && (
             <p className="prop-event fail">
               ✕ Account Failed
-              {evaluation.reasons?.length ? ` · ${evaluation.reasons[0]}` : derived.reasons[0] ? ` · ${derived.reasons[0]}` : ""}
+              {evaluation
+                ? ` · ${failCauseSummary(evaluation)}`
+                : derived.reasons[0]
+                  ? ` · ${derived.reasons[0]}`
+                  : ""}
+              {evaluation && !evaluation.failed
+                ? " · (stored FAILED; current rules may not fail — use Preview reconciliation)"
+                : ""}
             </p>
           )}
         </div>

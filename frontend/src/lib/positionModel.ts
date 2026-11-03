@@ -302,7 +302,13 @@ export function buildPositionTexts(p: PositionLike, c: TextCtx): PositionTexts {
   const target = `Target: ${p.takeProfit.price.toFixed(d)} (${tpPct.toFixed(2)}%) ${tpTicks}${tpAmt}`;
   const stop = `Stop: ${p.stop.price.toFixed(d)} (-${slPct.toFixed(2)}%) ${slTicks}${slAmt}`;
   const parts: string[] = [];
-  if (p.status === "open" && c.openPnL != null && Number.isFinite(c.openPnL)) parts.push(`Open P&L: ${signed(c.openPnL)}`);
+  if (p.status === "open" && c.openPnL != null && Number.isFinite(c.openPnL)) {
+    const pnlLabel =
+      c.lot != null && Number.isFinite(c.lot) && c.lot > 0
+        ? `Open P&L: ${c.openPnL >= 0 ? "+" : "-"}$${Math.abs(c.openPnL).toFixed(2)}`
+        : `Open P&L: ${signed(c.openPnL)} pts`;
+    parts.push(pnlLabel);
+  }
   if (c.lot != null && Number.isFinite(c.lot)) parts.push(`Qty: ${c.lot}`);
   if (rr != null) parts.push(`Risk/Reward Ratio: ${rr.toFixed(2)}`);
   const center = parts.join(", ");

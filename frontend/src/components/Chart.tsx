@@ -1058,6 +1058,7 @@ export function Chart({
               actualRiskAmount?: number | null;
               potentialProfit?: number | null;
               finalLot?: number | null;
+              pointValue?: number | null;
               actualRiskPercent?: number | null;
               actualRewardPercent?: number | null;
             }
@@ -1066,10 +1067,17 @@ export function Chart({
         let openPnL: number | null = null;
         if (s.status === "open" && marketRef.current.price != null) {
           const px = marketRef.current.price;
-          openPnL = s.side === "long" ? px - s.entry.price : s.entry.price - px;
-          // Prefer currency PnL when lot is known
-          if (liveSnap?.finalLot != null && Number.isFinite(liveSnap.finalLot)) {
-            // leave openPnL as points; texts layer can show risk amounts separately
+          const points = s.side === "long" ? px - s.entry.price : s.entry.price - px;
+          const lot = liveSnap?.finalLot;
+          const pv =
+            liveSnap?.pointValue != null && Number.isFinite(liveSnap.pointValue) && liveSnap.pointValue > 0
+              ? liveSnap.pointValue
+              : 1;
+          // Currency P&L when lot known (same basis as Journal: points × pointValue × lot).
+          if (lot != null && Number.isFinite(lot) && lot > 0) {
+            openPnL = points * pv * lot;
+          } else {
+            openPnL = points;
           }
         }
         const priceDecimals = 2;

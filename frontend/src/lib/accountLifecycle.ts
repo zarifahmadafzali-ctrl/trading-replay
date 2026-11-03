@@ -300,13 +300,28 @@ export function suggestLifecycleTransitions(opts: {
     if (!alreadyFailed) {
       const dailyNote =
         evaluation.dailyLossBreached && evaluation.dailyLossLimitPct != null
-          ? `DAILY_LOSS_BREACH (day ${evaluation.todayLossPct.toFixed(2)}% > limit ${evaluation.dailyLossLimitPct}%)`
-          : null;
-      const overallNote = evaluation.maxOverallLossBreached ? "MAX_OVERALL_LOSS_BREACH" : null;
+          ? `Daily loss limit breached (${evaluation.todayLossPct.toFixed(2)}% > ${evaluation.dailyLossLimitPct}%)`
+          : evaluation.dailyLossBreached
+            ? "Daily loss limit breached"
+            : null;
+      const overallNote = evaluation.maxOverallLossBreached ? "Max overall loss breached" : null;
+      const maxDaysNote = evaluation.maximumTradingDaysBreached
+        ? evaluation.reasons.find((r) => r.startsWith("Maximum trading days exceeded")) ||
+          "Maximum trading days exceeded"
+        : null;
+      const timeNote = evaluation.challengeTimeLimitBreached
+        ? evaluation.reasons.find((r) => r.startsWith("Challenge time limit exceeded")) ||
+          "Challenge time limit exceeded"
+        : null;
+      // Never persist "Profit target not yet reached" as the fail note (pass-gate only).
       const note =
-        [dailyNote, overallNote].filter(Boolean).join("; ") ||
-        evaluation.reasons.join("; ") ||
-        "Rule breach";
+        [dailyNote, overallNote, maxDaysNote, timeNote].filter(Boolean).join("; ") ||
+        evaluation.reasons.find(
+          (r) =>
+            /breached|exceeded|limit/i.test(r) &&
+            !/not yet reached|still trading|in progress|Within maximum/i.test(r)
+        ) ||
+        "Hard rule breach";
       out.push(
         makeLifecycleEvent({
           accountId: account.accountId,
