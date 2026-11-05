@@ -17,7 +17,6 @@ import {
 import { cacheGetRange, cachePutBars } from "../lib/barCache";
 import { normalizeBars } from "../lib/marketDataIntegrity";
 import { recordRangeLoad, recordReplayWindow } from "../lib/replayDiagnostics";
-import { validatePendingVsMarket, lotFromSnapshot } from "../lib/orderValidation";
 
 import { generateDemoBars, readCsvFile } from "../lib/demoData";
 import { aggregateVisible } from "../lib/replay";
@@ -56,7 +55,6 @@ import {
   deriveLifecycleFromEvents,
   suggestLifecycleTransitions,
 } from "../lib/accountLifecycle";
-import { PropAccountStatus } from "../components/PropAccountStatus";
 import { loadJournalForSession } from "../lib/journal";
 import type { PropTradeLike } from "../lib/propRules";
 import { SYMBOLS, TIMEFRAMES, formatTf } from "../lib/types";
@@ -139,7 +137,6 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     return [];
   });
   const [tfOpen, setTfOpen] = useState(false);
-  const [ordersOpen, setOrdersOpen] = useState(false);
   const [customTfInput, setCustomTfInput] = useState("");
   const [start, setStart] = useState(() => saved?.start ?? isoDaysAgo(3));
   const [end, setEnd] = useState(() => saved?.end ?? isoDaysAgo(0));
@@ -180,7 +177,6 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [customEnd, setCustomEnd] = useState("16:00");
   const [shapes, setShapes] = useState<Shape[]>(() => loadShapesFor(saved?.symbol ?? SYMBOLS[0]));
   const [workspaceLog, setWorkspaceLog] = useState<{ t: number; text: string }[]>([]);
-  const [bookOpen, setBookOpen] = useState(true);
   const shapesRefForUndo = useRef(shapes);
   shapesRefForUndo.current = shapes;
   function pushShapes(next: Shape[]) {
@@ -206,7 +202,6 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [orderType, setOrderType] = useState<OrderType>(() => (saved?.orderType as OrderType) || "market");
   const [propTrades, setPropTrades] = useState<PropTradeLike[]>([]);
   const [riskPercent, setRiskPercent] = useState(2);
-  const [riskPercentInput, setRiskPercentInput] = useState("2");
   /** Per-order risk mode (does not permanently rewrite account profile). */
   const [orderRiskMode, setOrderRiskMode] = useState<RiskMode>("percent_equity");
   const [fixedRiskInput, setFixedRiskInput] = useState("100");
@@ -237,7 +232,6 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [sessionReady, setSessionReady] = useState(false); // v3.16: true only after session bootstrap
   const restoredCursorRef = useRef<number>(saved?.cursor ?? 800);
   const tfPanelRef = useRef<HTMLDivElement | null>(null);
-  const ordersPanelRef = useRef<HTMLDivElement | null>(null);
   const indPanelRef = useRef<HTMLDivElement | null>(null);
   const sessionIdRef = useRef<string | null>(getActiveSessionId());
   /** Stale async Load 1s / cache reads must not overwrite newer requests (v3.23.0). */
@@ -475,13 +469,12 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       const t = e.target as Node;
       if (tfOpen && tfPanelRef.current && !tfPanelRef.current.contains(t)) setTfOpen(false);
       if (drawMenuOpen && !(t as HTMLElement).closest?.(".draw-menu-wrap")) setDrawMenuOpen(false);
-      if (ordersOpen && ordersPanelRef.current && !ordersPanelRef.current.contains(t)) setOrdersOpen(false);
       if (indOpen && indPanelRef.current && !indPanelRef.current.contains(t)) setIndOpen(false);
       if (stepOpen && stepPanelRef.current && !stepPanelRef.current.contains(t)) setStepOpen(false);
     }
     document.addEventListener("pointerdown", onDoc);
     return () => document.removeEventListener("pointerdown", onDoc);
-  }, [tfOpen, ordersOpen, indOpen, stepOpen, drawMenuOpen]);
+  }, [tfOpen, indOpen, stepOpen, drawMenuOpen]);
 
   // Space = play/pause, ArrowRight/ArrowLeft = step one second. Ignored
   // while typing in an input (symbol search, custom TF box, etc).
@@ -928,55 +921,6 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     setWorkspaceLog((prev) => [{ t: tsec, text }, ...prev].slice(0, 40));
   }
 
-  function cancelPendingOrder(id: string) {
-    const target = shapes.find((s) => s.kind === "position" && s.id === id && s.status === "pending");
-    if (!target || target.kind !== "position") return;
-    const next = shapes.filter((s) => s.id !== id);
-    pushShapes(next);
-    pushWorkspaceEvent(
-      `Pending cancelled · ${(target.orderType || "").replace(/_/g, " ")} · ${target.side.toUpperCase()} @ ${target.entry.price.toFixed(2)}`
-    );
-    setSelectedShapeId(null);
-  }
-
-  function modifyPendingPrice(id: string, field: "entry" | "stop" | "takeProfit" | "stopPrice" | "limitPrice", value: number) {
-    if (!Number.isFinite(value)) return;
-    pushShapes(
-      shapes.map((s) => {
-        if (s.kind !== "position" || s.id !== id || s.status !== "pending") return s;
-        if (field === "entry") {
-          const patch: typeof s = { ...s, entry: { ...s.entry, price: value } };
-          if (s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit") {
-            return { ...patch, limitPrice: value };
-          }
-          return patch;
-        }
-        if (field === "stop") return { ...s, stop: { ...s.stop, price: value } };
-        if (field === "takeProfit") return { ...s, takeProfit: { ...s.takeProfit, price: value } };
-        if (field === "stopPrice") return { ...s, stopPrice: value };
-        if (field === "limitPrice") return { ...s, limitPrice: value, entry: { ...s.entry, price: value } };
-        return s;
-      })
-    );
-    pushWorkspaceEvent(`Pending ${field} → ${value.toFixed(2)}`);
-  }
-
-  function modifyOpenLevel(id: string, field: "stop" | "takeProfit", value: number) {
-    if (!Number.isFinite(value)) return;
-    pushShapes(
-      shapes.map((s) => {
-        if (s.kind !== "position" || s.id !== id || s.status !== "open") return s;
-        if (field === "stop") return { ...s, stop: { ...s.stop, price: value } };
-        return { ...s, takeProfit: { ...s.takeProfit, price: value } };
-      })
-    );
-    pushWorkspaceEvent(`${field === "stop" ? "SL" : "TP"} → ${value.toFixed(2)}`);
-  }
-
-  function manualClosePosition(id: string) {
-    window.dispatchEvent(new CustomEvent("tr-manual-close", { detail: { id } }));
-  }
-
   async function handlePositionClosed(closed: ClosedPosition) {
     const note = `auto-${closed.reason} · ${closed.pnlPoints >= 0 ? "+" : ""}${closed.pnlPoints.toFixed(2)} pts`;
     const snap = (closed.riskSnapshot || lastRiskSnapshotRef.current) as Record<string, unknown> | null;
@@ -1229,7 +1173,6 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       }
     }
     setDrawTool(t);
-    if (t === "long" || t === "short") setOrdersOpen(true);
   }
 
   function confirmOrder() {
@@ -1246,7 +1189,6 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       }
     }
     window.dispatchEvent(new Event("tr-confirm-position"));
-    setOrdersOpen(false);
     setDrawTool("crosshair");
   }
 
@@ -1482,14 +1424,6 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     [sessionMeta, riskPercent, symbol, shapes, orderRiskMode, fixedRiskInput, fixedLotInput]
   );
 
-  const openPositions = useMemo(
-    () => shapes.filter((s) => s.kind === "position" && s.status === "open"),
-    [shapes]
-  );
-  const pendingOrders = useMemo(
-    () => shapes.filter((s) => s.kind === "position" && s.status === "pending"),
-    [shapes]
-  );
   const activeAccount = useMemo(() => {
     if (!sessionMeta) return null;
     const full = ensureSessionAccounts(sessionMeta);
@@ -1726,286 +1660,6 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           )}
         </div>
 
-        <div className={`tools-wrap${ordersOpen ? " is-open" : ""}`} ref={ordersPanelRef}>
-          <button type="button" className={ordersOpen ? "on" : ""} onClick={() => setOrdersOpen((v) => !v)}>
-            Orders ▾
-          </button>
-          {ordersOpen && (
-            <div className="tools-panel panel-top risk-panel">
-              <select value={orderType} onChange={(e) => setOrderType(e.target.value as OrderType)}>
-                <option value="market">Market</option>
-                <option value="buy_limit">Buy Limit</option>
-                <option value="sell_limit">Sell Limit</option>
-                <option value="buy_stop">Buy Stop</option>
-                <option value="sell_stop">Sell Stop</option>
-                <option value="buy_stop_limit">Buy Stop Limit</option>
-                <option value="sell_stop_limit">Sell Stop Limit</option>
-              </select>
-              {sessionMeta && ensureSessionAccounts(sessionMeta).accounts && (
-                <div className="active-account-block">
-                  <div className="active-account-label">ACTIVE ACCOUNT</div>
-                  <select
-                    value={sessionMeta.activeAccountId || ""}
-                    onChange={(e) => {
-                      const full = ensureSessionAccounts(sessionMeta);
-                      const id = e.target.value;
-                      if (!full.accounts?.some((a) => a.accountId === id && a.enabled !== false)) return;
-                      const next = { ...full, activeAccountId: id, updatedAt: Date.now() };
-                      setSessionMeta(next);
-                      void upsertSession(next);
-                    }}
-                    title="Active account for new trades"
-                  >
-                    {ensureSessionAccounts(sessionMeta)
-                      .accounts!.filter((a) => a.enabled !== false)
-                      .map((a) => (
-                      <option key={a.accountId} value={a.accountId}>
-                        {a.accountId === sessionMeta.activeAccountId ? "● " : ""}
-                        {a.name} · {a.currency} {(a.balance ?? a.initialBalance).toLocaleString()} · 1:{a.leverage}
-                      </option>
-                    ))}
-                  </select>
-                  <ul className="account-switch-list">
-                    {ensureSessionAccounts(sessionMeta).accounts!.map((a) => (
-                      <li
-                        key={a.accountId}
-                        className={
-                          a.accountId === sessionMeta.activeAccountId
-                            ? "acc-active"
-                            : a.enabled === false
-                              ? "acc-disabled"
-                              : ""
-                        }
-                      >
-                        <button
-                          type="button"
-                          disabled={a.enabled === false}
-                          onClick={() => {
-                            if (a.enabled === false) return;
-                            const full = ensureSessionAccounts(sessionMeta);
-                            const next = { ...full, activeAccountId: a.accountId, updatedAt: Date.now() };
-                            setSessionMeta(next);
-                            void upsertSession(next);
-                          }}
-                        >
-                          {a.accountId === sessionMeta.activeAccountId ? "🟢" : a.enabled === false ? "⛔" : "⚪"}{" "}
-                          {a.name}
-                          <span className="muted">
-                            {" "}
-                            {(a.balance ?? a.initialBalance).toLocaleString()} · 1:{a.leverage}
-                            {a.accountId === sessionMeta.activeAccountId ? " · Active" : ""}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              <label className="risk-label">
-                Risk mode
-                <select
-                  value={orderRiskMode}
-                  onChange={(e) => { const v = e.target.value; if (isRiskMode(v)) setOrderRiskMode(v); }}
-                >
-                  <option value="percent_equity">% Equity</option>
-                  <option value="percent_balance">% Balance</option>
-                  <option value="fixed_money">Fixed $</option>
-                  <option value="fixed_lot">Fixed Lot</option>
-                </select>
-              </label>
-              {(orderRiskMode === "percent_equity" || orderRiskMode === "percent_balance") && (
-              <>
-              <label className="risk-label">
-                Risk %
-                <input
-                  type="number"
-                  min={0.01}
-                  max={100}
-                  step={0.01}
-                  value={riskPercentInput}
-                  onChange={(e) => setRiskPercentInput(e.target.value)}
-                  onBlur={() => {
-                    const n = Number(riskPercentInput);
-                    if (!Number.isFinite(n) || n < 0.01 || n > 100) {
-                      setRiskPercentInput(String(riskPercent));
-                      return;
-                    }
-                    const v = Math.round(n * 100) / 100;
-                    setRiskPercent(v);
-                    setRiskPercentInput(String(v));
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                  }}
-                />
-              </label>
-              <div className="risk-presets">
-                {[1, 2, 3].map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    className={riskPercent === p ? "on" : ""}
-                    onClick={() => {
-                      setRiskPercent(p);
-                      setRiskPercentInput(String(p));
-                    }}
-                  >
-                    {p}%
-                  </button>
-                ))}
-              </div>
-              </>
-              )}
-              {orderRiskMode === "fixed_money" && (
-                <label className="risk-label">
-                  Fixed risk ($)
-                  <input
-                    type="number"
-                    min={0.01}
-                    step={1}
-                    value={fixedRiskInput}
-                    onChange={(e) => setFixedRiskInput(e.target.value)}
-                  />
-                </label>
-              )}
-              {orderRiskMode === "fixed_lot" && (
-                <label className="risk-label">
-                  Fixed lot
-                  <input
-                    type="number"
-                    min={0.01}
-                    step={0.01}
-                    value={fixedLotInput}
-                    onChange={(e) => setFixedLotInput(e.target.value)}
-                  />
-                </label>
-              )}
-              <button type="button" className="on" onClick={confirmOrder}>Confirm</button>
-              <button type="button" onClick={() => window.dispatchEvent(new Event("tr-cancel-draft"))}>Cancel draft</button>
-              <button type="button" onClick={() => { setShapes([]); setSelectedShapeId(null); }}>Clear drawings</button>
-              {sessionMeta && (() => {
-                const full = ensureSessionAccounts(sessionMeta);
-                const acc = getActiveAccount(full);
-                if (!acc || (acc.accountType || "personal") !== "prop") return null;
-                const rt = currentBase?.time || 0;
-                return (
-                  <PropAccountStatus
-                    compact
-                    account={acc}
-                    trades={propTrades}
-                    replayTime={rt}
-                    onAccountChange={(next) => {
-                      const nextAccounts = (full.accounts || []).map((a) =>
-                        a.accountId === next.accountId ? next : a
-                      );
-                      const nextMeta = { ...full, accounts: nextAccounts, updatedAt: Date.now() };
-                      setSessionMeta(nextMeta);
-                      void upsertSession(nextMeta);
-                    }}
-                  />
-                );
-              })()}
-              {liveRisk && (
-                <div className="risk-calc" aria-live="polite">
-                  {liveRisk.missingSpec ? (
-                    <p className="tools-note warn-text">Instrument specification required: {liveRisk.missingSpec}</p>
-                  ) : (
-                    <>
-                      <div className="risk-calc-row risk-calc-head">
-                        <span>Equity {liveRisk.equity.toFixed(2)}</span>
-                        <span>Lev 1:{liveRisk.leverage}</span>
-                      </div>
-                      <div className="risk-calc-grid">
-                        <div className="risk-calc-cell">
-                          <span className="risk-calc-k">Target Risk</span>
-                          <span className="risk-calc-v">{liveRisk.targetRiskPercent.toFixed(2)}%</span>
-                        </div>
-                        <div className="risk-calc-cell">
-                          <span className="risk-calc-k">Actual Risk $</span>
-                          <span className="risk-calc-v neg">
-                            {liveRisk.actualRiskAmount != null ? `-$${liveRisk.actualRiskAmount.toFixed(2)}` : "—"}
-                          </span>
-                        </div>
-                        <div className="risk-calc-cell">
-                          <span className="risk-calc-k">Actual Risk %</span>
-                          <span className="risk-calc-v neg">
-                            {liveRisk.actualRiskPercent != null ? `${liveRisk.actualRiskPercent.toFixed(2)}%` : "—"}
-                          </span>
-                        </div>
-                        <div className="risk-calc-cell">
-                          <span className="risk-calc-k">Difference</span>
-                          <span className={`risk-calc-v ${liveRisk.riskDifferencePp != null && liveRisk.riskDifferencePp < -0.001 ? "neg" : ""}`}>
-                            {liveRisk.riskDifferencePp != null
-                              ? `${liveRisk.riskDifferencePp >= 0 ? "+" : ""}${liveRisk.riskDifferencePp.toFixed(2)} pp`
-                              : "—"}
-                          </span>
-                        </div>
-                        <div className="risk-calc-cell">
-                          <span className="risk-calc-k">Lot</span>
-                          <span className="risk-calc-v"><b>{liveRisk.finalLot != null ? liveRisk.finalLot : "—"}</b></span>
-                        </div>
-                        <div className="risk-calc-cell">
-                          <span className="risk-calc-k">Margin</span>
-                          <span className="risk-calc-v">
-                            {liveRisk.marginRequired != null ? `$${liveRisk.marginRequired.toFixed(2)}` : "—"}
-                          </span>
-                        </div>
-                        <div className="risk-calc-cell">
-                          <span className="risk-calc-k">Free Margin</span>
-                          <span className="risk-calc-v">${liveRisk.freeMargin.toFixed(2)}</span>
-                        </div>
-                        <div className="risk-calc-cell">
-                          <span className="risk-calc-k">Margin limit</span>
-                          <span className="risk-calc-v">{liveRisk.marginConstrained ? "YES" : "NO"}</span>
-                        </div>
-                        <div className="risk-calc-cell">
-                          <span className="risk-calc-k">TP Profit $</span>
-                          <span className="risk-calc-v pos">
-                            {liveRisk.potentialProfit != null ? `+$${liveRisk.potentialProfit.toFixed(2)}` : "—"}
-                          </span>
-                        </div>
-                        <div className="risk-calc-cell">
-                          <span className="risk-calc-k">TP Impact %</span>
-                          <span className="risk-calc-v pos">
-                            {liveRisk.actualRewardPercent != null ? `+${liveRisk.actualRewardPercent.toFixed(2)}%` : "—"}
-                          </span>
-                        </div>
-                        <div className="risk-calc-cell">
-                          <span className="risk-calc-k">R:R</span>
-                          <span className="risk-calc-v">
-                            {liveRisk.rr != null ? `${liveRisk.rr.toFixed(2)}R` : "—"}
-                          </span>
-                        </div>
-                        <div className="risk-calc-cell">
-                          <span className="risk-calc-k">SL / TP pts</span>
-                          <span className="risk-calc-v">
-                            {liveRisk.slDistance.toFixed(1)}
-                            {liveRisk.tpDistance != null ? ` / ${liveRisk.tpDistance.toFixed(1)}` : ""}
-                          </span>
-                        </div>
-                      </div>
-                      {liveRisk.marginConstrained && (
-                        <p className="tools-note warn-text">Reason: Margin/Lot constraint (actual risk below target)</p>
-                      )}
-                      {liveRisk.insufficientVolume && liveRisk.volumeBlockReason && (
-                        <p className="tools-note warn-text">{liveRisk.volumeBlockReason}</p>
-                      )}
-                      <p className="tools-note risk-calc-mobile">
-                        Risk: {liveRisk.actualRiskAmount != null ? `-$${liveRisk.actualRiskAmount.toFixed(2)}` : "—"}
-                        {liveRisk.actualRiskPercent != null ? ` / -${liveRisk.actualRiskPercent.toFixed(2)}%` : ""}
-                        {" · "}TP: {liveRisk.potentialProfit != null ? `+$${liveRisk.potentialProfit.toFixed(2)}` : "—"}
-                        {liveRisk.actualRewardPercent != null ? ` / +${liveRisk.actualRewardPercent.toFixed(2)}%` : ""}
-                        {" · "}R:R {liveRisk.rr != null ? liveRisk.rr.toFixed(2) : "—"}
-                        {" · "}Lot {liveRisk.finalLot ?? "—"}
-                      </p>
-                    </>
-                  )}
-                </div>
-              )}
-              <p className="tools-note">Pick Long/Short on the chart toolbar, set Risk % and order type, then Confirm.</p>
-            </div>
-          )}
-        </div>
 
         <div className="session-jump-wrap">
           <button
@@ -2141,215 +1795,9 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
             ? `${activeAccount.name} · ${(activeAccount.balance ?? activeAccount.initialBalance).toLocaleString()} · risk ${riskPercent}%`
             : "—"}
         </span>
-        <span className="ws-item">
-          <b>Book</b> {openPositions.length} open · {pendingOrders.length} pending
-        </span>
         <span className="ws-item muted">{dataSource === "loaded" ? "1s data" : dataSource}</span>
-        <button type="button" className={bookOpen ? "on" : ""} onClick={() => setBookOpen((v) => !v)}>
-          Book ▾
-        </button>
-      </div>
+</div>
 
-      {bookOpen && (
-        <div className="workspace-book card">
-          <div className="workspace-book-cols">
-            <div>
-              <h4>Open positions</h4>
-              {openPositions.length === 0 && <p className="hint">None</p>}
-              {openPositions.map((s) => {
-                if (s.kind !== "position") return null;
-                const mid = currentBase?.close;
-                const pts =
-                  mid != null
-                    ? s.side === "long"
-                      ? mid - s.entry.price
-                      : s.entry.price - mid
-                    : null;
-                const accName =
-                  sessionMeta && s.accountId
-                    ? ensureSessionAccounts(sessionMeta).accounts?.find((a) => a.accountId === s.accountId)?.name
-                    : null;
-                return (
-                  <div key={s.id} className={`book-card${selectedShapeId === s.id ? " on" : ""}`}>
-                    <button type="button" className="book-row-main" onClick={() => setSelectedShapeId(s.id)}>
-                      <span className={s.side === "long" ? "up" : "down"}>{s.side.toUpperCase()}</span>
-                      <span>{(s.orderType || "market").replace(/_/g, " ")}</span>
-                      <span>@ {s.entry.price.toFixed(2)}</span>
-                      <span className={pts != null && pts >= 0 ? "up" : "down"}>
-                        {pts != null ? `${pts >= 0 ? "+" : ""}${pts.toFixed(1)} pts` : "—"}
-                      </span>
-                      <span className="muted">
-                        Lot{" "}
-                        {(() => {
-                          const lot = lotFromSnapshot(s.riskSnapshot as Record<string, unknown> | undefined);
-                          return lot != null ? lot.toFixed(2) : "—";
-                        })()}
-                      </span>
-                      {accName ? <span className="muted">{accName}</span> : null}
-                    </button>
-                    <div className="book-edit-row">
-                      <label>
-                        SL
-                        <input
-                          type="number"
-                          step="any"
-                          defaultValue={s.stop.price}
-                          key={`sl-${s.id}-${s.stop.price}`}
-                          onBlur={(e) => {
-                            const v = Number(e.target.value);
-                            if (Number.isFinite(v) && v !== s.stop.price) modifyOpenLevel(s.id, "stop", v);
-                          }}
-                        />
-                      </label>
-                      <label>
-                        TP
-                        <input
-                          type="number"
-                          step="any"
-                          defaultValue={s.takeProfit.price}
-                          key={`tp-${s.id}-${s.takeProfit.price}`}
-                          onBlur={(e) => {
-                            const v = Number(e.target.value);
-                            if (Number.isFinite(v) && v !== s.takeProfit.price) modifyOpenLevel(s.id, "takeProfit", v);
-                          }}
-                        />
-                      </label>
-                      <button type="button" className="on" onClick={() => manualClosePosition(s.id)}>
-                        Close
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div>
-              <h4>Pending orders</h4>
-              {pendingOrders.length === 0 && <p className="hint">None</p>}
-              {pendingOrders.map((s) => {
-                if (s.kind !== "position") return null;
-                const isSl = s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit";
-                return (
-                  <div key={s.id} className={`book-card pending-card${selectedShapeId === s.id ? " on" : ""}`}>
-                    <button type="button" className="book-row-main" onClick={() => setSelectedShapeId(s.id)}>
-                      <span>{(s.orderType || "").replace(/_/g, " ").toUpperCase()}</span>
-                      <span className={s.side === "long" ? "up" : "down"}>{s.side.toUpperCase()}</span>
-                      <span className="muted">PENDING</span>
-                      <span className="muted">
-                        Lot{" "}
-                        {(() => {
-                          const lot = lotFromSnapshot(s.riskSnapshot as Record<string, unknown> | undefined);
-                          return lot != null ? lot.toFixed(2) : "—";
-                        })()}
-                      </span>
-                    </button>
-                    {(() => {
-                      const w = validatePendingVsMarket(
-                        s.orderType,
-                        s.side,
-                        currentBase?.close,
-                        s.entry.price,
-                        s.stopPrice,
-                        s.limitPrice
-                      );
-                      return w.message ? <p className="book-warn">{w.message}</p> : null;
-                    })()}
-                    <div className="book-edit-row">
-                      {isSl ? (
-                        <>
-                          <label>
-                            Stop
-                            <input
-                              type="number"
-                              step="any"
-                              defaultValue={s.stopPrice ?? ""}
-                              key={`stp-${s.id}-${s.stopPrice}`}
-                              onBlur={(e) => {
-                                const v = Number(e.target.value);
-                                if (Number.isFinite(v)) modifyPendingPrice(s.id, "stopPrice", v);
-                              }}
-                            />
-                          </label>
-                          <label>
-                            Limit
-                            <input
-                              type="number"
-                              step="any"
-                              defaultValue={s.limitPrice ?? s.entry.price}
-                              key={`lim-${s.id}-${s.limitPrice ?? s.entry.price}`}
-                              onBlur={(e) => {
-                                const v = Number(e.target.value);
-                                if (Number.isFinite(v)) modifyPendingPrice(s.id, "limitPrice", v);
-                              }}
-                            />
-                          </label>
-                        </>
-                      ) : (
-                        <label>
-                          Entry
-                          <input
-                            type="number"
-                            step="any"
-                            defaultValue={s.entry.price}
-                            key={`en-${s.id}-${s.entry.price}`}
-                            onBlur={(e) => {
-                              const v = Number(e.target.value);
-                              if (Number.isFinite(v) && v !== s.entry.price) modifyPendingPrice(s.id, "entry", v);
-                            }}
-                          />
-                        </label>
-                      )}
-                      <label>
-                        SL
-                        <input
-                          type="number"
-                          step="any"
-                          defaultValue={s.stop.price}
-                          key={`psl-${s.id}-${s.stop.price}`}
-                          onBlur={(e) => {
-                            const v = Number(e.target.value);
-                            if (Number.isFinite(v) && v !== s.stop.price) modifyPendingPrice(s.id, "stop", v);
-                          }}
-                        />
-                      </label>
-                      <label>
-                        TP
-                        <input
-                          type="number"
-                          step="any"
-                          defaultValue={s.takeProfit.price}
-                          key={`ptp-${s.id}-${s.takeProfit.price}`}
-                          onBlur={(e) => {
-                            const v = Number(e.target.value);
-                            if (Number.isFinite(v) && v !== s.takeProfit.price)
-                              modifyPendingPrice(s.id, "takeProfit", v);
-                          }}
-                        />
-                      </label>
-                      <button type="button" className="btn-ghost" onClick={() => cancelPendingOrder(s.id)}>
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div>
-              <h4>Timeline</h4>
-              {workspaceLog.length === 0 && <p className="hint">Events appear as you trade</p>}
-              <ul className="workspace-timeline">
-                {workspaceLog.slice(0, 12).map((e, i) => (
-                  <li key={`${e.t}-${i}`}>
-                    <span className="muted">
-                      {new Date(e.t * 1000).toISOString().slice(11, 19)}
-                    </span>{" "}
-                    {e.text}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="chartbox">
         <Toolbar
