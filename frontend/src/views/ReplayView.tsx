@@ -1357,6 +1357,12 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   }, [sessionMeta?.id]);
 
   // v3.16.1 live risk calculator from draft/selected position + order risk %
+  // Brief 01: tick size of the active instrument (drag snapping, decimals, tick counts on the chart).
+  const chartTickSize = useMemo(() => {
+    const inst = (sessionMeta ? ensureSessionAccounts(sessionMeta).instrument : null) || defaultInstrument(symbol);
+    return inst.tickSize > 0 ? inst.tickSize : 0.01;
+  }, [sessionMeta, symbol]);
+
   const captureRiskSnapshot = useCallback(
     (pos: import("../components/Chart").PositionShape) => {
       if (!sessionMeta) return null;
@@ -1425,14 +1431,14 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         leverage: result.leverage,
         riskPercent: result.riskPercent,
         riskAmount: result.riskAmount,
-        riskMode: orderRiskMode || mode,
+        riskMode: mode,
         fixedRiskAmount:
-          orderRiskMode === "fixed_money"
-            ? Number(fixedRiskInput) || account.fixedRiskAmount
+          mode === "fixed_money"
+            ? (posRisk?.amount != null ? posRisk.amount : Number(fixedRiskInput) || account.fixedRiskAmount)
             : account.fixedRiskAmount,
         fixedLot:
-          orderRiskMode === "fixed_lot"
-            ? Number(fixedLotInput) || account.fixedLot
+          mode === "fixed_lot"
+            ? (posRisk?.lot != null ? posRisk.lot : Number(fixedLotInput) || account.fixedLot)
             : account.fixedLot,
         entryPrice: pos.entry.price,
         stopLoss: pos.stop.price,
@@ -2375,6 +2381,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           activeAccountId={sessionMeta?.activeAccountId ?? null}
           indicators={indicators}
           barSeconds={timeframeSeconds}
+          tickSize={chartTickSize}
           getDraftRisk={() => ({
             mode: orderRiskMode,
             percent: riskPercent,

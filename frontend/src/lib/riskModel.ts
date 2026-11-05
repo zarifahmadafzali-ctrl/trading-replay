@@ -476,7 +476,13 @@ export function calculateRisk(input: RiskCalcInput): RiskCalcResult {
     const candidates = [riskBasedLot, marginMaxLot, accMax, instMax].filter(
       (x): x is number => x != null && Number.isFinite(x) && x > 0
     );
-    if (candidates.length) {
+    // v3.47.2 — marginMaxLot === 0 means free margin cannot afford even the minimum lot.
+    // It used to be dropped from `candidates` (x > 0 filter), which silently IGNORED the margin
+    // limit and let the order open with a lot needing far more margin than the account has.
+    if (!(marginMaxLot > 0)) {
+      insufficientVolume = true;
+      volumeBlockReason = "Not enough free margin for the minimum lot.";
+    } else if (candidates.length) {
       const rawFinal = Math.min(...candidates);
       finalLot = roundDownToStep(rawFinal, step, effectiveMin);
       if (finalLot <= 0) {

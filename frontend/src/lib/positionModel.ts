@@ -246,14 +246,7 @@ export function prepareConfirm<T extends PositionLike>(
   const mt = market.time != null && Number.isFinite(market.time) ? market.time : null;
   let pos: T = p;
   if (p.orderType === "market" && mp != null && mt != null) {
-    const dPrice = mp - p.entry.price;
-    // Keep user SL/TP distances when the fill price refreshes to current market.
-    pos = {
-      ...p,
-      entry: { time: mt, price: mp },
-      stop: { time: mt, price: p.stop.price + dPrice },
-      takeProfit: { time: mt, price: p.takeProfit.price + dPrice },
-    };
+    pos = { ...p, entry: { time: mt, price: mp } };
     if (pos.rightTime != null && pos.rightTime <= mt) {
       pos = { ...pos, rightTime: mt + Math.max(60, (p.rightTime ?? mt) - p.entry.time) };
     }

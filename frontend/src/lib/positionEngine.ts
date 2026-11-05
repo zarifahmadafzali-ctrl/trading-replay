@@ -40,7 +40,7 @@ export type EngineHooks<P extends PositionLike = PositionLike> = {
   /** Extra fields merged into the closed record (exit screenshot). */
   onClose?: (pos: P, exitPrice: number, bar: BarLike) => Partial<ClosedInfo> | null | undefined;
   /** Return false to CANCEL a pending order instead of filling it (e.g. prop account no longer allowed to trade). */
-  canFill?: (pos: P, bar: BarLike) => boolean;
+  canFill?: (pos: P, bar: BarLike) => boolean | { ok: false; reason: string };
 };
 
 export type EngineEvent = {
@@ -94,6 +94,15 @@ function extendRight<P extends PositionLike>(orig: P, fillTime: number): Partial
   return { rightTime: fillTime + width } as Partial<P>;
 }
 
+
+function fillGate(hooks: EngineHooks<any>, s: PositionLike, bar: BarLike): { ok: boolean; reason: string | null } {
+  if (!hooks.canFill) return { ok: true, reason: null };
+  const r = hooks.canFill(s, bar);
+  if (r === true || r === undefined) return { ok: true, reason: null };
+  if (r === false) return { ok: false, reason: null };
+  return { ok: false, reason: r.reason };
+}
+
 const sideTxt = (s: PositionLike) => s.side.toUpperCase();
 const typeTxt = (s: PositionLike) => String(s.orderType || "").replace(/_/g, " ");
 
@@ -139,9 +148,10 @@ export function runPositionBars<S extends { kind: string }>(
           if (triggered) {
             const limitHit = s.orderType === "buy_stop_limit" ? lo <= limitPx : hi >= limitPx;
             if (limitHit) {
-              if (hooks.canFill && !hooks.canFill(s, bar)) {
+              const gate = fillGate(hooks, s, bar);
+              if (!gate.ok) {
                 mutated = true;
-                events.push({ type: "cancelled", id: s.id, text: `Cancelled · ${sideTxt(s)} stop-limit (trading not allowed)` });
+                events.push({ type: "cancelled", id: s.id, text: gate.reason || `Cancelled · ${sideTxt(s)} stop-limit (trading not allowed)` });
                 continue;
               }
               mutated = true;
@@ -169,9 +179,10 @@ export function runPositionBars<S extends { kind: string }>(
         }
 
         if (pendingEntryTouched(s.orderType, s.entry.price, hi, lo)) {
-          if (hooks.canFill && !hooks.canFill(s, bar)) {
+          const gate = fillGate(hooks, s, bar);
+          if (!gate.ok) {
             mutated = true;
-            events.push({ type: "cancelled", id: s.id, text: `Cancelled · ${sideTxt(s)} ${typeTxt(s)} (trading not allowed)` });
+            events.push({ type: "cancelled", id: s.id, text: gate.reason || `Cancelled · ${sideTxt(s)} ${typeTxt(s)} (trading not allowed)` });
             continue;
           }
           mutated = true;

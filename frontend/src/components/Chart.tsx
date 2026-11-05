@@ -54,13 +54,23 @@ import {
   positionBox,
   hitTestPosition,
   applyPositionDrag,
-  tickFromDecimals,
   type PositionRiskInput,
   type PositionStyle,
   type PositionPart,
 } from "../lib/positionModel";
 import { runPositionBars, manualClose as engineManualClose } from "../lib/positionEngine";
 import { drawPosition } from "../lib/positionRender";
+import {
+  freezeSizing,
+  lotOverrideRisk,
+  checkFillLot,
+  effectiveLot,
+  pointValueOf,
+  deriveRisk,
+  openPnLCurrency,
+  tickAndDecimals,
+} from "../lib/positionSizing";
+import type { PositionSizing, SnapLike } from "../lib/positionSizing";
 
 export type IndicatorKind = "sma" | "ema" | "vwap" | "rsi";
 export type IndicatorSpec = { id: string; kind: IndicatorKind; period?: number; color: string };
@@ -137,7 +147,10 @@ export type PositionShape = {
   risk?: PositionRiskInput;
   /** When true, only selection is allowed — no drag. */
   locked?: boolean;
+  /** Brief 01: lot frozen at Confirm (all order types). Moving SL/TP later changes risk$, never this lot. */
+  sizing?: PositionSizing;
 };
+
 
 export type ClosedPosition = {
   id: string;
@@ -311,6 +324,7 @@ export function Chart({
   canFillPosition,
   getDraftRisk,
   barSeconds = 60,
+  tickSize = 0.01,
   captureRiskSnapshot,
   activeAccountId,
   indicators = [],
@@ -336,11 +350,16 @@ export function Chart({
   onDrawToolChange?: (tool: DrawTool) => void;
   onPositionClosed?: (closed: ClosedPosition) => void;
   /** Return false to cancel a pending fill (e.g. prop account blocked). */
-  canFillPosition?: (pos: PositionShape, bar: { time: number }) => boolean;
+  canFillPosition?: (
+    pos: PositionShape,
+    bar: { time: number }
+  ) => boolean | { ok: false; reason: string };
   /** Copy order-panel risk into a new draft so later panel edits do not affect it. */
   getDraftRisk?: () => PositionRiskInput | undefined;
   /** Display timeframe seconds — used for default box width. */
   barSeconds?: number;
+  /** Instrument tick size (price step). Drives drag snapping, decimals and tick counts. */
+  tickSize?: number;
   /** Build immutable risk snapshot at fill time (v3.16.1). */
   captureRiskSnapshot?: (pos: PositionShape) => Record<string, unknown> | null;
   /** Active account when drafting (stamped onto position; not changed by later switches). */
@@ -348,6 +367,9 @@ export function Chart({
   indicators?: IndicatorSpec[];
   magnetMode?: MagnetMode;
 }) {
+  const inst = tickAndDecimals(tickSize);
+  const instRef = useRef(inst);
+  instRef.current = inst;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
   const handlesRef = useRef<ChartHandles | null>(null);
@@ -381,7 +403,7 @@ export function Chart({
   onDrawToolChangeRef.current = onDrawToolChange;
   const onPositionClosedRef = useRef(onPositionClosed);
   onPositionClosedRef.current = onPositionClosed;
-  const canFillRef = useRef<((s: PositionShape, bar: { time: number }) => boolean) | null>(null);
+  const canFillRef = useRef<((s: PositionShape, bar: { time: number }) => boolean | { ok: false; reason: string }) | null>(null);
   canFillRef.current = canFillPosition ?? null;
   const captureRiskSnapshotRef = useRef(captureRiskSnapshot);
   captureRiskSnapshotRef.current = captureRiskSnapshot;
@@ -610,39 +632,67 @@ export function Chart({
   function confirmDrafts() {
     let n = 0;
     const events: string[] = [];
+    const blocked: string[] = [];
+    const dec = instRef.current.decimals;
+    const market = { price: marketRef.current.price, time: marketRef.current.time };
     const next = shapesRef.current.map((s) => {
-      if (s.kind === "position" && s.status === "draft") {
-        n++;
-        // Market fills immediately; all pending types wait for entry on 1s bars.
-        const nextStatus: PositionShape["status"] =
-          s.orderType === "market" ? "open" : "pending";
-        const ownerId = s.accountId || activeAccountIdRef.current || undefined;
-        const snap =
-          nextStatus === "open" ? captureRiskSnapshotRef.current?.({ ...s, accountId: ownerId }) : null;
-        const entryShot =
-          nextStatus === "open" ? capturePositionScreenshot({ ...s, status: "open" }) : undefined;
-        if (nextStatus === "open") {
-          events.push(`Filled · ${s.side.toUpperCase()} market @ ${s.entry.price.toFixed(2)}`);
-        } else {
-          events.push(
-            `Pending · ${(s.orderType || "").replace(/_/g, " ")} · ${s.side.toUpperCase()} @ ${s.entry.price.toFixed(2)}`
-          );
-        }
-        return {
-          ...s,
-          status: nextStatus,
-          ...(ownerId ? { accountId: ownerId } : {}),
-          ...(snap ? { riskSnapshot: snap } : {}),
-          ...(entryShot ? { entryScreenshot: entryShot } : {}),
-        };
+      if (s.kind !== "position" || s.status !== "draft") return s;
+      const prepared = prepareConfirm(s as PositionShape, market);
+      if (!prepared.ok) {
+        const msg = prepared.issues?.map((i) => i.message).filter(Boolean).join("; ") || "Invalid levels";
+        blocked.push(msg);
+        return s;
       }
-      return s;
+      let sized = prepared.pos as PositionShape;
+      const nextStatus: PositionShape["status"] =
+        sized.orderType === "market" ? "open" : "pending";
+      const ownerId = sized.accountId || activeAccountIdRef.current || undefined;
+      if (ownerId) sized = { ...sized, accountId: ownerId, status: nextStatus };
+      else sized = { ...sized, status: nextStatus };
+      // Snapshot at Confirm (market or pending): freezes lot; later SL/TP moves do not resize.
+      const freezeSnap = (captureRiskSnapshotRef.current?.(sized) as SnapLike | null) ?? null;
+      const fz = freezeSizing(
+        freezeSnap,
+        market.time ?? sized.entry.time,
+        (sized.risk as { mode?: string } | undefined)?.mode ??
+          (freezeSnap?.mode as string | undefined) ??
+          (sized.risk as { mode?: string } | undefined)?.mode
+      );
+      if (fz.blocked) {
+        blocked.push(fz.reason || "No valid lot");
+        return s;
+      }
+      n++;
+      const entryShot = nextStatus === "open" ? capturePositionScreenshot(sized) : undefined;
+      if (nextStatus === "open") {
+        events.push(`Filled · ${sized.side.toUpperCase()} market @ ${sized.entry.price.toFixed(dec)}`);
+      } else {
+        events.push(
+          `Pending · ${(sized.orderType || "").replace(/_/g, " ")} · ${sized.side.toUpperCase()} @ ${sized.entry.price.toFixed(dec)}`
+        );
+      }
+      return {
+        ...sized,
+        ...(fz.sizing ? { sizing: fz.sizing } : {}),
+        ...(nextStatus === "open" && freezeSnap
+          ? { riskSnapshot: { ...freezeSnap, ...(fz.sizing ? { lotFrozenAtConfirm: true } : {}) } }
+          : nextStatus === "pending" && freezeSnap
+            ? { riskSnapshot: { ...freezeSnap, ...(fz.sizing ? { lotFrozenAtConfirm: true } : {}) } }
+            : {}),
+        ...(entryShot ? { entryScreenshot: entryShot } : {}),
+      } as Shape;
     });
     setShapes(next);
     for (const text of events) {
       window.dispatchEvent(new CustomEvent("tr-workspace-event", { detail: { text } }));
     }
-    setHint(n ? `Order confirmed (${n})` : "No draft to confirm");
+    if (blocked.length) {
+      const msg = `Not confirmed · ${blocked[0]}`;
+      window.dispatchEvent(new CustomEvent("tr-workspace-event", { detail: { text: msg } }));
+      setHint(n ? `Order confirmed (${n}) · ${msg}` : msg);
+    } else {
+      setHint(n ? `Order confirmed (${n})` : "No draft to confirm");
+    }
   }
 
   /** Manual close at current replay market price — Journal via onPositionClosed. */
@@ -888,7 +938,7 @@ export function Chart({
             project: toXY,
             bounds: { w, h },
             selected: selectedShapeIdRef.current === s.id,
-            priceDecimals: 2,
+            priceDecimals: instRef.current.decimals,
             barSec,
           })
         ) {
@@ -1083,7 +1133,7 @@ export function Chart({
         const priceDecimals = 2;
         const ctxT = {
           priceDecimals,
-          tick: tickFromDecimals(priceDecimals),
+          tick: instRef.current,
           lot: liveSnap?.finalLot ?? null,
           riskAmount: liveSnap?.actualRiskAmount ?? null,
           rewardAmount: liveSnap?.potentialProfit ?? null,
@@ -1477,7 +1527,7 @@ export function Chart({
       pos: (d.originShape as PositionShape) || s,
     };
     const next = applyPositionDrag(s as never, part, pt, origin as never, {
-      tick: tickFromDecimals(2),
+      tick: instRef.current,
       market: marketRef.current.price,
       barSec: Math.max(1, barSeconds || 60),
     });
@@ -2225,8 +2275,23 @@ export function Chart({
       {
         onFill: (f) => {
           const filled = f as PositionShape;
+          const fz = filled.sizing;
+          const forSnap = fz ? ({ ...filled, risk: lotOverrideRisk(fz) } as PositionShape) : filled;
+          const snap = captureRiskSnapshotRef.current?.(forSnap) ?? undefined;
           return {
-            riskSnapshot: captureRiskSnapshotRef.current?.(filled) ?? undefined,
+            riskSnapshot: snap
+              ? {
+                  ...snap,
+                  ...(fz
+                    ? {
+                        riskMode: fz.mode ?? (snap as { riskMode?: unknown }).riskMode,
+                        lotFrozenAtConfirm: true,
+                        lotFrozenAt: fz.atTime,
+                        riskAmountAtConfirm: fz.riskAmountAtConfirm ?? null,
+                      }
+                    : {}),
+                }
+              : undefined,
             entryScreenshot: capturePositionScreenshot(filled) ?? undefined,
           };
         },
@@ -2235,8 +2300,22 @@ export function Chart({
         }),
         canFill: (s, bar) => {
           const fn = canFillRef.current;
-          if (!fn) return true;
-          return fn(s as PositionShape, bar);
+          if (fn) {
+            const r = fn(s as PositionShape, bar);
+            if (r === false) return false;
+            if (r && typeof r === "object" && r.ok === false) return r;
+          }
+          const sz = (s as PositionShape).sizing;
+          if (sz && captureRiskSnapshotRef.current) {
+            const chk = captureRiskSnapshotRef.current({
+              ...(s as PositionShape),
+              risk: lotOverrideRisk(sz),
+            });
+            const verdict = checkFillLot(sz.lot, (chk as { finalLot?: number | null } | null)?.finalLot);
+            if (!verdict.ok)
+              return { ok: false as const, reason: verdict.reason || "Cancelled · insufficient margin" };
+          }
+          return true;
         },
       },
       { gapFill: false }
@@ -2288,7 +2367,7 @@ export function Chart({
               position={sel as never}
               container={{ w: wBox, h: hBox }}
               priceDecimals={2}
-              tick={tickFromDecimals(2)}
+              tick={tickSize}
               barSec={Math.max(1, barSeconds || 60)}
               issues={issues}
               savedDefaults={loadPositionDefaults()}

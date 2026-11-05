@@ -213,4 +213,4 @@ function legacyRun(shapes, seq) {
 }
 
 console.log(`position tests: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+if (fail) process.exitCode = 1;
