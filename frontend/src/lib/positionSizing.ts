@@ -133,3 +133,76 @@ export function tickAndDecimals(tickSize: number | null | undefined): { tick: nu
   while (d < 10 && Math.abs(tick * Math.pow(10, d) - Math.round(tick * Math.pow(10, d))) > 1e-9) d++;
   return { tick, decimals: d };
 }
+
+export type SizingInfo = {
+  lot: number | null;
+  pointValue: number | null;
+  riskAmount: number | null;
+  rewardAmount: number | null;
+  riskPercent: number | null;
+  rewardPercent: number | null;
+  rr: number | null;
+  openPnL: number | null;
+};
+
+type LiveSnap = {
+  finalLot?: number | null;
+  pointValue?: number | null;
+  actualRiskAmount?: number | null;
+  potentialProfit?: number | null;
+  actualRiskPercent?: number | null;
+  actualRewardPercent?: number | null;
+  rr?: number | null;
+  equity?: number | null;
+} | null | undefined;
+
+/**
+ * One place for the numbers the bar and the box show.
+ * draft  -> live calculation (lot follows SL while the trader is still editing)
+ * others -> confirmed lot, risk/reward re-derived from the CURRENT stop/target
+ */
+export function sizingInfo(
+  p: {
+    status: "draft" | "pending" | "open";
+    side: Side;
+    entry: { price: number };
+    stop: { price: number };
+    takeProfit: { price: number };
+    sizing?: PositionSizing;
+    riskSnapshot?: Record<string, unknown>;
+  },
+  live: LiveSnap,
+  market: number | null | undefined
+): SizingInfo {
+  const empty: SizingInfo = { lot: null, pointValue: null, riskAmount: null, rewardAmount: null, riskPercent: null, rewardPercent: null, rr: null, openPnL: null };
+  if (p.status === "draft") {
+    return {
+      ...empty,
+      lot: isPos(live?.finalLot) ? (live!.finalLot as number) : null,
+      pointValue: isPos(live?.pointValue) ? (live!.pointValue as number) : null,
+      riskAmount: typeof live?.actualRiskAmount === "number" ? live.actualRiskAmount : null,
+      rewardAmount: typeof live?.potentialProfit === "number" ? live.potentialProfit : null,
+      riskPercent: typeof live?.actualRiskPercent === "number" ? live.actualRiskPercent : null,
+      rewardPercent: typeof live?.actualRewardPercent === "number" ? live.actualRewardPercent : null,
+      rr: typeof live?.rr === "number" ? live.rr : null,
+    };
+  }
+  const lot = effectiveLot(p, live as SnapLike | null);
+  const pv = pointValueOf(p, live as SnapLike | null);
+  const eqRaw = Number((p.riskSnapshot as { equity?: number } | undefined)?.equity ?? live?.equity);
+  const d = lot != null && pv != null
+    ? deriveRisk({ lot, pointValue: pv, entry: p.entry.price, stop: p.stop.price, tp: p.takeProfit.price, equity: Number.isFinite(eqRaw) ? eqRaw : null })
+    : null;
+  return {
+    lot,
+    pointValue: pv,
+    riskAmount: d ? d.riskAmount : null,
+    rewardAmount: d ? d.rewardAmount : null,
+    riskPercent: d ? d.riskPercent : null,
+    rewardPercent: d ? d.rewardPercent : null,
+    rr: d ? d.rr : null,
+    openPnL: p.status === "open" && lot != null && pv != null && market != null && Number.isFinite(market)
+      ? openPnLCurrency(p.side, p.entry.price, market, lot, pv)
+      : null,
+  };
+}

@@ -74,7 +74,15 @@ export type PositionLike = {
   style?: Partial<PositionStyle>;
   risk?: PositionRiskInput;
   locked?: boolean;
+  // ---- Brief 02 optional fields ----
+  /** false = the order type was chosen by hand and is never auto-detected. Absent/true = auto. */
+  orderTypeAuto?: boolean;
+  /** Fixed reward:risk. While enabled, the target follows entry/stop. */
+  rrLock?: RRLock;
 };
+
+export type RRLock = { enabled: boolean; ratio: number };
+export const DEFAULT_RR = 2;
 
 export type PositionPart =
   | "stop"
@@ -117,6 +125,11 @@ export function normalizePosition<T extends PositionLike>(p: T): T {
   const out: T = { ...p };
   if (out.rightTime != null && !(Number.isFinite(out.rightTime) && out.rightTime > out.entry.time)) {
     delete out.rightTime;
+  }
+  if (out.rrLock) {
+    const lk = out.rrLock;
+    if (typeof lk.enabled !== "boolean" || !(Number.isFinite(lk.ratio) && lk.ratio > 0)) delete out.rrLock;
+    else if (lk.ratio < 0.1 || lk.ratio > 100) out.rrLock = { enabled: lk.enabled, ratio: Math.max(0.1, Math.min(100, lk.ratio)) };
   }
   if (out.risk) {
     const r = out.risk;
@@ -295,13 +308,7 @@ export function buildPositionTexts(p: PositionLike, c: TextCtx): PositionTexts {
   const target = `Target: ${p.takeProfit.price.toFixed(d)} (${tpPct.toFixed(2)}%) ${tpTicks}${tpAmt}`;
   const stop = `Stop: ${p.stop.price.toFixed(d)} (-${slPct.toFixed(2)}%) ${slTicks}${slAmt}`;
   const parts: string[] = [];
-  if (p.status === "open" && c.openPnL != null && Number.isFinite(c.openPnL)) {
-    const pnlLabel =
-      c.lot != null && Number.isFinite(c.lot) && c.lot > 0
-        ? `Open P&L: ${c.openPnL >= 0 ? "+" : "-"}$${Math.abs(c.openPnL).toFixed(2)}`
-        : `Open P&L: ${signed(c.openPnL)} pts`;
-    parts.push(pnlLabel);
-  }
+  if (p.status === "open" && c.openPnL != null && Number.isFinite(c.openPnL)) parts.push(`Open P&L: ${signed(c.openPnL)}`);
   if (c.lot != null && Number.isFinite(c.lot)) parts.push(`Qty: ${c.lot}`);
   if (rr != null) parts.push(`Risk/Reward Ratio: ${rr.toFixed(2)}`);
   const center = parts.join(", ");
@@ -374,7 +381,7 @@ export type DragOrigin = { pt: { time: number; price: number }; pos: PositionLik
 export type DragOpts = { tick: number; market?: number | null; barSec: number };
 
 /** Pure drag: always computed from the ORIGIN shape captured at pointer-down. */
-export function applyPositionDrag<T extends PositionLike>(
+function dragCore<T extends PositionLike>(
   p: T,
   part: PositionPart,
   pt: { time: number; price: number },
@@ -410,7 +417,8 @@ export function applyPositionDrag<T extends PositionLike>(
     case "entry":
     case "body": {
       if (!draftOrPending) return p;
-      if (og.orderType === "market" && part === "entry") return p;
+      // A manual Market order is pinned to the market; an AUTO market draft may be dragged away (becomes limit/stop).
+      if (og.orderType === "market" && og.orderTypeAuto === false && part === "entry") return p;
       const dPrice = snap(pt.price) - snap(origin.pt.price);
       const dTime = Math.round(pt.time - origin.pt.time);
       const shift = (q: Pt): Pt => ({ time: q.time + dTime, price: q.price + dPrice });
@@ -473,4 +481,171 @@ export function hexToRgba(hex: string, alpha: number): string {
   if (!m) return `rgba(128,128,128,${alpha})`;
   const n = parseInt(m[1], 16);
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${Math.max(0, Math.min(1, alpha))})`;
+}
+
+// ================================================================ Brief 02: auto order type, R:R lock, draft sync
+
+export type TypeChoice = "auto" | "market" | "limit" | "stop" | "stop_limit";
+
+const isStopLimitType = (t: PosOrderType) => t === "buy_stop_limit" || t === "sell_stop_limit";
+
+/** Order type from where the entry sits relative to the market. Stop-Limit is never auto-detected. */
+export function detectOrderType(side: Side, entry: number, market: number, tol: number): PosOrderType {
+  if (Math.abs(entry - market) <= tol + 1e-12) return "market";
+  if (side === "long") return entry < market ? "buy_limit" : "buy_stop";
+  return entry > market ? "sell_limit" : "sell_stop";
+}
+
+/** Which dropdown choice matches this position (for the bar). */
+export function typeChoiceOf(p: Pick<PositionLike, "orderType" | "orderTypeAuto">): TypeChoice {
+  if (p.orderTypeAuto !== false) return "auto";
+  if (p.orderType === "market") return "market";
+  if (p.orderType === "buy_limit" || p.orderType === "sell_limit") return "limit";
+  if (p.orderType === "buy_stop" || p.orderType === "sell_stop") return "stop";
+  return "stop_limit";
+}
+
+export function applyRRLock<T extends PositionLike>(
+  p: T,
+  changed: "stop" | "entry" | "ratio" | "takeProfit",
+  tick: number
+): T {
+  const lk = p.rrLock;
+  if (!lk || !lk.enabled || !(lk.ratio > 0)) return p;
+  const e = p.entry.price;
+  const risk = Math.abs(e - p.stop.price);
+  if (!(risk > 0)) return p;
+  if (changed === "takeProfit") {
+    const reward = Math.abs(p.takeProfit.price - e);
+    if (!(reward > 0)) return p;
+    const r = Math.round((reward / risk) * 100) / 100;
+    if (!(r > 0) || r === lk.ratio) return p;
+    return { ...p, rrLock: { ...lk, ratio: r } };
+  }
+  const long = p.side === "long";
+  const tp = snapToTick(long ? e + lk.ratio * risk : e - lk.ratio * risk, tick);
+  if (tp === p.takeProfit.price) return p;
+  return { ...p, takeProfit: { ...p.takeProfit, price: tp } };
+}
+
+export function enableRRLock<T extends PositionLike>(p: T, ratio: number, tick: number): T {
+  const r = Number.isFinite(ratio) && ratio > 0 ? ratio : DEFAULT_RR;
+  return applyRRLock({ ...p, rrLock: { enabled: true, ratio: r } }, "ratio", tick);
+}
+
+export type SyncCtx = {
+  market: number | null | undefined;
+  tick: number;
+  /** true when the caller just changed the entry/type by hand (drag, dialog, chip) */
+  userMovedEntry?: boolean;
+};
+
+/**
+ * Keeps a DRAFT consistent with the market. Returns the SAME object when nothing changes.
+ *  - market draft: the entry price follows the market (SL/TP keep their absolute prices; R:R lock recomputes TP)
+ *  - auto draft whose entry was moved by hand: becomes limit/stop (or back to market within one tick)
+ *  - pending auto draft: type re-detected as the market moves
+ *  - manual type, stop-limit, non-draft: untouched (manual Market still follows)
+ */
+export function syncDraft<T extends PositionLike>(p: T, c: SyncCtx): T {
+  if (p.status !== "draft") return p;
+  const m = c.market;
+  if (m == null || !Number.isFinite(m)) return p;
+  if (isStopLimitType(p.orderType)) return p;
+  const auto = p.orderTypeAuto !== false;
+  const tick = c.tick > 0 ? c.tick : 0.01;
+  const follow = (q: T): T => {
+    const price = snapToTick(m, tick);
+    if (q.entry.price === price && q.orderType === "market") return q;
+    const moved: T = { ...q, orderType: "market", entry: { ...q.entry, price } };
+    return applyRRLock(moved, "entry", tick);
+  };
+  if (p.orderType === "market") {
+    if (c.userMovedEntry && auto) {
+      const t = detectOrderType(p.side, p.entry.price, m, tick);
+      return t === "market" ? follow(p) : { ...p, orderType: t };
+    }
+    return follow(p);
+  }
+  if (!auto) return p;
+  const t = detectOrderType(p.side, p.entry.price, m, tick);
+  if (t === "market") return follow({ ...p, orderType: "market" });
+  return t === p.orderType ? p : { ...p, orderType: t };
+}
+
+/** Patch for the order-type dropdown in the bar (draft only). Entry/SL/TP shift together so distances are kept. */
+export function retypeDraft(p: PositionLike, choice: TypeChoice, c: { market: number; tick: number }): Partial<PositionLike> {
+  if (p.status !== "draft") return {};
+  const long = p.side === "long";
+  const m = c.market;
+  const tick = c.tick > 0 ? c.tick : 0.01;
+  const off = snapToTick(Math.max(m * 0.003, tick * 5), tick);
+  const shiftAll = (entryPrice: number) => {
+    const d = entryPrice - p.entry.price;
+    return {
+      entry: { ...p.entry, price: entryPrice },
+      stop: { ...p.stop, price: p.stop.price + d },
+      takeProfit: { ...p.takeProfit, price: p.takeProfit.price + d },
+    };
+  };
+  const clearStopLimit = { stopPrice: undefined, limitPrice: undefined, stopTriggered: undefined };
+  switch (choice) {
+    case "auto":
+      return { orderTypeAuto: true, orderType: "market", ...clearStopLimit };
+    case "market":
+      return { orderTypeAuto: false, orderType: "market", ...clearStopLimit, ...shiftAll(snapToTick(m, tick)) };
+    case "limit":
+      return { orderTypeAuto: false, orderType: long ? "buy_limit" : "sell_limit", ...clearStopLimit, ...shiftAll(long ? m - off : m + off) };
+    case "stop":
+      return { orderTypeAuto: false, orderType: long ? "buy_stop" : "sell_stop", ...clearStopLimit, ...shiftAll(long ? m + off : m - off) };
+    case "stop_limit": {
+      const stopPx = long ? m + off : m - off;
+      const limitPx = long ? m + off / 3 : m - off / 3;
+      return {
+        orderTypeAuto: false,
+        orderType: long ? "buy_stop_limit" : "sell_stop_limit",
+        stopPrice: stopPx,
+        limitPrice: limitPx,
+        stopTriggered: false,
+        ...shiftAll(limitPx),
+      };
+    }
+    default:
+      return {};
+  }
+}
+
+/** Every user edit (bar, dialog, chip) goes through here: merge, apply the R:R lock, keep drafts in sync with the market. */
+export function applyEdit<T extends PositionLike>(prev: T, patch: Partial<T>, c: { market?: number | null; tick: number }): T {
+  let next = { ...prev, ...patch } as T;
+  const tick = c.tick > 0 ? c.tick : 0.01;
+  if (next.rrLock?.enabled) {
+    if ("takeProfit" in patch) next = applyRRLock(next, "takeProfit", tick);
+    else if ("rrLock" in patch) next = applyRRLock(next, "ratio", tick);
+    else if ("stop" in patch || "entry" in patch) next = applyRRLock(next, "stop", tick);
+  }
+  if (next.status === "draft") {
+    next = syncDraft(next, {
+      market: c.market,
+      tick,
+      userMovedEntry: "entry" in patch || "orderType" in patch || "orderTypeAuto" in patch,
+    });
+  }
+  return next;
+}
+
+/** Drag = core drag + R:R lock (SL drag moves TP; TP drag updates the ratio). */
+export function applyPositionDrag<T extends PositionLike>(
+  p: T,
+  part: PositionPart,
+  pt: { time: number; price: number },
+  origin: DragOrigin,
+  o: DragOpts
+): T {
+  const next = dragCore(p, part, pt, origin, o);
+  if (next === p || !next.rrLock?.enabled) return next;
+  const tick = o.tick > 0 ? o.tick : 0.01;
+  if (part === "stop") return applyRRLock(next, "stop", tick);
+  if (part === "takeProfit") return applyRRLock(next, "takeProfit", tick);
+  return next;
 }
