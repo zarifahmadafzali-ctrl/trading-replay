@@ -433,7 +433,7 @@ export function Chart({
 
   shapesRef.current = shapes.map((s) =>
     s.kind === "position"
-      ? (normalizePosition(s as PositionShape) as Shape)
+      ? (normalizePosition(s as PositionShape, { barSec: Math.max(1, barsRef.current.length >= 2 ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60 : 60) }) as Shape)
       : (normalizeShape(s as DrawingShape) as Shape)
   );
   drawToolRef.current = drawTool;
@@ -541,7 +541,7 @@ export function Chart({
       orderType: ot,
       status: "draft",
       ...levels,
-      ...draftBoxExtras(levels.entry.time, barSec, 24),
+      ...draftBoxExtras(levels.entry.time, barSec, 18),
       orderTypeAuto: !manualStopLimit,
       ...(draftRisk ? { risk: draftRisk } : {}),
       ...(stopPrice != null ? { stopPrice, limitPrice, stopTriggered: false } : {}),
@@ -880,6 +880,21 @@ export function Chart({
     return { x, y };
   }
 
+  /** Time → canvas X with logical extrapolation past the last bar (needed for position rightTime in the future). */
+  function timeToX(time: number): number | null {
+    const handles = handlesRef.current;
+    if (!handles) return null;
+    let x = handles.chart.timeScale().timeToCoordinate(time as UTCTimestamp);
+    if (x == null || !Number.isFinite(x)) {
+      const logical = timeToLogicalIndex(time);
+      if (logical != null) {
+        x = handles.chart.timeScale().logicalToCoordinate(logical as any);
+      }
+    }
+    if (x == null || !Number.isFinite(x)) return null;
+    return x;
+  }
+
   /** Screen pixel → continuous { time, price }. Never requires a candle at that price. */
   function fromXY(x: number, y: number): ChartPoint | null {
     const handles = handlesRef.current;
@@ -1131,16 +1146,12 @@ export function Chart({
         // v3.47 — single painter (positionRender). Old full-width line branch removed.
         const handles = handlesRef.current;
         if (!handles) continue;
-        const toX = (time: number) => {
-          const x = handles.chart.timeScale().timeToCoordinate(time as UTCTimestamp);
-          return x == null || !Number.isFinite(x) ? null : x;
-        };
         const toY = (price: number) => {
           const y = handles.candles.priceToCoordinate(price);
           return y == null || !Number.isFinite(y) ? null : y;
         };
         const box = positionBox(s as never, {
-          xOf: (tm: number) => toX(tm),
+          xOf: (tm: number) => timeToX(tm),
           yOf: (pr: number) => toY(pr),
           w,
         });
@@ -1428,17 +1439,25 @@ export function Chart({
       }
     }
 
-    // Positions: prefer the right-side handle box, else the full horizontal band.
+    // Positions: box-local hit test (TradingView-style finite width).
     for (const s of shapesRef.current) {
       if (s.kind !== "position") continue;
-      const sy = series.priceToCoordinate(s.stop.price);
-      const ty = series.priceToCoordinate(s.takeProfit.price);
-      const ey = series.priceToCoordinate(s.entry.price);
-      const nearHandle = (yy: number | null) =>
-        yy != null && x >= w - 36 && Math.abs(yy - y) <= lineThreshold + 4;
-      const nearLine = (yy: number | null) => yy != null && Math.abs(yy - y) <= lineThreshold;
+      const barSec =
+        barsRef.current.length >= 2
+          ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
+          : 60;
+      const pos = normalizePosition(s as PositionShape, { barSec });
+      const box = positionBox(pos as never, {
+        xOf: (tm: number) => timeToX(tm),
+        yOf: (pr: number) => {
+          const yy = series.priceToCoordinate(pr);
+          return yy == null || !Number.isFinite(yy) ? null : yy;
+        },
+        w,
+      });
+      if (!box) continue;
 
-      // Stop-Limit trigger line (stopPrice) — independent of protective SL and of limit/entry.
+      // Stop-Limit trigger line (stopPrice)
       const isStopLimit =
         s.orderType === "buy_stop_limit" || s.orderType === "sell_stop_limit";
       if (
@@ -1447,20 +1466,34 @@ export function Chart({
         s.stopPrice != null
       ) {
         const sty = series.priceToCoordinate(s.stopPrice);
-        if (nearHandle(sty) || nearLine(sty)) return { id: s.id, field: "stopTrigger" };
+        if (
+          sty != null &&
+          x >= box.x0 - lineThreshold &&
+          x <= box.x1 + lineThreshold &&
+          Math.abs(sty - y) <= lineThreshold + 4
+        ) {
+          return { id: s.id, field: "stopTrigger" };
+        }
       }
 
-      // Protective SL/TP only when draft (editing) or open (live)
-      if (s.status === "draft" || s.status === "open") {
-        if (nearHandle(sy) || nearLine(sy)) return { id: s.id, field: "stop" };
-        if (nearHandle(ty) || nearLine(ty)) return { id: s.id, field: "takeProfit" };
+      const part = hitTestPosition(pos as never, box, x, y, {
+        tol: lineThreshold + 2,
+        selected: selectedShapeIdRef.current === s.id,
+      });
+      if (!part) continue;
+      if (part === "stop" || part === "takeProfit") {
+        if (s.status === "draft" || s.status === "open") return { id: s.id, field: part };
+        continue;
       }
-      if (
-        (s.status === "draft" || s.status === "pending") &&
-        s.orderType !== "market" &&
-        (nearHandle(ey) || nearLine(ey))
-      ) {
-        return { id: s.id, field: "entry" };
+      if (part === "entry" || part === "left" || part === "right" || part === "body") {
+        if (s.status === "draft" || s.status === "pending") {
+          if (part === "entry" || part === "left") return { id: s.id, field: "entry" };
+          if (part === "right") return { id: s.id, field: "right" };
+          return { id: s.id, field: "entry" };
+        }
+        if (s.status === "open" && (part === "body" || part === "right")) {
+          return { id: s.id, field: part === "right" ? "right" : "body" };
+        }
       }
     }
     return null;
@@ -2424,6 +2457,67 @@ export function Chart({
               }}
               onSaveStyleAsDefault={(st) => savePositionDefaults(st)}
             />
+            {typeof window !== "undefined" &&
+              new URLSearchParams(window.location.search).has("posdebug") &&
+              selectedShapeId &&
+              (() => {
+                const sel = shapesRef.current.find((x) => x.id === selectedShapeId);
+                if (!sel || sel.kind !== "position") return null;
+                const barSec =
+                  barsRef.current.length >= 2
+                    ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
+                    : 60;
+                const pos = normalizePosition(sel as PositionShape, { barSec });
+                const handles = handlesRef.current;
+                const w = containerRef.current?.clientWidth ?? 0;
+                const rawEntryX = handles
+                  ? handles.chart.timeScale().timeToCoordinate(pos.entry.time as UTCTimestamp)
+                  : null;
+                const rawRightX = pos.rightTime != null && handles
+                  ? handles.chart.timeScale().timeToCoordinate(pos.rightTime as UTCTimestamp)
+                  : null;
+                const x0 = timeToX(pos.entry.time);
+                const x1 = pos.rightTime != null ? timeToX(pos.rightTime) : null;
+                const box = positionBox(pos as never, {
+                  xOf: (tm: number) => timeToX(tm),
+                  yOf: (pr: number) => {
+                    const y = handles?.candles.priceToCoordinate(pr);
+                    return y == null || !Number.isFinite(y) ? null : y;
+                  },
+                  w,
+                });
+                const line = [
+                  `v=${APP_VERSION}`,
+                  `rt=${pos.rightTime ?? "null"}`,
+                  `et=${pos.entry.time}`,
+                  `rawE=${rawEntryX == null ? "null" : Math.round(rawEntryX)}`,
+                  `rawR=${rawRightX == null ? "null" : Math.round(rawRightX)}`,
+                  `x0=${x0 == null ? "null" : Math.round(x0)}`,
+                  `x1=${x1 == null ? "null" : Math.round(x1)}`,
+                  `box=${box ? `${Math.round(box.x0)}..${Math.round(box.x1)} w=${Math.round(box.x1 - box.x0)}` : "null"}`,
+                ].join(" · ");
+                return (
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: 8,
+                      bottom: 8,
+                      zIndex: 40,
+                      maxWidth: "96%",
+                      padding: "4px 8px",
+                      borderRadius: 6,
+                      background: "rgba(0,0,0,0.75)",
+                      color: "#fde68a",
+                      fontSize: 11,
+                      fontFamily: "ui-monospace, monospace",
+                      pointerEvents: "none",
+                    }}
+                  >
+                    posdebug {line}
+                  </div>
+                );
+              })()}
+
           );
         }
                 // Floating settings bar is fixed near top-center — NOT glued to the shape bounds.

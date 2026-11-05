@@ -120,11 +120,21 @@ export function resolveStyle(p: Pick<PositionLike, "style">, saved: Partial<Posi
   return { ...DEFAULT_POSITION_STYLE, ...saved, ...(p.style || {}) };
 }
 
-/** Old shapes pass through unchanged; invalid v2 fields are dropped. */
-export function normalizePosition<T extends PositionLike>(p: T): T {
+/** Old shapes pass through unchanged; invalid v2 fields are dropped.
+ *  Legacy full-width positions (no rightTime) get a finite box so they look like TradingView. */
+export function normalizePosition<T extends PositionLike>(
+  p: T,
+  opts?: { barSec?: number; widthBars?: number }
+): T {
   const out: T = { ...p };
   if (out.rightTime != null && !(Number.isFinite(out.rightTime) && out.rightTime > out.entry.time)) {
-    delete out.rightTime;
+    delete (out as { rightTime?: number }).rightTime;
+  }
+  // Backfill missing rightTime for draft/pending/open so the painter never falls back to full chart width.
+  if (out.rightTime == null && out.entry && Number.isFinite(out.entry.time)) {
+    const barSec = Math.max(1, opts?.barSec ?? 60);
+    const widthBars = Math.max(4, opts?.widthBars ?? 24);
+    (out as { rightTime?: number }).rightTime = out.entry.time + barSec * widthBars;
   }
   if (out.rrLock) {
     const lk = out.rrLock;
@@ -171,9 +181,10 @@ export function defaultLevels(side: Side, price: number, time: number): Pick<Pos
     : { entry, stop: { time, price: price * (1 + risk) }, takeProfit: { time, price: price * (1 - reward) } };
 }
 
-/** Extra fields for a NEW draft so it gets a finite TradingView-style box. */
-export function draftBoxExtras(time: number, barSec: number, widthBars = 24): { rightTime: number } {
-  return { rightTime: time + Math.max(1, barSec) * widthBars };
+/** Extra fields for a NEW draft so it gets a finite TradingView-style box.
+ *  Box starts at entry (drop time) and extends forward `widthBars` display bars (default 18). */
+export function draftBoxExtras(time: number, barSec: number, widthBars = 18): { rightTime: number } {
+  return { rightTime: time + Math.max(1, barSec) * Math.max(4, widthBars) };
 }
 
 // ---------------------------------------------------------------- validation
@@ -347,8 +358,22 @@ export function positionBox(p: PositionLike, c: BoxCtx): Box | null {
   if (p.rightTime != null) {
     const a = c.xOf(p.entry.time);
     const b = c.xOf(p.rightTime);
-    x0 = a == null ? 0 : Math.max(0, Math.min(c.w, a));
-    x1 = b == null ? c.w : Math.max(0, Math.min(c.w, b));
+    // Prefer finite box; never silently expand to full chart width when one side fails.
+    if (a != null && b != null) {
+      x0 = Math.max(0, Math.min(c.w, a));
+      x1 = Math.max(0, Math.min(c.w, b));
+    } else if (a != null) {
+      x0 = Math.max(0, Math.min(c.w, a));
+      x1 = Math.min(c.w, x0 + minW);
+    } else if (b != null) {
+      x1 = Math.max(0, Math.min(c.w, b));
+      x0 = Math.max(0, x1 - minW);
+    } else {
+      // Both null — last resort centered min-width (still not full width)
+      x0 = Math.max(0, (c.w - minW) / 2);
+      x1 = Math.min(c.w, x0 + minW);
+    }
+    if (x1 < x0) { const t = x0; x0 = x1; x1 = t; }
     if (x1 - x0 < minW) x1 = Math.min(c.w, x0 + minW);
     if (x1 - x0 < minW) x0 = Math.max(0, x1 - minW);
   }
