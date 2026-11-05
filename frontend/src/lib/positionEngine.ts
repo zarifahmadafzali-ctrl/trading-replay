@@ -88,10 +88,15 @@ function pendingFillPrice(orderType: string, entry: number, bar: BarLike, gap: b
 }
 
 function extendRight<P extends PositionLike>(orig: P, fillTime: number): Partial<P> {
-  if (orig.rightTime == null) return {};
-  const width = Math.max(60, orig.rightTime - orig.entry.time);
-  if (orig.rightTime > fillTime + 60) return {};
-  return { rightTime: fillTime + width } as Partial<P>;
+  // Always re-anchor the box width to the fill time so the geometry does not
+  // snap to the left edge when entry.time jumps forward on fill.
+  const width = Math.max(
+    60,
+    orig.rightTime != null && Number.isFinite(orig.rightTime)
+      ? orig.rightTime - orig.entry.time
+      : 60 * 18
+  );
+  return { rightTime: fillTime + Math.max(60, width) } as Partial<P>;
 }
 
 

@@ -169,7 +169,7 @@ function legacyRun(shapes, seq) {
   const box = M.positionBox(pos({ rightTime: 700 }), { xOf: (t) => t * 0.5, yOf: (p) => 1000 - p * 5, w: 800 });
   ok("box x0/x1 from times", box && near(box.x0, 50) && near(box.x1, 350));
   const legacy = M.positionBox(pos(), { xOf: () => null, yOf: (p) => 1000 - p * 5, w: 800 });
-  ok("legacy shape (no rightTime) = full width", legacy.x0 === 0 && legacy.x1 === 800);
+  ok("legacy shape (no rightTime) stays finite (never full-bleed)", legacy.x1 - legacy.x0 < 800 && legacy.x1 - legacy.x0 >= 48);
   ok("hit: TP line", M.hitTestPosition(pos(), box, 200, box.tpY + 2, { tol: 8 }) === "takeProfit");
   ok("hit: right handle wins over lines", M.hitTestPosition(pos(), box, box.x1, box.entryY, { tol: 8 }) === "right");
   ok("hit: outside = null", M.hitTestPosition(pos(), box, 700, 5, { tol: 8 }) === null);

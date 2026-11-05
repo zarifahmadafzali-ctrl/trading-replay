@@ -275,10 +275,18 @@ export function prepareConfirm<T extends PositionLike>(
   const mt = market.time != null && Number.isFinite(market.time) ? market.time : null;
   let pos: T = p;
   if (p.orderType === "market" && mp != null && mt != null) {
-    pos = { ...p, entry: { time: mt, price: mp } };
-    if (pos.rightTime != null && pos.rightTime <= mt) {
-      pos = { ...pos, rightTime: mt + Math.max(60, (p.rightTime ?? mt) - p.entry.time) };
-    }
+    // Preserve box WIDTH when the entry time jumps to the fill/market time.
+    // Without this, rightTime can fall behind entry and the box briefly collapses
+    // or expands against the left edge of the chart.
+    const prevWidth = Math.max(
+      60,
+      (p.rightTime != null && Number.isFinite(p.rightTime) ? p.rightTime : p.entry.time + 60) - p.entry.time
+    );
+    pos = {
+      ...p,
+      entry: { time: mt, price: mp },
+      rightTime: mt + prevWidth,
+    };
   }
   const asOpen: PositionLike = p.orderType === "market" ? { ...pos, status: "open" } : pos;
   const issues = validatePosition(asOpen, mp);
@@ -358,12 +366,12 @@ export function positionBox(p: PositionLike, c: BoxCtx): Box | null {
   const tpY = c.yOf(p.takeProfit.price);
   if (entryY == null || stopY == null || tpY == null) return null;
   const minW = c.minWidth ?? 48;
-  let x0 = 0;
-  let x1 = c.w;
+  // NEVER full-bleed across the chart — always a finite TradingView-style box.
+  let x0 = Math.max(0, (c.w - minW) / 2);
+  let x1 = Math.min(c.w, x0 + minW);
   if (p.rightTime != null) {
     const a = c.xOf(p.entry.time);
     const b = c.xOf(p.rightTime);
-    // Prefer finite box; never silently expand to full chart width when one side fails.
     if (a != null && b != null) {
       x0 = Math.max(0, Math.min(c.w, a));
       x1 = Math.max(0, Math.min(c.w, b));
@@ -373,15 +381,18 @@ export function positionBox(p: PositionLike, c: BoxCtx): Box | null {
     } else if (b != null) {
       x1 = Math.max(0, Math.min(c.w, b));
       x0 = Math.max(0, x1 - minW);
-    } else {
-      // Both null — last resort centered min-width (still not full width)
-      x0 = Math.max(0, (c.w - minW) / 2);
+    }
+  } else {
+    // Missing rightTime: still anchor min-width at entry X when possible.
+    const a = c.xOf(p.entry.time);
+    if (a != null) {
+      x0 = Math.max(0, Math.min(c.w, a));
       x1 = Math.min(c.w, x0 + minW);
     }
-    if (x1 < x0) { const t = x0; x0 = x1; x1 = t; }
-    if (x1 - x0 < minW) x1 = Math.min(c.w, x0 + minW);
-    if (x1 - x0 < minW) x0 = Math.max(0, x1 - minW);
   }
+  if (x1 < x0) { const t = x0; x0 = x1; x1 = t; }
+  if (x1 - x0 < minW) x1 = Math.min(c.w, x0 + minW);
+  if (x1 - x0 < minW) x0 = Math.max(0, x1 - minW);
   return { x0, x1, entryY, stopY, tpY };
 }
 
@@ -488,8 +499,8 @@ function dragCore<T extends PositionLike>(
           takeProfit: { ...og.takeProfit, price: snap(og.takeProfit.price + dPrice) },
         } as T;
       }
-      // A manual Market order is pinned to the market; an AUTO market draft may be dragged away (becomes limit/stop).
-      if (og.orderType === "market" && og.orderTypeAuto === false && part === "entry") return p;
+      // Always move the whole box (entry + SL + TP + width) from the middle handle.
+      // Market drafts may convert to limit/stop via syncDraft when price leaves the market.
       const dPrice = snap(pt.price) - snap(origin.pt.price);
       const dTime = Math.round(pt.time - origin.pt.time);
       const shift = (q: Pt): Pt => ({ time: q.time + dTime, price: q.price + dPrice });

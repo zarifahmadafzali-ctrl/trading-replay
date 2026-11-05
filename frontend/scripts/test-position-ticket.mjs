@@ -131,7 +131,10 @@ const TICK = 0.01;
   const d = M.applyPositionDrag(auto, "entry", { time: 100, price: 98 }, o(auto), { tick: TICK, barSec: 60 });
   ok("auto market draft: entry drag moves the whole order", near(d.entry.price, 98) && near(d.stop.price, 93) && near(d.takeProfit.price, 108));
   const manual = pos({ orderTypeAuto: false });
-  ok("manual market: entry drag is ignored", M.applyPositionDrag(manual, "entry", { time: 100, price: 98 }, o(manual), { tick: TICK, barSec: 60 }) === manual);
+  {
+    const moved = M.applyPositionDrag(manual, "entry", { time: 100, price: 98 }, o(manual), { tick: TICK, barSec: 60 });
+    ok("manual market: middle/entry drag moves the whole box", near(moved.entry.price, 98) && near(moved.stop.price, manual.stop.price - 2));
+  }
 }
 
 // ---------- normalize ----------

@@ -1490,19 +1490,30 @@ export function Chart({
         selected: selectedShapeIdRef.current === s.id || s.status === "draft",
       });
       if (!part) continue;
+      // CRITICAL: originPoint + originShape must be captured at pointer-down.
+      // Body/entry drag uses deltas from origin; without them the box never moves.
+      const originPoint = fromXY(x, y) || undefined;
+      const originShape = JSON.parse(JSON.stringify(pos)) as Shape;
+      const drag = (field: DragTarget["field"]): DragTarget => ({
+        id: s.id,
+        field,
+        originPoint,
+        originShape,
+      });
       // Map 9-handle parts directly into drag fields
       if (part === "stop" || part === "takeProfit" || part === "tl" || part === "tr" || part === "bl" || part === "br") {
         if (s.status === "draft" || s.status === "open" || s.status === "pending") {
-          return { id: s.id, field: part };
+          return drag(part);
         }
         continue;
       }
       if (part === "entry" || part === "left" || part === "right" || part === "body") {
         if (s.status === "draft" || s.status === "pending") {
-          return { id: s.id, field: part === "entry" ? "entry" : part };
+          return drag(part === "entry" ? "entry" : part);
         }
-        if (s.status === "open" && (part === "body" || part === "right")) {
-          return { id: s.id, field: part };
+        // Open: body still moves SL/TP vertically; right still resizes width.
+        if (s.status === "open" && (part === "body" || part === "right" || part === "entry")) {
+          return drag(part === "entry" ? "body" : part);
         }
       }
     }
