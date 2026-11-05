@@ -466,55 +466,48 @@ export function Chart({
   }
 
   /** Drop a draft position on the chart immediately (Market or pending). */
-  function spawnDraft(side: "long" | "short") {
-    const price = marketRef.current.price;
-    const time = marketRef.current.time;
-    if (price == null || time == null) {
+  function spawnDraft(side: "long" | "short", at?: { time: number; price: number }) {
+    const mPrice = marketRef.current.price;
+    const mTime = marketRef.current.time;
+    if (mPrice == null || mTime == null) {
       setHint("Load replay data first");
       return;
     }
-    // Brief 02: Market / Limit / Stop are AUTO-detected from where the entry sits relative to the market
-    // (drag the entry away from the market -> Limit/Stop). Only Stop-Limit is chosen by hand.
+    // Free placement: click point when provided; otherwise market (legacy fallback).
+    const price = at && Number.isFinite(at.price) ? at.price : mPrice;
+    const time = at && Number.isFinite(at.time) ? Math.round(at.time) : mTime;
+
     const panelType = orderTypeRef.current;
     const manualStopLimit = panelType === "buy_stop_limit" || panelType === "sell_stop_limit";
+    // Default new drafts to auto Market (entry tracks live market); user can switch type in the bar.
     const ot: OrderType = manualStopLimit ? (side === "long" ? "buy_stop_limit" : "sell_stop_limit") : "market";
-    // remove previous unfinished draft
-    const kept = shapesRef.current.filter(
-      (s) => !(s.kind === "position" && s.status === "draft")
-    );
+
+    const kept = shapesRef.current.filter((s) => !(s.kind === "position" && s.status === "draft"));
     const levels = defaultsFor(side, ot, price, time);
+
+    // Anchor SL/TP around the click price (not only market), so the box sits where the user clicked.
+    const risk = 0.004;
+    const reward = 0.008;
+    levels.entry = { time, price };
+    levels.stop = {
+      time,
+      price: side === "long" ? price * (1 - risk) : price * (1 + risk),
+    };
+    levels.takeProfit = {
+      time,
+      price: side === "long" ? price * (1 + reward) : price * (1 - reward),
+    };
+
     let stopPrice: number | undefined;
     let limitPrice: number | undefined;
-
-    // Pending: place entry away from market so the user can see a separate line.
-    if (ot !== "market") {
-      if (ot === "buy_stop_limit") {
-        // Stop above market; limit slightly below stop (classic buy stop-limit).
-        stopPrice = price * 1.003;
-        limitPrice = price * 1.001;
-        levels.entry = { time, price: limitPrice };
-      } else if (ot === "sell_stop_limit") {
-        stopPrice = price * 0.997;
-        limitPrice = price * 0.999;
-        levels.entry = { time, price: limitPrice };
-      } else if (ot === "buy_limit") {
-        levels.entry = { time, price: price * 0.997 };
-      } else if (ot === "sell_limit") {
-        levels.entry = { time, price: price * 1.003 };
-      } else if (ot === "buy_stop") {
-        levels.entry = { time, price: price * 1.003 };
-      } else if (ot === "sell_stop") {
-        levels.entry = { time, price: price * 0.997 };
-      }
-      const ep = levels.entry.price;
-      levels.stop = {
-        time,
-        price: side === "long" ? ep * 0.996 : ep * 1.004,
-      };
-      levels.takeProfit = {
-        time,
-        price: side === "long" ? ep * 1.008 : ep * 0.992,
-      };
+    if (ot === "buy_stop_limit") {
+      stopPrice = price * 1.003;
+      limitPrice = price * 1.001;
+      levels.entry = { time, price: limitPrice };
+    } else if (ot === "sell_stop_limit") {
+      stopPrice = price * 0.997;
+      limitPrice = price * 0.999;
+      levels.entry = { time, price: limitPrice };
     }
 
     const barSec = Math.max(
@@ -523,7 +516,9 @@ export function Chart({
         ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
         : 60
     );
-    // Copy the order panel's risk into the draft once (later panel edits must not change this order).
+    // Visible finite box: a few bars left of click is not needed — entry at click, extend ~18 bars right.
+    const widthBars = 18;
+
     const draftRisk = (() => {
       const r = getDraftRiskRef.current?.();
       if (!r) return undefined;
@@ -534,6 +529,7 @@ export function Chart({
       if (typeof r.lot === "number" && r.lot > 0) o.lot = r.lot;
       return Object.keys(o).length ? o : undefined;
     })();
+
     const draft: PositionShape = {
       id: uid(),
       kind: "position",
@@ -541,21 +537,22 @@ export function Chart({
       orderType: ot,
       status: "draft",
       ...levels,
-      ...draftBoxExtras(levels.entry.time, barSec, 18),
+      rightTime: levels.entry.time + barSec * widthBars,
       orderTypeAuto: !manualStopLimit,
       ...(draftRisk ? { risk: draftRisk } : {}),
       ...(stopPrice != null ? { stopPrice, limitPrice, stopTriggered: false } : {}),
       ...(activeAccountIdRef.current ? { accountId: activeAccountIdRef.current } : {}),
     };
     setShapes([...kept, draft]);
-    // Select so PositionSettingsBar mounts (floating settings above chart).
     onSelectedShapeIdRef.current?.(draft.id);
-    if (ot === "market") {
-      setHint("Draft at market · drag SL / TP (drag the entry away for Limit/Stop) · Confirm in the bar");
-    } else {
-      setHint(`${ot} draft · drag Entry / SL / TP · then Confirm · settings bar open`);
-    }
+    // Stay on long/short tool until user switches — allows replacing draft with another click.
+    setHint(
+      ot === "market"
+        ? "Box placed · Market entry follows price · drag handles for SL/TP/width · Confirm in bar"
+        : "Box placed · drag handles · set type in bar · Confirm"
+    );
   }
+
 
   /**
    * Capture Entry/SL/TP + candles + drawing overlay as one image.
@@ -712,7 +709,8 @@ export function Chart({
       window.dispatchEvent(new CustomEvent("tr-workspace-event", { detail: { text: msg } }));
       setHint(n ? `Order confirmed (${n}) · ${msg}` : msg);
     } else {
-      setHint(n ? `Order confirmed (${n})` : "No draft to confirm");
+      setHint(n ? `Order confirmed (${n}) · drag right handle to extend width` : "No draft to confirm");
+      if (n > 0) onDrawToolChangeRef.current?.("crosshair");
     }
   }
 
@@ -806,13 +804,16 @@ export function Chart({
     };
   }, []);
 
-  // When user picks Long/Short tool → drop draft on chart
+  // Long/Short: do NOT auto-place. User clicks the chart to drop the box (tool-like).
   useEffect(() => {
     if (drawTool === "long" || drawTool === "short") {
-      spawnDraft(drawTool);
+      setHint(
+        drawTool === "long"
+          ? "Long tool · click anywhere on the chart to place the box · then set SL/TP · Confirm"
+          : "Short tool · click anywhere on the chart to place the box · then set SL/TP · Confirm"
+      );
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drawTool, orderType]);
+  }, [drawTool]);
 
   /** Chart-space point → screen (canvas) pixel coordinates. */
   /**
@@ -1307,11 +1308,19 @@ export function Chart({
       tool !== "measure" &&
       tool !== "fib" &&
       tool !== "channel" &&
-      tool !== "text"
+      tool !== "text" &&
+      tool !== "long" &&
+      tool !== "short"
     )
       return;
     const point = applyMagnet(raw, magnetModeRef.current);
     const steps = stepsRef.current;
+
+    // Long/Short position box: single click places a draft at the free chart coordinate.
+    if (tool === "long" || tool === "short") {
+      spawnDraft(tool, point);
+      return;
+    }
 
     // Text: single click
     if (tool === "text") {
@@ -2008,6 +2017,16 @@ export function Chart({
             const pt = fromXY(x, y);
             if (pt) placePoint(pt);
           }
+        } else if (tool === "long" || tool === "short") {
+          // Prefer selecting/dragging an existing position over placing a new box on top.
+          const existingId = hitTestSelect(x, y, threshold);
+          if (existingId) {
+            onSelectedShapeIdRef.current?.(existingId);
+            setHint("Selected · drag handles · Confirm in bar");
+          } else {
+            const pt = fromXY(x, y);
+            if (pt) placePoint(pt);
+          }
         } else {
           const hitId = hitTestSelect(x, y, threshold);
           onSelectedShapeIdRef.current?.(hitId);
@@ -2201,7 +2220,10 @@ export function Chart({
       drawTool === "measure" ||
       drawTool === "fib" ||
       drawTool === "hline" ||
-      drawTool === "vline";
+      drawTool === "vline" ||
+      drawTool === "long" ||
+      drawTool === "short";
+    // Disable chart pan/zoom while Long/Short tool is active so handles receive pointer events.
     setChartInteraction(!geometryDrawing);
     if (drawTool === "trendline" || drawTool === "ray" || drawTool === "extended") {
       setHint("Click Point A · move for live preview · click Point B");
@@ -2213,7 +2235,11 @@ export function Chart({
     else if (drawTool === "vline") setHint("Click a moment in time to draw the line");
     else if (drawTool === "measure") setHint("Click a point, move for live preview, then click again");
     else if (drawTool === "long" || drawTool === "short") {
-      /* hint set in spawnDraft */
+      setHint(
+        drawTool === "long"
+          ? "Long tool · click chart to place box"
+          : "Short tool · click chart to place box"
+      );
     } else setHint("");
     scheduleRedraw();
   }, [drawTool]);
