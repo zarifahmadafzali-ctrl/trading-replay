@@ -2434,93 +2434,106 @@ export function Chart({
           const hBox = containerRef.current?.clientHeight ?? 360;
           const issues = validatePosition(sel as never, marketPrice);
           return (
-            <PositionSettingsBar
-              position={sel as never}
-              container={{ w: wBox, h: hBox }}
-              priceDecimals={inst.decimals}
-              tick={inst.tick}
-              barSec={Math.max(1, barSeconds || 60)}
-              issues={issues}
-              info={sizingInfo(
-                sel as PositionShape,
-                captureRiskSnapshotRef.current?.(sel as PositionShape) as never,
-                marketPrice
-              )}
-              marketPrice={marketPrice}
-              onConfirm={() => requestConfirm()}
-              savedDefaults={loadPositionDefaults()}
-              onChange={(patch) => updatePosition(sel.id, patch as Partial<PositionShape>)}
-              onClosePosition={() => manualCloseById(sel.id)}
-              onCancelOrder={() => {
-                setShapes(shapesRef.current.filter((x) => x.id !== sel.id));
-                onSelectedShapeIdRef.current?.(null as never);
-              }}
-              onSaveStyleAsDefault={(st) => savePositionDefaults(st)}
-            />
-            {typeof window !== "undefined" &&
-              new URLSearchParams(window.location.search).has("posdebug") &&
-              selectedShapeId &&
-              (() => {
-                const sel = shapesRef.current.find((x) => x.id === selectedShapeId);
-                if (!sel || sel.kind !== "position") return null;
-                const barSec =
-                  barsRef.current.length >= 2
-                    ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
-                    : 60;
-                const pos = normalizePosition(sel as PositionShape, { barSec });
-                const handles = handlesRef.current;
-                const w = containerRef.current?.clientWidth ?? 0;
-                const rawEntryX = handles
-                  ? handles.chart.timeScale().timeToCoordinate(pos.entry.time as UTCTimestamp)
-                  : null;
-                const rawRightX = pos.rightTime != null && handles
-                  ? handles.chart.timeScale().timeToCoordinate(pos.rightTime as UTCTimestamp)
-                  : null;
-                const x0 = timeToX(pos.entry.time);
-                const x1 = pos.rightTime != null ? timeToX(pos.rightTime) : null;
-                const box = positionBox(pos as never, {
-                  xOf: (tm: number) => timeToX(tm),
-                  yOf: (pr: number) => {
-                    const y = handles?.candles.priceToCoordinate(pr);
-                    return y == null || !Number.isFinite(y) ? null : y;
-                  },
-                  w,
-                });
-                const line = [
-                  `v=${APP_VERSION}`,
-                  `rt=${pos.rightTime ?? "null"}`,
-                  `et=${pos.entry.time}`,
-                  `rawE=${rawEntryX == null ? "null" : Math.round(rawEntryX)}`,
-                  `rawR=${rawRightX == null ? "null" : Math.round(rawRightX)}`,
-                  `x0=${x0 == null ? "null" : Math.round(x0)}`,
-                  `x1=${x1 == null ? "null" : Math.round(x1)}`,
-                  `box=${box ? `${Math.round(box.x0)}..${Math.round(box.x1)} w=${Math.round(box.x1 - box.x0)}` : "null"}`,
-                ].join(" · ");
-                return (
-                  <div
-                    style={{
-                      position: "absolute",
-                      left: 8,
-                      bottom: 8,
-                      zIndex: 40,
-                      maxWidth: "96%",
-                      padding: "4px 8px",
-                      borderRadius: 6,
-                      background: "rgba(0,0,0,0.75)",
-                      color: "#fde68a",
-                      fontSize: 11,
-                      fontFamily: "ui-monospace, monospace",
-                      pointerEvents: "none",
-                    }}
-                  >
-                    posdebug {line}
-                  </div>
-                );
-              })()}
-
+            <>
+              <PositionSettingsBar
+                position={sel as never}
+                container={{ w: wBox, h: hBox }}
+                priceDecimals={inst.decimals}
+                tick={inst.tick}
+                barSec={Math.max(1, barSeconds || 60)}
+                issues={issues}
+                info={sizingInfo(
+                  sel as PositionShape,
+                  captureRiskSnapshotRef.current?.(sel as PositionShape) as never,
+                  marketPrice
+                )}
+                marketPrice={marketPrice}
+                onConfirm={() => requestConfirm()}
+                savedDefaults={loadPositionDefaults()}
+                onChange={(patch) => updatePosition(sel.id, patch as Partial<PositionShape>)}
+                onClosePosition={() => manualCloseById(sel.id)}
+                onCancelOrder={() => {
+                  setShapes(shapesRef.current.filter((x) => x.id !== sel.id));
+                  onSelectedShapeIdRef.current?.(null as never);
+                }}
+                onSaveStyleAsDefault={(st) => savePositionDefaults(st)}
+              />
+              {typeof window !== "undefined" &&
+                new URLSearchParams(window.location.search).has("posdebug") &&
+                (() => {
+                  const barSec =
+                    barsRef.current.length >= 2
+                      ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
+                      : 60;
+                  const pos = normalizePosition(sel as PositionShape, { barSec });
+                  const hnd = handlesRef.current;
+                  const ww = containerRef.current?.clientWidth ?? 0;
+                  const rawEntryX = hnd
+                    ? hnd.chart.timeScale().timeToCoordinate(pos.entry.time as UTCTimestamp)
+                    : null;
+                  const rawRightX =
+                    pos.rightTime != null && hnd
+                      ? hnd.chart.timeScale().timeToCoordinate(pos.rightTime as UTCTimestamp)
+                      : null;
+                  const x0v = timeToX(pos.entry.time);
+                  const x1v = pos.rightTime != null ? timeToX(pos.rightTime) : null;
+                  const box = positionBox(pos as never, {
+                    xOf: (tm: number) => timeToX(tm),
+                    yOf: (pr: number) => {
+                      const y = hnd?.candles.priceToCoordinate(pr);
+                      return y == null || !Number.isFinite(y) ? null : y;
+                    },
+                    w: ww,
+                  });
+                  const line =
+                    "v=" +
+                    APP_VERSION +
+                    " · rt=" +
+                    String(pos.rightTime ?? "null") +
+                    " · et=" +
+                    String(pos.entry.time) +
+                    " · rawE=" +
+                    (rawEntryX == null ? "null" : String(Math.round(rawEntryX))) +
+                    " · rawR=" +
+                    (rawRightX == null ? "null" : String(Math.round(rawRightX))) +
+                    " · x0=" +
+                    (x0v == null ? "null" : String(Math.round(x0v))) +
+                    " · x1=" +
+                    (x1v == null ? "null" : String(Math.round(x1v))) +
+                    " · box=" +
+                    (box
+                      ? String(Math.round(box.x0)) +
+                        ".." +
+                        String(Math.round(box.x1)) +
+                        " w=" +
+                        String(Math.round(box.x1 - box.x0))
+                      : "null");
+                  return (
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: 8,
+                        bottom: 8,
+                        zIndex: 40,
+                        maxWidth: "96%",
+                        padding: "4px 8px",
+                        borderRadius: 6,
+                        background: "rgba(0,0,0,0.75)",
+                        color: "#fde68a",
+                        fontSize: 11,
+                        fontFamily: "ui-monospace, monospace",
+                        pointerEvents: "none",
+                      }}
+                    >
+                      {"posdebug "}
+                      {line}
+                    </div>
+                  );
+                })()}
+            </>
           );
         }
-                // Floating settings bar is fixed near top-center — NOT glued to the shape bounds.
+        // Floating settings bar is fixed near top-center — NOT glued to the shape bounds.
         const w = overlayRef.current?.clientWidth ?? 0;
         const h = overlayRef.current?.clientHeight ?? 0;
         return (
