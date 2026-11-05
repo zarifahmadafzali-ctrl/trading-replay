@@ -91,7 +91,12 @@ export type PositionPart =
   | "stopTrigger"
   | "left"
   | "right"
-  | "body";
+  | "body"
+  /** 9-handle grid (TradingView-style). Corners combine edge + level. */
+  | "tl"
+  | "tr"
+  | "bl"
+  | "br";
 
 // ---------------------------------------------------------------- defaults/style
 
@@ -133,7 +138,7 @@ export function normalizePosition<T extends PositionLike>(
   // Backfill missing rightTime for draft/pending/open so the painter never falls back to full chart width.
   if (out.rightTime == null && out.entry && Number.isFinite(out.entry.time)) {
     const barSec = Math.max(1, opts?.barSec ?? 60);
-    const widthBars = Math.max(4, opts?.widthBars ?? 24);
+    const widthBars = Math.max(8, opts?.widthBars ?? 24);
     (out as { rightTime?: number }).rightTime = out.entry.time + barSec * widthBars;
   }
   if (out.rrLock) {
@@ -382,21 +387,54 @@ export function positionBox(p: PositionLike, c: BoxCtx): Box | null {
 
 export type HitOpts = { tol: number; selected?: boolean };
 
-/** Which part of the position is under (x, y)? null = nothing. Open positions only expose stop/target/right/body. */
+/**
+ * 9-handle hit test (TradingView-style). Priority: corners → edge mids → body.
+ * Open positions: TP/SL/right/body only (entry time is fixed after fill).
+ */
 export function hitTestPosition(p: PositionLike, b: Box, x: number, y: number, o: HitOpts): PositionPart | null {
-  const tol = o.tol;
+  const tol = Math.max(10, o.tol); // mobile-friendly minimum
   const draftOrPending = p.status !== "open";
   const near = (a: number, c: number, t = tol) => Math.abs(a - c) <= t;
+  const ht = Math.min(b.tpY, b.stopY, b.entryY);
+  const hb = Math.max(b.tpY, b.stopY, b.entryY);
+
+  // Corner + edge handles only when selected (or always for draft so user can size before confirm)
+  const handlesOn = o.selected || p.status === "draft";
+  if (handlesOn && !p.locked) {
+    const pts: Array<{ part: PositionPart; hx: number; hy: number; ok: boolean }> = [
+      { part: "tl", hx: b.x0, hy: b.tpY, ok: draftOrPending },
+      { part: "takeProfit", hx: (b.x0 + b.x1) / 2, hy: b.tpY, ok: true },
+      { part: "tr", hx: b.x1, hy: b.tpY, ok: true },
+      { part: "left", hx: b.x0, hy: b.entryY, ok: draftOrPending },
+      { part: "entry", hx: (b.x0 + b.x1) / 2, hy: b.entryY, ok: draftOrPending },
+      { part: "right", hx: b.x1, hy: b.entryY, ok: true },
+      { part: "bl", hx: b.x0, hy: b.stopY, ok: draftOrPending },
+      { part: "stop", hx: (b.x0 + b.x1) / 2, hy: b.stopY, ok: true },
+      { part: "br", hx: b.x1, hy: b.stopY, ok: true },
+    ];
+    let best: PositionPart | null = null;
+    let bestD = tol * tol;
+    for (const h of pts) {
+      if (!h.ok) continue;
+      const d = (x - h.hx) * (x - h.hx) + (y - h.hy) * (y - h.hy);
+      if (d <= bestD) {
+        bestD = d;
+        best = h.part;
+      }
+    }
+    if (best) return best;
+  }
+
+  // Right-edge width handle always available (even when unselected) for open/pending/draft
+  if (near(x, b.x1, tol * 1.2) && near(y, b.entryY, tol * 1.2)) return "right";
+  if (draftOrPending && near(x, b.x0, tol * 1.2) && near(y, b.entryY, tol * 1.2)) return "left";
+
+  // Level lines inside box width
   const inX = x >= b.x0 - tol && x <= b.x1 + tol;
-  // width handle (right end of entry line)
-  if (near(x, b.x1, tol * 1.3) && near(y, b.entryY, tol * 1.3)) return "right";
-  if (draftOrPending && near(x, b.x0, tol * 1.3) && near(y, b.entryY, tol * 1.3)) return "left";
   if (inX && near(y, b.tpY)) return "takeProfit";
   if (inX && near(y, b.stopY)) return "stop";
   if (inX && near(y, b.entryY)) return draftOrPending ? "entry" : "body";
-  const top = Math.min(b.stopY, b.tpY, b.entryY);
-  const bottom = Math.max(b.stopY, b.tpY, b.entryY);
-  if (x >= b.x0 && x <= b.x1 && y >= top && y <= bottom) return "body";
+  if (x >= b.x0 && x <= b.x1 && y >= ht && y <= hb) return "body";
   return null;
 }
 
@@ -441,7 +479,15 @@ function dragCore<T extends PositionLike>(
     }
     case "entry":
     case "body": {
-      if (!draftOrPending) return p;
+      // Open: vertical-only move of protective SL/TP (entry fixed after fill).
+      if (!draftOrPending) {
+        const dPrice = snap(pt.price) - snap(origin.pt.price);
+        return {
+          ...p,
+          stop: { ...og.stop, price: snap(og.stop.price + dPrice) },
+          takeProfit: { ...og.takeProfit, price: snap(og.takeProfit.price + dPrice) },
+        } as T;
+      }
       // A manual Market order is pinned to the market; an AUTO market draft may be dragged away (becomes limit/stop).
       if (og.orderType === "market" && og.orderTypeAuto === false && part === "entry") return p;
       const dPrice = snap(pt.price) - snap(origin.pt.price);
@@ -467,6 +513,27 @@ function dragCore<T extends PositionLike>(
     case "right": {
       const t = Math.max(Math.round(pt.time), og.entry.time + o.barSec * 3);
       return { ...p, rightTime: t };
+    }
+    case "tl": {
+      // TP price + left (entry time) for drafts
+      let next = dragCore(p, "takeProfit", pt, origin, o);
+      if (draftOrPending) next = dragCore(next, "left", pt, { ...origin, pos: next }, o);
+      return next;
+    }
+    case "tr": {
+      let next = dragCore(p, "takeProfit", pt, origin, o);
+      next = dragCore(next, "right", pt, { ...origin, pos: next }, o);
+      return next;
+    }
+    case "bl": {
+      let next = dragCore(p, "stop", pt, origin, o);
+      if (draftOrPending) next = dragCore(next, "left", pt, { ...origin, pos: next }, o);
+      return next;
+    }
+    case "br": {
+      let next = dragCore(p, "stop", pt, origin, o);
+      next = dragCore(next, "right", pt, { ...origin, pos: next }, o);
+      return next;
     }
     default:
       return p;
@@ -670,7 +737,7 @@ export function applyPositionDrag<T extends PositionLike>(
   const next = dragCore(p, part, pt, origin, o);
   if (next === p || !next.rrLock?.enabled) return next;
   const tick = o.tick > 0 ? o.tick : 0.01;
-  if (part === "stop") return applyRRLock(next, "stop", tick);
-  if (part === "takeProfit") return applyRRLock(next, "takeProfit", tick);
+  if (part === "stop" || part === "bl" || part === "br") return applyRRLock(next, "stop", tick);
+  if (part === "takeProfit" || part === "tl" || part === "tr") return applyRRLock(next, "takeProfit", tick);
   return next;
 }

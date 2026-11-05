@@ -1477,22 +1477,23 @@ export function Chart({
       }
 
       const part = hitTestPosition(pos as never, box, x, y, {
-        tol: lineThreshold + 2,
-        selected: selectedShapeIdRef.current === s.id,
+        tol: Math.max(12, lineThreshold + 4),
+        selected: selectedShapeIdRef.current === s.id || s.status === "draft",
       });
       if (!part) continue;
-      if (part === "stop" || part === "takeProfit") {
-        if (s.status === "draft" || s.status === "open") return { id: s.id, field: part };
+      // Map 9-handle parts directly into drag fields
+      if (part === "stop" || part === "takeProfit" || part === "tl" || part === "tr" || part === "bl" || part === "br") {
+        if (s.status === "draft" || s.status === "open" || s.status === "pending") {
+          return { id: s.id, field: part };
+        }
         continue;
       }
       if (part === "entry" || part === "left" || part === "right" || part === "body") {
         if (s.status === "draft" || s.status === "pending") {
-          if (part === "entry" || part === "left") return { id: s.id, field: "entry" };
-          if (part === "right") return { id: s.id, field: "right" };
-          return { id: s.id, field: "entry" };
+          return { id: s.id, field: part === "entry" ? "entry" : part };
         }
         if (s.status === "open" && (part === "body" || part === "right")) {
-          return { id: s.id, field: part === "right" ? "right" : "body" };
+          return { id: s.id, field: part };
         }
       }
     }
@@ -1594,7 +1595,7 @@ export function Chart({
     const synced = syncDraft(next as never, {
       market: marketRef.current.price,
       tick: instRef.current.tick,
-      userMovedEntry: part === "entry" || part === "body",
+      userMovedEntry: part === "entry" || part === "body" || part === "left" || part === "tl" || part === "bl",
     });
     setShapes(shapesRef.current.map((x) => (x.id === d.id ? (synced as unknown as Shape) : x)));
   }

@@ -182,9 +182,9 @@ function legacyRun(shapes, seq) {
   ok("texts: center has pnl, qty, rr", t.center === "Open P&L: +12.50, Qty: 1.5, Risk/Reward Ratio: 2.00", t.center);
   ok("level conversion ticks->price (long TP)", near(M.levelFromInput("long", "takeProfit", 100, 50, "ticks", 0.1), 105));
   ok("level conversion % (short SL goes up)", near(M.levelFromInput("short", "stop", 100, 2, "percent", 0.01), 102));
-  ok("normalize drops bad rightTime", M.normalizePosition(pos({ rightTime: 50 })).rightTime === undefined);
+  ok("normalize replaces invalid rightTime with finite box", (M.normalizePosition(pos({ rightTime: 50 })).rightTime ?? 0) > 100);
   ok("normalize drops bad risk", M.normalizePosition(pos({ risk: { percent: -1 } })).risk === undefined);
-  ok("old shape passes normalize unchanged", JSON.stringify(M.normalizePosition(pos())) === JSON.stringify(pos()));
+  ok("legacy without rightTime gets backfilled box", (M.normalizePosition(pos()).rightTime ?? 0) > 100);
 }
 
 // ---------- RENDER: recorder context ----------
@@ -210,6 +210,38 @@ function legacyRun(shapes, seq) {
   calls.length = 0;
   R.drawPosition(ctx, shortPos, { box, w: 800, h: 1000, style, texts, selected: true, priceDecimals: 2 });
   ok("selected draws handles", calls.some((c) => c[0] === "arc"));
+}
+
+
+// ---------- Brief 04/TV box geometry & 9-handle hit test ----------
+{
+  const longP = M.normalizePosition(pos({ rightTime: 100 + 120, status: "draft" })); // 2 min wide
+  const xOf = (tm) => (tm - 100) * 2; // 2 px per second → width 240px
+  const yOf = (pr) => 1000 - pr * 5;
+  const box = M.positionBox(longP, { xOf, yOf, w: 800 });
+  ok("box finite width", box && box.x1 - box.x0 > 10 && box.x1 - box.x0 < 800, box);
+  ok("box not full chart", box && box.x0 > 0 || (box && box.x1 < 800) || (box && box.x1 - box.x0 < 700), box);
+  const bothNull = M.positionBox(longP, { xOf: () => null, yOf, w: 800 });
+  ok("both xOf null → min width not full chart", bothNull && bothNull.x1 - bothNull.x0 <= 80, bothNull);
+
+  const b = box;
+  // 9 handles when selected
+  ok("hit TP center", M.hitTestPosition(longP, b, (b.x0+b.x1)/2, b.tpY, { tol: 12, selected: true }) === "takeProfit");
+  ok("hit SL center", M.hitTestPosition(longP, b, (b.x0+b.x1)/2, b.stopY, { tol: 12, selected: true }) === "stop");
+  ok("hit right mid", M.hitTestPosition(longP, b, b.x1, b.entryY, { tol: 12, selected: true }) === "right");
+  ok("hit left mid", M.hitTestPosition(longP, b, b.x0, b.entryY, { tol: 12, selected: true }) === "left");
+  ok("hit TL corner", M.hitTestPosition(longP, b, b.x0, b.tpY, { tol: 12, selected: true }) === "tl");
+  ok("hit BR corner", M.hitTestPosition(longP, b, b.x1, b.stopY, { tol: 12, selected: true }) === "br");
+
+  // Drag right expands width only
+  const origin = { pt: { time: longP.rightTime, price: longP.entry.price }, pos: longP };
+  const wider = M.applyPositionDrag(longP, "right", { time: longP.rightTime + 600, price: longP.entry.price }, origin, { tick: 0.01, barSec: 60 });
+  ok("right drag widens", wider.rightTime > longP.rightTime && wider.entry.price === longP.entry.price);
+
+  // Long vs short zone orientation preserved in texts
+  const shortP = M.normalizePosition(pos({ side: "short", stop: { time: 100, price: 105 }, takeProfit: { time: 100, price: 90 }, rightTime: 100 + 24 * 60, status: "draft" }));
+  const sb = M.positionBox(shortP, { xOf, yOf, w: 800 });
+  ok("short box valid", sb && sb.x1 > sb.x0);
 }
 
 console.log(`position tests: ${pass} passed, ${fail} failed`);

@@ -159,19 +159,32 @@ export function drawPosition(ctx: CanvasRenderingContext2D, p: PositionLike, o: 
     tag(p.entry.price, b.entryY, "#363a45");
   }
 
-  // selection chrome
-  if (!o.forScreenshot && (o.selected || p.status === "draft")) {
-    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  // Outer box border (bounded rectangle — never full-width chrome)
+  {
+    const top = Math.min(b.tpY, b.stopY, b.entryY);
+    const bot = Math.max(b.tpY, b.stopY, b.entryY);
+    ctx.strokeStyle = hexToRgba(st.lineColor, live ? 0.55 : 0.4);
     ctx.lineWidth = 1;
-    ctx.setLineDash([3, 3]);
-    ctx.strokeRect(b.x0, Math.min(b.tpY, b.stopY, b.entryY), width, Math.max(b.tpY, b.stopY, b.entryY) - Math.min(b.tpY, b.stopY, b.entryY));
     ctx.setLineDash([]);
-    if (!p.locked) {
-      handleSquare(ctx, b.x1, b.tpY, st.profitColor);
-      handleSquare(ctx, b.x1, b.stopY, st.stopColor);
-      handleCircle(ctx, b.x1, b.entryY, st.lineColor);
-      if (p.status !== "open") handleCircle(ctx, b.x0, b.entryY, st.lineColor);
-    }
+    ctx.strokeRect(b.x0 + 0.5, top + 0.5, Math.max(1, width - 1), Math.max(1, bot - top - 1));
+  }
+
+  // 9 handles only when selected (or draft) and not screenshot
+  if (!o.forScreenshot && (o.selected || p.status === "draft") && !p.locked) {
+    const draftOrPending = p.status !== "open";
+    const mx = (b.x0 + b.x1) / 2;
+    // Top row: TL, TC (TP), TR
+    if (draftOrPending) handleSquare(ctx, b.x0, b.tpY, st.profitColor);
+    handleSquare(ctx, mx, b.tpY, st.profitColor);
+    handleSquare(ctx, b.x1, b.tpY, st.profitColor);
+    // Middle row: ML, MC (entry/body), MR
+    if (draftOrPending) handleCircle(ctx, b.x0, b.entryY, st.lineColor);
+    handleCircle(ctx, mx, b.entryY, st.lineColor);
+    handleCircle(ctx, b.x1, b.entryY, st.lineColor);
+    // Bottom row: BL, BC (SL), BR
+    if (draftOrPending) handleSquare(ctx, b.x0, b.stopY, st.stopColor);
+    handleSquare(ctx, mx, b.stopY, st.stopColor);
+    handleSquare(ctx, b.x1, b.stopY, st.stopColor);
   }
 
   if (o.warning) {
