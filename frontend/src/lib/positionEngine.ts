@@ -87,16 +87,17 @@ function pendingFillPrice(orderType: string, entry: number, bar: BarLike, gap: b
   }
 }
 
-function extendRight<P extends PositionLike>(orig: P, fillTime: number): Partial<P> {
-  // Always re-anchor the box width to the fill time so the geometry does not
-  // snap to the left edge when entry.time jumps forward on fill.
-  const width = Math.max(
-    60,
+function extendRight<P extends PositionLike>(orig: P, _fillTime: number): Partial<P> {
+  // Keep the box where the user placed it. entry.time is set by the caller to the fill.
+  const anchor =
+    orig.anchorTime != null && Number.isFinite(orig.anchorTime)
+      ? orig.anchorTime
+      : orig.entry.time;
+  const width =
     orig.rightTime != null && Number.isFinite(orig.rightTime)
-      ? orig.rightTime - orig.entry.time
-      : 60 * 18
-  );
-  return { rightTime: fillTime + Math.max(60, width) } as Partial<P>;
+      ? Math.max(1, orig.rightTime - anchor)
+      : 60 * 18;
+  return { anchorTime: anchor, rightTime: anchor + width } as Partial<P>;
 }
 
 

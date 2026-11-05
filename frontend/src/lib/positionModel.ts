@@ -71,6 +71,11 @@ export type PositionLike = {
   // ---- v2 optional fields ----
   /** Right edge of the box (unix seconds). Absent = legacy full-width lines. */
   rightTime?: number;
+  /**
+   * Fixed chart X-anchor for the box (place/click time).
+   * Survives fill so the rectangle does not jump when entry.time is rewritten.
+   */
+  anchorTime?: number;
   style?: Partial<PositionStyle>;
   risk?: PositionRiskInput;
   locked?: boolean;
@@ -132,14 +137,28 @@ export function normalizePosition<T extends PositionLike>(
   opts?: { barSec?: number; widthBars?: number }
 ): T {
   const out: T = { ...p };
-  if (out.rightTime != null && !(Number.isFinite(out.rightTime) && out.rightTime > out.entry.time)) {
+  // Stable visual left edge (click/place time). Independent of fill entry.time.
+  if (out.anchorTime == null && out.entry && Number.isFinite(out.entry.time)) {
+    (out as { anchorTime?: number }).anchorTime = out.entry.time;
+  }
+  const leftEdge =
+    out.anchorTime != null && Number.isFinite(out.anchorTime) ? out.anchorTime : out.entry?.time;
+  if (
+    out.rightTime != null &&
+    !(
+      Number.isFinite(out.rightTime) &&
+      leftEdge != null &&
+      Number.isFinite(leftEdge) &&
+      out.rightTime > leftEdge
+    )
+  ) {
     delete (out as { rightTime?: number }).rightTime;
   }
-  // Backfill missing rightTime for draft/pending/open so the painter never falls back to full chart width.
-  if (out.rightTime == null && out.entry && Number.isFinite(out.entry.time)) {
+  // Backfill missing rightTime from the anchor so the box never full-bleeds.
+  if (out.rightTime == null && leftEdge != null && Number.isFinite(leftEdge)) {
     const barSec = Math.max(1, opts?.barSec ?? 60);
     const widthBars = Math.max(8, opts?.widthBars ?? 24);
-    (out as { rightTime?: number }).rightTime = out.entry.time + barSec * widthBars;
+    (out as { rightTime?: number }).rightTime = leftEdge + barSec * widthBars;
   }
   if (out.rrLock) {
     const lk = out.rrLock;
@@ -275,17 +294,18 @@ export function prepareConfirm<T extends PositionLike>(
   const mt = market.time != null && Number.isFinite(market.time) ? market.time : null;
   let pos: T = p;
   if (p.orderType === "market" && mp != null && mt != null) {
-    // Preserve box WIDTH when the entry time jumps to the fill/market time.
-    // Without this, rightTime can fall behind entry and the box briefly collapses
-    // or expands against the left edge of the chart.
-    const prevWidth = Math.max(
-      60,
-      (p.rightTime != null && Number.isFinite(p.rightTime) ? p.rightTime : p.entry.time + 60) - p.entry.time
-    );
+    // entry.time/price become the fill — but the on-chart box stays at the place/click anchor.
+    const anchor =
+      p.anchorTime != null && Number.isFinite(p.anchorTime) ? p.anchorTime : p.entry.time;
+    const width =
+      p.rightTime != null && Number.isFinite(p.rightTime)
+        ? Math.max(1, p.rightTime - anchor)
+        : 60 * 18;
     pos = {
       ...p,
       entry: { time: mt, price: mp },
-      rightTime: mt + prevWidth,
+      anchorTime: anchor,
+      rightTime: anchor + width,
     };
   }
   const asOpen: PositionLike = p.orderType === "market" ? { ...pos, status: "open" } : pos;
@@ -369,8 +389,11 @@ export function positionBox(p: PositionLike, c: BoxCtx): Box | null {
   // NEVER full-bleed across the chart — always a finite TradingView-style box.
   let x0 = Math.max(0, (c.w - minW) / 2);
   let x1 = Math.min(c.w, x0 + minW);
+  // Visual left = place/click anchor. entry.time may jump on fill for journal/analytics.
+  const leftTime =
+    p.anchorTime != null && Number.isFinite(p.anchorTime) ? p.anchorTime : p.entry.time;
   if (p.rightTime != null) {
-    const a = c.xOf(p.entry.time);
+    const a = c.xOf(leftTime);
     const b = c.xOf(p.rightTime);
     if (a != null && b != null) {
       x0 = Math.max(0, Math.min(c.w, a));
@@ -383,8 +406,7 @@ export function positionBox(p: PositionLike, c: BoxCtx): Box | null {
       x0 = Math.max(0, x1 - minW);
     }
   } else {
-    // Missing rightTime: still anchor min-width at entry X when possible.
-    const a = c.xOf(p.entry.time);
+    const a = c.xOf(leftTime);
     if (a != null) {
       x0 = Math.max(0, Math.min(c.w, a));
       x1 = Math.min(c.w, x0 + minW);
@@ -513,16 +535,32 @@ function dragCore<T extends PositionLike>(
       if (og.stopPrice != null) next.stopPrice = og.stopPrice + dPrice;
       if (og.limitPrice != null) next.limitPrice = og.limitPrice + dPrice;
       if (og.rightTime != null) next.rightTime = og.rightTime + dTime;
+      {
+        const base =
+          og.anchorTime != null && Number.isFinite(og.anchorTime) ? og.anchorTime : og.entry.time;
+        next.anchorTime = base + dTime;
+      }
       return next as T;
     }
     case "left": {
       if (!draftOrPending) return p;
-      const right = og.rightTime ?? og.entry.time + o.barSec * 24;
+      const right =
+        og.rightTime ??
+        ((og.anchorTime != null && Number.isFinite(og.anchorTime) ? og.anchorTime : og.entry.time) +
+          o.barSec * 24);
       const t = Math.min(Math.round(pt.time), right - o.barSec * 3);
-      return { ...p, entry: { ...og.entry, time: t }, stop: { ...og.stop, time: t }, takeProfit: { ...og.takeProfit, time: t } };
+      return {
+        ...p,
+        entry: { ...og.entry, time: t },
+        stop: { ...og.stop, time: t },
+        takeProfit: { ...og.takeProfit, time: t },
+        anchorTime: t,
+      };
     }
     case "right": {
-      const t = Math.max(Math.round(pt.time), og.entry.time + o.barSec * 3);
+      const left =
+        og.anchorTime != null && Number.isFinite(og.anchorTime) ? og.anchorTime : og.entry.time;
+      const t = Math.max(Math.round(pt.time), left + o.barSec * 3);
       return { ...p, rightTime: t };
     }
     case "tl": {

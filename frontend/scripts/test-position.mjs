@@ -122,8 +122,14 @@ function legacyRun(shapes, seq) {
   ok("gapFill: buy_limit gapped below fills at open (improvement)", r.shapes[0].entry.price === 96);
   r = E.runPositionBars([pos({ orderType: "buy_limit", status: "pending", entry: { time: 90, price: 98 } })], [bar(101, 100, 101, 97, 99)], { canFill: () => false });
   ok("canFill=false cancels the pending order", r.shapes.length === 0 && r.events[0].type === "cancelled");
-  r = E.runPositionBars([pos({ orderType: "buy_limit", status: "pending", entry: { time: 90, price: 98 }, rightTime: 120 })], [bar(500, 100, 101, 97, 99)]);
-  ok("fill extends rightTime so the box stays visible", r.shapes[0].rightTime > 500);
+  r = E.runPositionBars([pos({ orderType: "buy_limit", status: "pending", entry: { time: 90, price: 98 }, rightTime: 120, anchorTime: 90 })], [bar(500, 100, 101, 97, 99)]);
+  ok(
+    "fill keeps box at place-anchor (does not jump left/right with fill time)",
+    r.shapes[0].status === "open" &&
+      r.shapes[0].entry.time === 500 &&
+      r.shapes[0].anchorTime === 90 &&
+      r.shapes[0].rightTime === 120
+  );
   r = E.runPositionBars([pos()], [bar(101, 100, 101, 94, 96)], { onClose: () => ({ screenshot: "SHOT" }) });
   ok("onClose hook merges screenshot", r.closed[0].screenshot === "SHOT");
   const mc = E.manualClose(pos(), { price: 103, time: 150 });

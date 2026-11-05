@@ -141,6 +141,7 @@ export type PositionShape = {
   entryScreenshot?: string;
   /** v3.47 TradingView-style box right edge (unix sec). Absent = legacy full-width lines. */
   rightTime?: number;
+  anchorTime?: number;
   /** Per-position style overrides (colors, fonts, flags). */
   style?: Partial<PositionStyle>;
   /** Risk inputs frozen on this order at draft time (panel edits later must not change them). */
@@ -537,6 +538,7 @@ export function Chart({
       orderType: ot,
       status: "draft",
       ...levels,
+      anchorTime: levels.entry.time,
       rightTime: levels.entry.time + barSec * widthBars,
       orderTypeAuto: !manualStopLimit,
       ...(draftRisk ? { risk: draftRisk } : {}),
