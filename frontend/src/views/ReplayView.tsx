@@ -152,6 +152,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const tickWindowRef = useRef<TickRecord[]>([]);
   const tickIndexRef = useRef(0);
   const tickDayRef = useRef<string | null>(null);
+  const stepTickRef = useRef<(dir: number) => void>(() => {});
+  const tickTransitionLockRef = useRef(false);
   const prevCursorRef = useRef(saved ? Math.max(1, saved.cursor) : 800);
   const stepPanelRef = useRef<HTMLDivElement | null>(null);
   const [customTfs, setCustomTfs] = useState<number[]>(() => {
