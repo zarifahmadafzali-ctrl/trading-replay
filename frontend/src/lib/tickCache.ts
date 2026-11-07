@@ -6,6 +6,7 @@
 
 import type { TickDayRow, TickRecord } from "./tickTypes";
 import { normalizeTicks, tickIdentityKey } from "./tickValidate";
+import { symbolLookupCandidates } from "./symbolAliases";
 
 const DB_NAME = "trading-replay-cache";
 /** v3 = days only; v4 = + ticks store */
@@ -164,4 +165,48 @@ export async function tickCacheListDays(symbol?: string): Promise<
   } catch {
     return [];
   }
+}
+
+/** Phase C1: try canonical symbol then known aliases until a complete day is found. */
+export async function tickCacheGetDayWithAlias(
+  symbol: string,
+  day: string
+): Promise<{ row: TickDayRow; symbolUsed: string } | null> {
+  for (const cand of symbolLookupCandidates(symbol)) {
+    const row = await tickCacheGetDay(cand, day);
+    if (row && (row.complete !== false) && ((row.tickCount ?? row.ticks?.length ?? 0) > 0)) {
+      return { row, symbolUsed: cand };
+    }
+  }
+  // Fallback: any incomplete row still returned for diagnostics
+  for (const cand of symbolLookupCandidates(symbol)) {
+    const row = await tickCacheGetDay(cand, day);
+    if (row) return { row, symbolUsed: cand };
+  }
+  return null;
+}
+
+
+/**
+ * List complete tick days for a UI symbol, merging all alias keys.
+ * Does not load tick payloads — metadata only from list API + filter.
+ */
+export async function tickCacheListCompleteDaysWithAlias(
+  symbol: string
+): Promise<Array<{ symbol: string; day: string; tickCount: number }>> {
+  const candidates = symbolLookupCandidates(symbol);
+  const seen = new Set<string>();
+  const out: Array<{ symbol: string; day: string; tickCount: number }> = [];
+  for (const cand of candidates) {
+    const rows = await tickCacheListDays(cand);
+    for (const r of rows) {
+      if (!r.complete || !(r.tickCount > 0)) continue;
+      const key = r.day;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ symbol: r.symbol, day: r.day, tickCount: r.tickCount });
+    }
+  }
+  out.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+  return out;
 }

@@ -1,0 +1,56 @@
+# Frontend CI — Phase C1 validation and general TypeScript/Vite build.
+# Separate from Windows Tauri packaging (windows-build.yml).
+
+name: Frontend CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-ci.yml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: frontend
+
+jobs:
+  validate:
+    name: npm ci · tests · tsc · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies (npm ci)
+        run: npm ci
+
+      - name: Phase C1 tick-replay unit tests
+        run: node scripts/test-tick-replay-c1.mjs
+
+      - name: Phase B tick pure tests
+        run: node scripts/test-tick-phase-b.mjs
+
+      - name: Phase A dataset-kind tests
+        run: node scripts/test-dataset-kind-phase-a.mjs
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Production build
+        run: npm run build

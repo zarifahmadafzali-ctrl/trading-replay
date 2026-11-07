@@ -15,6 +15,20 @@ import {
   normalizeJournalSnapshotConfig,
 } from "../lib/journalSnapshots";
 import { cacheGetRange, cachePutBars } from "../lib/barCache";
+import { tickCacheGetDayWithAlias, tickCacheListCompleteDaysWithAlias } from "../lib/tickCache";
+import type { TickRecord } from "../lib/tickTypes";
+import {
+  enumerateUtcDaysInclusive,
+  hasEligibleTickDayInRange,
+  mapTickTimeToBars1sCursor,
+  mapTimeToTickIndex,
+  nextUtcDay,
+  prevUtcDay,
+  sortTicksStable,
+  unixToUtcDay,
+  type ReplayResolution,
+} from "../lib/tickReplay";
+
 import { normalizeBars } from "../lib/marketDataIntegrity";
 import { recordRangeLoad, recordReplayWindow } from "../lib/replayDiagnostics";
 
@@ -126,6 +140,18 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   );
   const [stepOpen, setStepOpen] = useState(false);
   const [customStepInput, setCustomStepInput] = useState("");
+  /** C1: "tick" steps real ticks; "seconds" uses replayStepSeconds on 1s bars. */
+  const [replayResolution, setReplayResolution] = useState<ReplayResolution>("seconds");
+  const [tickWindow, setTickWindow] = useState<TickRecord[]>([]);
+  const [tickDay, setTickDay] = useState<string | null>(null);
+  const [tickIndex, setTickIndex] = useState(0);
+  const [tickEligible, setTickEligible] = useState(false);
+  const [tickSymbolUsed, setTickSymbolUsed] = useState<string | null>(null);
+  const tickLoadGenRef = useRef(0);
+  const replayResolutionRef = useRef<ReplayResolution>("seconds");
+  const tickWindowRef = useRef<TickRecord[]>([]);
+  const tickIndexRef = useRef(0);
+  const tickDayRef = useRef<string | null>(null);
   const prevCursorRef = useRef(saved ? Math.max(1, saved.cursor) : 800);
   const stepPanelRef = useRef<HTMLDivElement | null>(null);
   const [customTfs, setCustomTfs] = useState<number[]>(() => {
@@ -435,10 +461,19 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   // dataset growth or step changes do not thrash setInterval (v3.23.0).
   playLenRef.current = baseBars.length;
   playStepRef.current = Math.max(1, replayStepSeconds);
+  replayResolutionRef.current = replayResolution;
+  tickWindowRef.current = tickWindow;
+  tickIndexRef.current = tickIndex;
+  tickDayRef.current = tickDay;
 
   useEffect(() => {
     if (!playing) return;
     const id = window.setInterval(() => {
+      if (replayResolutionRef.current === "tick") {
+        // Advance one tick per interval tick; day roll handled in stepTickRef.
+        stepTickRef.current(1);
+        return;
+      }
       const len = playLenRef.current;
       const step = playStepRef.current;
       setCursor((c) => {
@@ -479,13 +514,28 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   // Space = play/pause, ArrowRight/ArrowLeft = step one second. Ignored
   // while typing in an input (symbol search, custom TF box, etc).
   useReplayHotkeys({
-    onTogglePlay: () => setPlaying((p) => (p ? false : cursor < baseBars.length ? true : p)),
+    onTogglePlay: () =>
+      setPlaying((p) => {
+        if (p) return false;
+        if (replayResolution === "tick") {
+          return tickWindow.length > 0 && tickIndex < tickWindow.length - 1 ? true : p;
+        }
+        return cursor < baseBars.length ? true : p;
+      }),
     onStepForward: () => {
       setPlaying(false);
+      if (replayResolution === "tick") {
+        stepTickRef.current(1);
+        return;
+      }
       setCursor((c) => Math.min(baseBars.length, c + Math.max(1, replayStepSeconds)));
     },
     onStepBack: () => {
       setPlaying(false);
+      if (replayResolution === "tick") {
+        stepTickRef.current(-1);
+        return;
+      }
       setCursor((c) => Math.max(1, c - Math.max(1, replayStepSeconds)));
     },
     onToggleFollow: () => setFollowPrice((v) => !v),
@@ -912,6 +962,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     setReplayStepSeconds(sec);
     setCustomStepInput("");
     setStepOpen(false);
+    if (replayResolution === "tick") setReplayResolution("seconds");
     setMessage(`Replay step ${formatTf(sec)}`);
   }
 
@@ -1238,7 +1289,10 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     [activeIndicatorIds]
   );
   const currentBase = baseBars[Math.max(0, cursor - 1)];
-  const atEnd = cursor >= baseBars.length;
+  const atEnd =
+    replayResolution === "tick"
+      ? !tickWindow.length || tickIndex >= tickWindow.length - 1
+      : cursor >= baseBars.length;
 
   // 1s bars from previous cursor → current for SL/TP (covers Replay Step jumps).
   const execBars = useMemo(() => {
@@ -1256,7 +1310,167 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     prevCursorRef.current = cursor;
   }, [cursor]);
 
+
+  // —— Phase C1 Tick Replay (same engine; execution still 1s) ——
+  const activeTick: TickRecord | null =
+    replayResolution === "tick" && tickWindow.length
+      ? tickWindow[Math.max(0, Math.min(tickIndex, tickWindow.length - 1))] ?? null
+      : null;
+
+  const loadTickDay = useCallback(
+    async (day: string): Promise<{ ticks: TickRecord[]; symbolUsed: string } | null> => {
+      const gen = ++tickLoadGenRef.current;
+      const got = await tickCacheGetDayWithAlias(symbol, day);
+      if (gen !== tickLoadGenRef.current) return null;
+      if (!got || got.row.complete === false) return null;
+      const ticks = sortTicksStable(got.row.ticks || []);
+      if (!ticks.length) return null;
+      return { ticks, symbolUsed: got.symbolUsed };
+    },
+    [symbol]
+  );
+
+  // Eligibility: any complete tick day (metadata only) intersecting loaded bar calendar range
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!baseBars.length) {
+        if (!cancelled) setTickEligible(false);
+        return;
+      }
+      const startDay = unixToUtcDay(baseBars[0].time);
+      const endDay = unixToUtcDay(baseBars[baseBars.length - 1].time);
+      const listed = await tickCacheListCompleteDaysWithAlias(symbol);
+      if (cancelled) return;
+      const completeDays = listed.map((r) => r.day);
+      const ok = hasEligibleTickDayInRange(completeDays, startDay, endDay);
+      setTickEligible(ok);
+      if (ok && listed.length) {
+        // Prefer symbol actually used on a day inside the range
+        const rangeSet = new Set(enumerateUtcDaysInclusive(startDay, endDay));
+        const hit = listed.find((r) => rangeSet.has(r.day));
+        if (hit) setTickSymbolUsed(hit.symbol);
+      }
+      if (!ok && replayResolution === "tick") {
+        setReplayResolution("seconds");
+        setTickWindow([]);
+        setTickDay(null);
+        tickTransitionLockRef.current = false;
+        setMessage("Tick data unavailable for this range · switched to 1s step");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol, baseBars.length, baseBars[0]?.time, baseBars[baseBars.length - 1]?.time, replayResolution]);
+
+  const syncBarsCursorFromTickTime = useCallback(
+    (t: number) => {
+      if (!baseBars.length) return;
+      const c = mapTickTimeToBars1sCursor(baseBars, t);
+      setCursor(c);
+    },
+    [baseBars]
+  );
+
+  const applyTickWindow = useCallback(
+    (ticks: TickRecord[], day: string, index: number, symbolUsed: string) => {
+      const sorted = sortTicksStable(ticks);
+      const i = Math.max(0, Math.min(index, Math.max(0, sorted.length - 1)));
+      setTickWindow(sorted);
+      setTickDay(day);
+      setTickIndex(i);
+      setTickSymbolUsed(symbolUsed);
+      tickWindowRef.current = sorted;
+      tickDayRef.current = day;
+      tickIndexRef.current = i;
+      if (sorted[i]) syncBarsCursorFromTickTime(sorted[i].time);
+    },
+    [syncBarsCursorFromTickTime]
+  );
+
+  const stepTick = useCallback(
+    (dir: number) => {
+      // Ignore further steps while a day transition is in flight (play timer race).
+      if (tickTransitionLockRef.current) return;
+
+      const win = tickWindowRef.current;
+      const idx = tickIndexRef.current;
+      const day = tickDayRef.current;
+      if (!win.length || !day) {
+        setPlaying(false);
+        return;
+      }
+      const next = idx + dir;
+      if (next >= 0 && next < win.length) {
+        setTickIndex(next);
+        tickIndexRef.current = next;
+        const t = win[next];
+        if (t) syncBarsCursorFromTickTime(t.time);
+        return;
+      }
+      // Day boundary — exclusive lock until load completes
+      const targetDay = dir > 0 ? nextUtcDay(day) : prevUtcDay(day);
+      tickTransitionLockRef.current = true;
+      void (async () => {
+        try {
+          const loaded = await loadTickDay(targetDay);
+          if (!loaded) {
+            setPlaying(false);
+            setMessage(
+              dir > 0
+                ? `No tick data for ${targetDay} · paused`
+                : `No earlier tick day before ${day} · paused`
+            );
+            return;
+          }
+          const newIdx = dir > 0 ? 0 : loaded.ticks.length - 1;
+          applyTickWindow(loaded.ticks, targetDay, newIdx, loaded.symbolUsed);
+        } finally {
+          tickTransitionLockRef.current = false;
+        }
+      })();
+    },
+    [applyTickWindow, loadTickDay, syncBarsCursorFromTickTime]
+  );
+
+  stepTickRef.current = stepTick;
+
+  const enterTickMode = useCallback(async () => {
+    setPlaying(false);
+    const bar = baseBars[Math.max(0, cursor - 1)];
+    if (!bar) {
+      setMessage("Load 1s data before Tick replay");
+      return;
+    }
+    const day = unixToUtcDay(bar.time);
+    const loaded = await loadTickDay(day);
+    if (!loaded) {
+      setTickEligible(false);
+      setMessage(
+        "Tick Replay needs imported tick data for this symbol/day. Only 1-second OHLC is available."
+      );
+      return;
+    }
+    const idx = mapTimeToTickIndex(loaded.ticks, bar.time);
+    applyTickWindow(loaded.ticks, day, idx, loaded.symbolUsed);
+    setReplayResolution("tick");
+    setTickEligible(true);
+    setMessage(
+      `Tick Replay · ${loaded.ticks.length.toLocaleString()} ticks on ${day} · execution still uses 1s OHLC`
+    );
+  }, [applyTickWindow, baseBars, cursor, loadTickDay]);
+
+  const exitTickMode = useCallback(() => {
+    setPlaying(false);
+    const t = tickWindowRef.current[tickIndexRef.current]?.time;
+    if (t != null) syncBarsCursorFromTickTime(t);
+    setReplayResolution("seconds");
+    setMessage("Replay step: 1s bars (Tick mode off)");
+  }, [syncBarsCursorFromTickTime]);
+
   const STEP_PRESETS = [1, 5, 10, 30, 60, 120, 300, 600, 900, 1800, 3600];
+
 
 
 
@@ -1814,8 +2028,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           cursor={visibleBars.length}
           drawTool={drawTool}
           orderType={orderType}
-          marketPrice={currentBase?.close ?? null}
-          marketTime={currentBase?.time ?? null}
+          marketPrice={activeTick ? activeTick.mid : currentBase?.close ?? null}
+          marketTime={activeTick ? activeTick.time : currentBase?.time ?? null}
           replayBar={currentBase ?? null}
           execBars={execBars}
           followPrice={followPrice}
@@ -1885,7 +2099,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         <button
           onClick={() => {
             setPlaying(false);
-            setCursor((c) => Math.max(1, c - Math.max(1, replayStepSeconds)));
+            if (replayResolution === "tick") stepTick(-1);
+            else setCursor((c) => Math.max(1, c - Math.max(1, replayStepSeconds)));
           }}
           title="←"
         >
@@ -1894,7 +2109,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         <button
           onClick={() => {
             setPlaying(false);
-            setCursor((c) => Math.min(baseBars.length, c + Math.max(1, replayStepSeconds)));
+            if (replayResolution === "tick") stepTick(1);
+            else setCursor((c) => Math.min(baseBars.length, c + Math.max(1, replayStepSeconds)));
           }}
           title="→"
         >
@@ -1902,16 +2118,33 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         </button>
         <div className={`tools-wrap${stepOpen ? " is-open" : ""}`} ref={stepPanelRef}>
           <button type="button" className={stepOpen ? "on" : ""} onClick={() => setStepOpen((v) => !v)}>
-            Step {formatTf(replayStepSeconds)} ▾
+            Step {replayResolution === "tick" ? "Tick" : formatTf(replayStepSeconds)} ▾
           </button>
           {stepOpen && (
             <div className="tools-panel panel-bottom">
+              <button
+                type="button"
+                className={replayResolution === "tick" ? "on" : ""}
+                disabled={!tickEligible && replayResolution !== "tick"}
+                title={
+                  tickEligible
+                    ? "Advance one imported tick at a time"
+                    : "Import tick Parquet for this symbol/range to enable Tick step"
+                }
+                onClick={() => {
+                  void enterTickMode();
+                  setStepOpen(false);
+                }}
+              >
+                Tick{tickEligible ? "" : " (no data)"}
+              </button>
               {STEP_PRESETS.map((sec) => (
                 <button
                   key={sec}
                   type="button"
-                  className={sec === replayStepSeconds ? "on" : ""}
+                  className={replayResolution === "seconds" && sec === replayStepSeconds ? "on" : ""}
                   onClick={() => {
+                    if (replayResolution === "tick") exitTickMode();
                     setReplayStepSeconds(sec);
                     setStepOpen(false);
                   }}
@@ -1931,7 +2164,11 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
                   Add
                 </button>
               </div>
-              <p className="tools-note">Step moves the cursor. SL/TP still checks every 1s bar inside the jump.</p>
+              <p className="tools-note">
+                {replayResolution === "tick"
+                  ? "Tick Replay is active. Trade execution and SL/TP still use 1-second OHLC. Tick-based execution comes later."
+                  : "Step moves the 1s cursor. SL/TP still checks every 1s bar inside the jump."}
+              </p>
             </div>
           )}
         </div>
@@ -1941,14 +2178,27 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           ))}
         </select>
         {/* Range scrubber removed — only floating control buttons remain. */}
-        <span className="cursor-count">{cursor.toLocaleString()}/{baseBars.length.toLocaleString()}s</span>
+        <span className="cursor-count">
+          {replayResolution === "tick" && tickWindow.length
+            ? `Tick ${(tickIndex + 1).toLocaleString()}/${tickWindow.length.toLocaleString()}${tickDay ? ` · ${tickDay}` : ""}`
+            : `${cursor.toLocaleString()}/${baseBars.length.toLocaleString()}s`}
+        </span>
       </div>
 
       <aside className="replay-info">
-        <p>{currentBase ? new Date(currentBase.time * 1000).toLocaleString() : "—"}</p>
         <p>
-          TF {formatTf(timeframeSeconds)} · Step {formatTf(replayStepSeconds)} · {visibleBars.length} candles · Space
+          {activeTick
+            ? new Date(activeTick.time * 1000).toISOString().replace("T", " ").replace("Z", " UTC")
+            : currentBase
+              ? new Date(currentBase.time * 1000).toLocaleString()
+              : "—"}
+          {activeTick ? ` · mid ${activeTick.mid}` : ""}
+        </p>
+        <p>
+          TF {formatTf(timeframeSeconds)} · Step{" "}
+          {replayResolution === "tick" ? "Tick" : formatTf(replayStepSeconds)} · {visibleBars.length} candles · Space
           play/pause · ←/→ step
+          {replayResolution === "tick" ? " · exec=1s OHLC" : ""}
         </p>
       </aside>
     </section>
