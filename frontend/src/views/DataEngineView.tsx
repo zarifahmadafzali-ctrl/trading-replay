@@ -150,6 +150,7 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
   const [daySearch, setDaySearch] = useState("");
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importProgress, setImportProgress] = useState<string>("");
+  const [tickImportLog, setTickImportLog] = useState<string>("");
   const [diagTick, setDiagTick] = useState(0);
   const [diagOpen, setDiagOpen] = useState(false);
   const [capability, setCapability] = useState<{
