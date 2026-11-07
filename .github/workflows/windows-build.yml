@@ -287,7 +287,14 @@ jobs:
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
           $out = Join-Path $outDir "latest.json"
           # UTF-8 without BOM (Tauri updater expects clean JSON)
-          [System.IO.File]::WriteAllText((Resolve-Path $outDir | Join-Path -ChildPath "latest.json"), $manifest)
+          $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+          [System.IO.File]::WriteAllText((Join-Path (Resolve-Path $outDir) "latest.json"), $manifest, $utf8NoBom)
+          # Sanity-check the file we just wrote before softprops uploads it.
+          $written = Get-Content -Path (Join-Path (Resolve-Path $outDir) "latest.json") -Raw -Encoding UTF8
+          $writtenObj = $written | ConvertFrom-Json
+          if (-not $writtenObj.version -or $writtenObj.version -ne $version) {
+            throw "Generated latest.json version='$($writtenObj.version)' does not match built version=$version. Raw head: $($written.Substring(0, [Math]::Min(200, $written.Length)))"
+          }
           Write-Host "Wrote $out"
           Write-Host "Manifest version=$version platform=windows-x86_64 url=$url"
           Write-Host "Signature length=$($sigText.Length)"
@@ -384,47 +391,111 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # GitHub can lag a few minutes before /releases/latest points at a just-published tag.
-          # Accept either: (1) /releases/latest/download/latest.json serves this version, or
-          # (2) tag asset + API confirm the release is non-draft and is the repo's latest.
-          $v = "${{ steps.ver.outputs.version }}"
-          $tag = "${{ steps.manifest.outputs.tag || format('v{0}', steps.ver.outputs.version) }}"
+          # GitHub CDN can lag after softprops upload. Parse robustly and retry.
+          $v = "${{ steps.ver.outputs.version }}".Trim()
+          $tagOut = "${{ steps.manifest.outputs.tag }}".Trim()
+          if ([string]::IsNullOrWhiteSpace($tagOut)) { $tagOut = "v$v" }
           $repo = "${{ github.repository }}"
           $latestUrl = "https://github.com/$repo/releases/latest/download/latest.json"
-          $tagUrl = "https://github.com/$repo/releases/download/$tag/latest.json"
+          $tagUrl = "https://github.com/$repo/releases/download/$tagOut/latest.json"
+          $headers = @{ "Cache-Control" = "no-cache"; "Pragma" = "no-cache"; "Accept" = "application/json,text/plain,*/*" }
+
+          function Get-Utf8Text([object]$content) {
+            if ($null -eq $content) { return "" }
+            if ($content -is [byte[]]) { return [System.Text.Encoding]::UTF8.GetString($content) }
+            return [string]$content
+          }
+
+          function Parse-LatestJson([string]$text, [string]$source) {
+            if ([string]::IsNullOrWhiteSpace($text)) {
+              throw "Empty body from $source"
+            }
+            $trim = $text.TrimStart([char]0xFEFF).Trim()
+            if ($trim.StartsWith("<") -or $trim -match '(?i)<html') {
+              throw "Non-JSON HTML from $source (likely 404/soft-404). Head: $($trim.Substring(0, [Math]::Min(180, $trim.Length)))"
+            }
+            try {
+              $obj = $trim | ConvertFrom-Json
+            } catch {
+              throw "ConvertFrom-Json failed for $source : $_. Head: $($trim.Substring(0, [Math]::Min(200, $trim.Length)))"
+            }
+            $ver = $null
+            if ($obj -and $obj.PSObject.Properties.Name -contains "version") { $ver = [string]$obj.version }
+            if ([string]::IsNullOrWhiteSpace($ver) -and $trim -match '"version"\s*:\s*"([^"]+)"') {
+              $ver = $Matches[1]
+              Write-Host "WARN: used regex fallback for version from $source"
+            }
+            if ([string]::IsNullOrWhiteSpace($ver)) {
+              throw "No version field in $source. Head: $($trim.Substring(0, [Math]::Min(200, $trim.Length)))"
+            }
+            return @{ obj = $obj; version = $ver; raw = $trim }
+          }
+
           $m = $null
           $okLatest = $false
-
           for ($i = 0; $i -lt 18; $i++) {
             try {
-              $r = Invoke-WebRequest -Uri $latestUrl -Headers @{ "Cache-Control" = "no-cache"; "Pragma" = "no-cache" } -UseBasicParsing
-              $m = $r.Content | ConvertFrom-Json
-              Write-Host "latest endpoint version=$($m.version) (want $v) attempt=$($i+1)"
-              if ($m.version -eq $v) { $okLatest = $true; break }
+              $r = Invoke-WebRequest -Uri $latestUrl -Headers $headers -UseBasicParsing -MaximumRedirection 5
+              $parsed = Parse-LatestJson (Get-Utf8Text $r.Content) "releases/latest"
+              Write-Host "latest endpoint version=$($parsed.version) (want $v) attempt=$($i+1)"
+              if ($parsed.version -eq $v) { $m = $parsed.obj; $okLatest = $true; break }
             } catch { Write-Host "latest endpoint check failed: $_" }
             Start-Sleep -Seconds 15
           }
 
           if (-not $okLatest) {
-            Write-Host "WARN: /releases/latest still not serving $v after retries — checking tag asset + API"
-            $rTag = Invoke-WebRequest -Uri $tagUrl -Headers @{ "Cache-Control" = "no-cache" } -UseBasicParsing
-            $m = $rTag.Content | ConvertFrom-Json
-            if ($m.version -ne $v) {
-              throw "Tag latest.json version=$($m.version) does not match built version $v"
+            Write-Host "WARN: /releases/latest still not serving $v — checking tag asset with retries + API"
+            $parsedTag = $null
+            for ($j = 0; $j -lt 12; $j++) {
+              try {
+                $rTag = Invoke-WebRequest -Uri $tagUrl -Headers $headers -UseBasicParsing -MaximumRedirection 5
+                $parsedTag = Parse-LatestJson (Get-Utf8Text $rTag.Content) "tag $tagOut"
+                Write-Host "tag asset version=$($parsedTag.version) (want $v) attempt=$($j+1)"
+                if ($parsedTag.version -eq $v) { break }
+              } catch { Write-Host "tag asset check failed: $_" }
+              Start-Sleep -Seconds 10
             }
+            if (-not $parsedTag -or $parsedTag.version -ne $v) {
+              # Last resort: GitHub API release asset metadata (avoids CDN HTML soft-404)
+              $apiRel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/tags/$tagOut" -Headers @{
+                Authorization = "Bearer $env:GH_TOKEN"
+                Accept = "application/vnd.github+json"
+              }
+              $asset = @($apiRel.assets | Where-Object { $_.name -eq "latest.json" }) | Select-Object -First 1
+              if (-not $asset) { throw "No latest.json asset on release $tagOut via API" }
+              $apiBody = Invoke-RestMethod -Uri $asset.url -Headers @{
+                Authorization = "Bearer $env:GH_TOKEN"
+                Accept = "application/octet-stream"
+              }
+              # Invoke-RestMethod may already deserialize JSON
+              if ($apiBody -is [string]) {
+                $parsedTag = Parse-LatestJson $apiBody "API asset $tagOut"
+              } else {
+                $verApi = [string]$apiBody.version
+                if ([string]::IsNullOrWhiteSpace($verApi)) { throw "API asset latest.json has empty version for $tagOut" }
+                $parsedTag = @{ obj = $apiBody; version = $verApi }
+              }
+              Write-Host "API asset version=$($parsedTag.version)"
+            }
+            if ($parsedTag.version -ne $v) {
+              throw "Tag latest.json version=$($parsedTag.version) does not match built version $v (tag=$tagOut url=$tagUrl)"
+            }
+            $m = $parsedTag.obj
             $api = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers @{
               Authorization = "Bearer $env:GH_TOKEN"
               Accept = "application/vnd.github+json"
             }
             Write-Host "API latest tag=$($api.tag_name) draft=$($api.draft) prerelease=$($api.prerelease)"
             if ($api.draft) { throw "Release is still draft" }
-            if ($api.tag_name -ne $tag -and $api.tag_name -ne "v$v") {
-              throw "API /releases/latest is $($api.tag_name), expected $tag. make_latest may have failed."
+            if ($api.tag_name -ne $tagOut -and $api.tag_name -ne "v$v") {
+              throw "API /releases/latest is $($api.tag_name), expected $tagOut. make_latest may have failed."
             }
             Write-Host "Tag + API verification OK (CDN latest pointer may lag briefly)"
           }
 
-          $url = $m.platforms.'windows-x86_64'.url
+          $plat = $m.platforms.'windows-x86_64'
+          if (-not $plat -or -not $plat.url) { throw "latest.json missing platforms.windows-x86_64.url" }
+          $url = [string]$plat.url
           $h = Invoke-WebRequest -Uri $url -Method Head -MaximumRedirection 5 -UseBasicParsing
           if ($h.StatusCode -ne 200) { throw "Installer URL not downloadable: $url ($($h.StatusCode))" }
           Write-Host "Updater endpoint OK: $v -> $url"
