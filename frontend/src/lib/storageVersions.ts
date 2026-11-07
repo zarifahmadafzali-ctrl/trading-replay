@@ -7,7 +7,7 @@
  */
 
 /** Application product version (package.json). */
-export const APP_VERSION = "3.48.7";
+export const APP_VERSION = "3.48.8";
 
 /**
  * IndexedDB session schema version (trading-replay-sessions DB).
@@ -26,6 +26,9 @@ export const BACKUP_FORMAT_VERSION = 1;
  * Market data is NOT an application binary update.
  */
 export const MARKET_DATA_CACHE_VERSION = 1;
+
+/** Raw tick day store inside trading-replay-cache (Phase B). Independent of bar rows. */
+export const TICK_CACHE_SCHEMA_VERSION = 1;
 
 /**
  * Portable market-data file format (CSV companion + .trdata JSON package).

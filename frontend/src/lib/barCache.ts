@@ -9,7 +9,7 @@ import type { DatasetDayMeta } from "./datasetMeta";
 import { metaFromDayRow, defaultBars1sMeta } from "./datasetMeta";
 
 const DB_NAME = "trading-replay-cache";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE = "days";
 
 export type DayCacheRow = {
@@ -60,6 +60,10 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (db.objectStoreNames.contains("bars")) {
         db.deleteObjectStore("bars");
+      }
+      // Phase B: separate tick store (raw ticks, not mixed into bars)
+      if (!db.objectStoreNames.contains("ticks")) {
+        db.createObjectStore("ticks", { keyPath: "id" });
       }
     };
     req.onsuccess = () => resolve(req.result);

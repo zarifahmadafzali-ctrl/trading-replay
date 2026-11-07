@@ -28,6 +28,14 @@ import {
   importMarketPackages,
   type ImportPreview,
 } from "../lib/marketDataTransfer";
+import {
+  importTicksForDay,
+  importTicksMultiDay,
+  parseTickCsv,
+  parseTickJson,
+  tryReadTicksParquet,
+  type TickImportProgress,
+} from "../lib/tickImport";
 import { reconcileLocalFromBackendStatus } from "../lib/localCache";
 import { getLastRangeLoad, getLastReplayWindow } from "../lib/replayDiagnostics";
 
@@ -849,6 +857,107 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
                 }}
               />
             </label>
+            <label className="import-btn">
+              Import Tick (JSON/CSV/Parquet)
+              <input
+                type="file"
+                accept=".json,.csv,.parquet,.txt,application/json,text/csv"
+                disabled={marketBusy}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (!file) return;
+                  setMarketBusy(true);
+                  setTickImportLog("Reading tick file…");
+                  setImportProgress("Tick import…");
+                  void (async () => {
+                    try {
+                      const name = file.name.toLowerCase();
+                      let rawTicks: Array<Record<string, unknown>> = [];
+                      let symbolGuess = symbol;
+                      let dayGuess: string | undefined;
+                      let sourceBars: import("../lib/types").Bar[] | undefined;
+                      if (name.endsWith(".parquet")) {
+                        const buf = await file.arrayBuffer();
+                        const pq = await tryReadTicksParquet(buf);
+                        if (!pq || pq.error) {
+                          window.alert(pq?.error || "Parquet not supported in this build. Export ticks as JSON from TR Market Data or use CSV.");
+                          return;
+                        }
+                        rawTicks = pq.rows;
+                      } else {
+                        const text = await file.text();
+                        if (name.endsWith(".json")) {
+                          let parsedRaw: unknown;
+                          try {
+                            parsedRaw = JSON.parse(text);
+                          } catch {
+                            window.alert("Invalid JSON");
+                            return;
+                          }
+                          const parsed = parseTickJson(parsedRaw);
+                          if (parsed.errors.length && !parsed.ticks.length) {
+                            window.alert(parsed.errors.join("\n"));
+                            return;
+                          }
+                          rawTicks = parsed.ticks;
+                          if (parsed.symbol) symbolGuess = parsed.symbol;
+                          dayGuess = parsed.day;
+                          sourceBars = parsed.bars1s;
+                        } else {
+                          const csv = parseTickCsv(text);
+                          if (!csv.rows.length) {
+                            window.alert(csv.errors.join("\n") || "No tick rows");
+                            return;
+                          }
+                          rawTicks = csv.rows;
+                        }
+                      }
+                      const onProgress = (p: TickImportProgress) => {
+                        setTickImportLog(
+                          [p.phase, p.symbol, p.day, p.validTicks != null ? `valid=${p.validTicks}` : "", p.rejected != null ? `rej=${p.rejected}` : "", p.barsGenerated != null ? `bars=${p.barsGenerated}` : ""]
+                            .filter(Boolean)
+                            .join(" · ")
+                        );
+                      };
+                      let summary: string;
+                      if (dayGuess) {
+                        const r = await importTicksForDay({
+                          symbol: symbolGuess,
+                          day: dayGuess,
+                          rawTicks,
+                          sourceBars1s: sourceBars,
+                          source: `file:${file.name}`,
+                          onProgress,
+                        });
+                        summary = `Tick day ${r.day}: ${r.validTicks} ticks → ${r.barsGenerated} bars` +
+                          (r.warnings.length ? ` · ${r.warnings.join("; ")}` : "") +
+                          (r.errors.length ? ` · ERR ${r.errors.join("; ")}` : "");
+                      } else {
+                        const bundle = await importTicksMultiDay({
+                          symbol: symbolGuess,
+                          rawTicks,
+                          source: `file:${file.name}`,
+                          onProgress,
+                        });
+                        const ticks = bundle.days.reduce((s, d) => s + d.validTicks, 0);
+                        const bars = bundle.days.reduce((s, d) => s + d.barsGenerated, 0);
+                        summary = `Tick import ${bundle.days.length} day(s) · ${ticks} ticks → ${bars} bars`;
+                      }
+                      pushLog(summary);
+                      setTickImportLog(summary);
+                      await refreshMarketDays();
+                    } catch (err) {
+                      window.alert(err instanceof Error ? err.message : String(err));
+                    } finally {
+                      setMarketBusy(false);
+                      setImportProgress("");
+                    }
+                  })();
+                }}
+              />
+            </label>
+
           </div>
           {importPreview && (
             <div className="card import-preview">
@@ -896,6 +1005,7 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
                 </button>
               </div>
               {importProgress && <p className="hint">{importProgress}</p>}
+              {tickImportLog && <p className="hint">Tick: {tickImportLog}</p>}
             </div>
           )}
           {marketDays.length === 0 ? (
