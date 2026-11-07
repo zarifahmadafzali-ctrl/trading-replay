@@ -179,50 +179,6 @@ export function parseMarketCsv(text: string): {
     }
   }
   return { bars, invalidRows, errors, columns };
-} {
-  const errors: string[] = [];
-  const bars: Bar[] = [];
-  let invalidRows = 0;
-  const raw = text.replace(/^\uFEFF/, "").trim();
-  if (!raw) {
-    return { bars: [], invalidRows: 0, errors: ["Empty CSV"] };
-  }
-  const lines = raw.split(/\r?\n/).filter((l) => l.trim().length);
-  if (!lines.length) {
-    return { bars: [], invalidRows: 0, errors: ["Empty CSV"] };
-  }
-  let start = 0;
-  const header = lines[0].toLowerCase();
-  if (header.includes("time") && header.includes("open")) {
-    start = 1;
-    if (!header.includes("time") || !header.includes("open") || !header.includes("close")) {
-      errors.push("CSV header missing required columns (time,open,high,low,close)");
-    }
-  }
-  for (let i = start; i < lines.length; i++) {
-    const cols = lines[i].split(",").map((c) => c.trim());
-    if (cols.length < 5) {
-      invalidRows += 1;
-      continue;
-    }
-    let time = Number(cols[0]);
-    // Accept ms if clearly ms
-    if (time > 1e12) time = Math.floor(time / 1000);
-    const bar: Partial<Bar> = {
-      time,
-      open: Number(cols[1]),
-      high: Number(cols[2]),
-      low: Number(cols[3]),
-      close: Number(cols[4]),
-      volume: cols[5] != null && cols[5] !== "" ? Number(cols[5]) : 0,
-    };
-    if (!isValidBar(bar)) {
-      invalidRows += 1;
-      continue;
-    }
-    bars.push(bar);
-  }
-  return { bars, invalidRows, errors };
 }
 
 export function parseTrData(raw: unknown): { ok: true; pkg: TrDataPackage } | { ok: false; errors: string[] } {
