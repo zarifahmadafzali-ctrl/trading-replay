@@ -19,11 +19,13 @@ import { tickCacheGetDayWithAlias, tickCacheListCompleteDaysWithAlias } from "..
 import type { TickRecord } from "../lib/tickTypes";
 import {
   enumerateUtcDaysInclusive,
+  findBars1sCursorForUnixTime,
   hasEligibleTickDayInRange,
   mapTickTimeToBars1sCursor,
   mapTimeToTickIndex,
   nextUtcDay,
   prevUtcDay,
+  shouldApplyTickNav,
   sortTicksStable,
   unixToUtcDay,
   type ReplayResolution,
@@ -148,11 +150,14 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [tickEligible, setTickEligible] = useState(false);
   const [tickSymbolUsed, setTickSymbolUsed] = useState<string | null>(null);
   const tickLoadGenRef = useRef(0);
+  /** Bumped on every Jump/session navigation so stale async tick loads cannot apply. */
+  const tickNavGenRef = useRef(0);
   const replayResolutionRef = useRef<ReplayResolution>("seconds");
   const tickWindowRef = useRef<TickRecord[]>([]);
   const tickIndexRef = useRef(0);
   const tickDayRef = useRef<string | null>(null);
   const stepTickRef = useRef<(dir: number) => void>(() => {});
+  const navigateReplayToUnixTimeRef = useRef<(t: number, opts?: { cursor?: number }) => void>(() => {});
   const tickTransitionLockRef = useRef(false);
   const prevCursorRef = useRef(saved ? Math.max(1, saved.cursor) : 800);
   const stepPanelRef = useRef<HTMLDivElement | null>(null);
@@ -675,14 +680,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     setGoToEditing(false);
     const target = Math.floor(new Date(goToValue).getTime() / 1000);
     if (!Number.isFinite(target)) return;
-    let lo = 0;
-    let hi = baseBars.length - 1;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (baseBars[mid].time < target) lo = mid + 1;
-      else hi = mid;
-    }
-    setCursor(Math.min(baseBars.length, Math.max(1, lo + 1)));
+    // C1.1: always sync Tick window/index when Tick mode is active (via navigate ref).
+    void navigateReplayToUnixTimeRef.current(target);
   }
 
   /**
@@ -789,7 +788,9 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     if (baseBars[lo] && baseBars[lo].time <= curSec && lo + 1 < baseBars.length) {
       lo = lo + 1;
     }
-    setCursor(Math.min(baseBars.length, Math.max(1, lo + 1)));
+    const newCursor = Math.min(baseBars.length, Math.max(1, lo + 1));
+    const mapT = baseBars[Math.max(0, newCursor - 1)]?.time ?? target;
+    void navigateReplayToUnixTimeRef.current(mapT, { cursor: newCursor });
     setMessage(
       `Session → ${kind === "ny" ? "New York" : kind === "london" ? "London" : "Tokyo"} next start`
     );
@@ -877,7 +878,9 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       else hi = mid;
     }
     if (baseBars[lo] && baseBars[lo].time <= curSec && lo + 1 < baseBars.length) lo = lo + 1;
-    setCursor(Math.min(baseBars.length, Math.max(1, lo + 1)));
+    const newCursor = Math.min(baseBars.length, Math.max(1, lo + 1));
+    const mapT = baseBars[Math.max(0, newCursor - 1)]?.time ?? target;
+    void navigateReplayToUnixTimeRef.current(mapT, { cursor: newCursor });
     setMessage(`Session → ${label || "Custom"} next start (${tz} ${startHHMM})`);
     setSessionMenuOpen(false);
     setCustomSessionOpen(false);
@@ -1391,9 +1394,80 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     [syncBarsCursorFromTickTime]
   );
 
+  /**
+   * C1.1 — Unified time navigation for 1s + Tick.
+   * Always updates the 1s cursor; when Tick mode is active also remaps tick day/window/index
+   * so Next/Previous cannot continue from a stale tick region after Jump To.
+   */
+  const navigateReplayToUnixTime = useCallback(
+    async (targetUnixSec: number, opts?: { cursor?: number }) => {
+      setPlaying(false);
+      if (!baseBars.length || !Number.isFinite(targetUnixSec)) return;
+
+      const newCursor =
+        opts?.cursor != null
+          ? Math.min(baseBars.length, Math.max(1, opts.cursor))
+          : findBars1sCursorForUnixTime(baseBars, targetUnixSec);
+      setCursor(newCursor);
+
+      // Invalidate in-flight tick day loads and prior navigations.
+      const navGen = ++tickNavGenRef.current;
+      tickLoadGenRef.current += 1;
+      // Drop locks held by abandoned day-boundary stepTick loads.
+      tickTransitionLockRef.current = false;
+
+      if (replayResolutionRef.current !== "tick") return;
+
+      const day = unixToUtcDay(targetUnixSec);
+
+      const applyMapped = (ticks: TickRecord[], d: string, symbolUsed: string) => {
+        if (!shouldApplyTickNav(tickNavGenRef.current, navGen)) return;
+        const idx = mapTimeToTickIndex(ticks, targetUnixSec);
+        applyTickWindow(ticks, d, idx, symbolUsed);
+      };
+
+      // Fast path: target day already loaded
+      if (tickDayRef.current === day && tickWindowRef.current.length > 0) {
+        applyMapped(
+          tickWindowRef.current,
+          day,
+          tickSymbolUsed ?? symbol
+        );
+        return;
+      }
+
+      tickTransitionLockRef.current = true;
+      try {
+        const loaded = await loadTickDay(day);
+        if (!shouldApplyTickNav(tickNavGenRef.current, navGen)) return;
+        if (!loaded) {
+          // Fail safe: drop stale tick window so activeTick cannot point at the old day.
+          setTickWindow([]);
+          setTickDay(null);
+          setTickIndex(0);
+          tickWindowRef.current = [];
+          tickDayRef.current = null;
+          tickIndexRef.current = 0;
+          setMessage(
+            `No tick data for ${day} · 1s cursor updated · Tick window cleared`
+          );
+          return;
+        }
+        applyMapped(loaded.ticks, day, loaded.symbolUsed);
+      } finally {
+        if (shouldApplyTickNav(tickNavGenRef.current, navGen)) {
+          tickTransitionLockRef.current = false;
+        }
+      }
+    },
+    [applyTickWindow, baseBars, loadTickDay, symbol, tickSymbolUsed]
+  );
+
+  navigateReplayToUnixTimeRef.current = navigateReplayToUnixTime;
+
   const stepTick = useCallback(
     (dir: number) => {
-      // Ignore further steps while a day transition is in flight (play timer race).
+      // Ignore further steps while a day transition / navigation load is in flight.
       if (tickTransitionLockRef.current) return;
 
       const win = tickWindowRef.current;
@@ -1413,10 +1487,13 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       }
       // Day boundary — exclusive lock until load completes
       const targetDay = dir > 0 ? nextUtcDay(day) : prevUtcDay(day);
+      const navGenAtStart = tickNavGenRef.current;
       tickTransitionLockRef.current = true;
       void (async () => {
         try {
           const loaded = await loadTickDay(targetDay);
+          // A Jump To that started after this step must win.
+          if (!shouldApplyTickNav(tickNavGenRef.current, navGenAtStart)) return;
           if (!loaded) {
             setPlaying(false);
             setMessage(
@@ -1429,7 +1506,11 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           const newIdx = dir > 0 ? 0 : loaded.ticks.length - 1;
           applyTickWindow(loaded.ticks, targetDay, newIdx, loaded.symbolUsed);
         } finally {
-          tickTransitionLockRef.current = false;
+          if (shouldApplyTickNav(tickNavGenRef.current, navGenAtStart)) {
+            tickTransitionLockRef.current = false;
+          } else {
+            // Newer navigation owns the lock lifecycle.
+          }
         }
       })();
     },

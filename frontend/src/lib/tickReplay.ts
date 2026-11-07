@@ -86,6 +86,28 @@ export function mapTimeToTickIndex(ticks: TickRecord[], t: number): number {
   return i;
 }
 
+
+/** 1-based exclusive-style bar cursor matching ReplayView Jump binary search. */
+export function findBars1sCursorForUnixTime(
+  bars: Array<{ time: number }>,
+  targetUnixSec: number
+): number {
+  if (!bars.length) return 1;
+  let lo = 0;
+  let hi = bars.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (bars[mid].time < targetUnixSec) lo = mid + 1;
+    else hi = mid;
+  }
+  return Math.min(bars.length, Math.max(1, lo + 1));
+}
+
+/** Async tick navigation: only the latest generation may apply window/index updates. */
+export function shouldApplyTickNav(activeGeneration: number, requestGeneration: number): boolean {
+  return requestGeneration === activeGeneration && requestGeneration > 0;
+}
+
 /** Map tick time to 1-based 1s bar cursor (last bar with time <= floor(t)). */
 export function mapTickTimeToBars1sCursor(
   bars: Array<{ time: number }>,
