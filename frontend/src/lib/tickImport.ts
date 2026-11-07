@@ -12,6 +12,11 @@ import { ticksToOneSecondBars, barsApproximatelyEqual } from "./tickAggregate";
 import { tickCacheGetDay, tickCachePutDay } from "./tickCache";
 import type { TickRecord } from "./tickTypes";
 import { normalizeTicks } from "./tickValidate";
+import {
+  readParquetObjects,
+  mapTickParquetRows,
+  mapBars1sParquetRows,
+} from "./parquetCodec";
 
 export type TickImportProgress = {
   phase: string;
@@ -361,32 +366,203 @@ export function parseTickJson(raw: unknown): {
 }
 
 /**
- * Optional Parquet read via hyparquet when available.
- * Returns null if the dependency is not installed.
+ * Read ticks.parquet via hyparquet (Snappy supported by default).
  */
 export async function tryReadTicksParquet(
   buffer: ArrayBuffer
-): Promise<{ rows: Array<Record<string, unknown>>; error?: string } | null> {
-  try {
-    // Dynamic import — optional dependency
-    const mod = await import(
-      /* @vite-ignore */
-      "hyparquet"
-    );
-    const parquetReadObjects =
-      (mod as { parquetReadObjects?: (opts: { file: ArrayBuffer }) => Promise<unknown[]> })
-        .parquetReadObjects ||
-      (mod as { default?: { parquetReadObjects?: (opts: { file: ArrayBuffer }) => Promise<unknown[]> } })
-        .default?.parquetReadObjects;
-    if (!parquetReadObjects) {
-      return { rows: [], error: "hyparquet loaded but parquetReadObjects missing" };
+): Promise<{ rows: Array<Record<string, unknown>>; error?: string }> {
+  const res = await readParquetObjects(buffer);
+  if (res.error) return { rows: [], error: res.error };
+  return { rows: mapTickParquetRows(res.rows) };
+}
+
+/**
+ * Read bars_1s.parquet via hyparquet.
+ */
+export async function tryReadBars1sParquet(
+  buffer: ArrayBuffer
+): Promise<{ bars: Bar[]; error?: string }> {
+  const res = await readParquetObjects(buffer);
+  if (res.error) return { bars: [], error: res.error };
+  const mapped = mapBars1sParquetRows(res.rows);
+  const bars: Bar[] = [];
+  for (const r of mapped) {
+    const time = Number(r.time);
+    if (!Number.isFinite(time)) continue;
+    const t = time > 1e12 ? Math.floor(time / 1000) : Math.floor(time);
+    const open = Number(r.open);
+    const high = Number(r.high);
+    const low = Number(r.low);
+    const close = Number(r.close);
+    const volume = Number(r.volume ?? 0);
+    if (![open, high, low, close].every(Number.isFinite)) continue;
+    if (!Number.isFinite(volume) || volume < 0) continue;
+    bars.push({ time: t, open, high, low, close, volume });
+  }
+  return { bars };
+}
+
+export type TrMarketDataMetadata = {
+  symbol?: string;
+  provider?: string;
+  day?: string;
+  tick_count?: number;
+  bars_1s_count?: number;
+  status?: string;
+  tick_status?: string;
+  bars_1s_status?: string;
+  successful_hours?: number;
+  empty_hours?: number;
+  failed_hours?: number;
+  ohlc_price?: string;
+  tick_schema?: string[];
+  bars_1s_schema?: string[];
+  raw?: Record<string, unknown>;
+};
+
+/** Parse optional metadata.json from TR Market Data (fields may be missing). */
+export function parseTrMarketDataMetadata(raw: unknown): {
+  meta: TrMarketDataMetadata;
+  errors: string[];
+} {
+  const errors: string[] = [];
+  if (!raw || typeof raw !== "object") {
+    return { meta: {}, errors: ["metadata.json is not an object"] };
+  }
+  const o = raw as Record<string, unknown>;
+  const num = (k: string): number | undefined => {
+    const v = o[k];
+    return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  };
+  const str = (k: string): string | undefined => {
+    const v = o[k];
+    return typeof v === "string" && v.trim() ? v.trim() : undefined;
+  };
+  const meta: TrMarketDataMetadata = {
+    symbol: str("symbol"),
+    provider: str("provider"),
+    day: str("day"),
+    tick_count: num("tick_count"),
+    bars_1s_count: num("bars_1s_count"),
+    status: str("status"),
+    tick_status: str("tick_status"),
+    bars_1s_status: str("bars_1s_status"),
+    successful_hours: num("successful_hours"),
+    empty_hours: num("empty_hours"),
+    failed_hours: num("failed_hours"),
+    ohlc_price: str("ohlc_price"),
+    tick_schema: Array.isArray(o.tick_schema) ? (o.tick_schema as string[]) : undefined,
+    bars_1s_schema: Array.isArray(o.bars_1s_schema) ? (o.bars_1s_schema as string[]) : undefined,
+    raw: o,
+  };
+  if (meta.day && !/^\d{4}-\d{2}-\d{2}$/.test(meta.day)) {
+    errors.push(`metadata day format invalid: ${meta.day}`);
+  }
+  return { meta, errors };
+}
+
+export type TrMarketDataImportInput = {
+  ticksParquet: ArrayBuffer;
+  bars1sParquet?: ArrayBuffer | null;
+  metadataJsonText?: string | null;
+  symbolFallback?: string;
+  onProgress?: (p: TickImportProgress) => void;
+  protectExistingBars?: boolean;
+};
+
+/**
+ * Import one TR Market Data day package:
+ * ticks.parquet + optional bars_1s.parquet + optional metadata.json
+ */
+export async function importTrMarketDataDay(
+  input: TrMarketDataImportInput
+): Promise<TickImportDayResult & { metadata?: TrMarketDataMetadata }> {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  let meta: TrMarketDataMetadata | undefined;
+
+  if (input.metadataJsonText) {
+    try {
+      const parsed = parseTrMarketDataMetadata(JSON.parse(input.metadataJsonText));
+      meta = parsed.meta;
+      errors.push(...parsed.errors);
+    } catch (e) {
+      warnings.push(
+        `metadata.json parse failed: ${e instanceof Error ? e.message : String(e)}`
+      );
     }
-    const objects = await parquetReadObjects({ file: buffer });
-    return { rows: objects as Array<Record<string, unknown>> };
-  } catch (e) {
+  }
+
+  input.onProgress?.({ phase: "read-ticks-parquet" });
+  const tickRead = await tryReadTicksParquet(input.ticksParquet);
+  if (tickRead.error) {
     return {
-      rows: [],
-      error: `Parquet support unavailable: ${e instanceof Error ? e.message : String(e)}. Use tick JSON/CSV or install hyparquet.`,
+      symbol: (meta?.symbol || input.symbolFallback || "").toUpperCase(),
+      day: meta?.day || "",
+      validTicks: 0,
+      rejected: 0,
+      barsGenerated: 0,
+      barsWritten: false,
+      ticksWritten: false,
+      skippedBarsConflict: false,
+      warnings,
+      errors: [...errors, tickRead.error],
+      metadata: meta,
     };
   }
+
+  const symbol = (meta?.symbol || input.symbolFallback || "UNKNOWN").toUpperCase();
+  let sourceBars: Bar[] | undefined;
+
+  if (input.bars1sParquet && input.bars1sParquet.byteLength > 0) {
+    input.onProgress?.({ phase: "read-bars1s-parquet", symbol });
+    const barRead = await tryReadBars1sParquet(input.bars1sParquet);
+    if (barRead.error) {
+      warnings.push(barRead.error);
+    } else {
+      sourceBars = barRead.bars;
+    }
+  }
+
+  if (meta?.tick_count != null && meta.tick_count !== tickRead.rows.length) {
+    warnings.push(
+      `metadata tick_count=${meta.tick_count} differs from parquet rows=${tickRead.rows.length}`
+    );
+  }
+  if (meta?.bars_1s_count != null && sourceBars && meta.bars_1s_count !== sourceBars.length) {
+    warnings.push(
+      `metadata bars_1s_count=${meta.bars_1s_count} differs from parquet bars=${sourceBars.length}`
+    );
+  }
+
+  const dayResult = await importTicksForDay({
+    symbol,
+    day: meta?.day,
+    rawTicks: tickRead.rows,
+    sourceBars1s: sourceBars,
+    source: meta?.provider
+      ? `tr-market-data:${meta.provider}`
+      : "tr-market-data:parquet",
+    onProgress: input.onProgress,
+    protectExistingBars: input.protectExistingBars,
+  });
+
+  dayResult.warnings = [...warnings, ...dayResult.warnings];
+  dayResult.errors = [...errors, ...dayResult.errors];
+  return { ...dayResult, metadata: meta };
+}
+
+/** Classify a File by name for multi-file picker. */
+export function classifyTrMarketDataFile(
+  name: string
+): "ticks" | "bars_1s" | "metadata" | "other" {
+  const n = name.toLowerCase().replace(/\\/g, "/");
+  const base = n.includes("/") ? n.slice(n.lastIndexOf("/") + 1) : n;
+  if (base === "metadata.json" || (base.includes("metadata") && base.endsWith(".json"))) {
+    return "metadata";
+  }
+  if (base.includes("bars_1s") && base.endsWith(".parquet")) return "bars_1s";
+  if (base.includes("tick") && base.endsWith(".parquet")) return "ticks";
+  if (base.endsWith(".parquet")) return "other";
+  return "other";
 }

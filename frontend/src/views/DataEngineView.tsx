@@ -34,6 +34,8 @@ import {
   parseTickCsv,
   parseTickJson,
   tryReadTicksParquet,
+  importTrMarketDataDay,
+  classifyTrMarketDataFile,
   type TickImportProgress,
 } from "../lib/tickImport";
 import { reconcileLocalFromBackendStatus } from "../lib/localCache";
@@ -858,10 +860,10 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
               />
             </label>
             <label className="import-btn">
-              Import Tick (JSON/CSV/Parquet)
+              Import Tick JSON/CSV
               <input
                 type="file"
-                accept=".json,.csv,.parquet,.txt,application/json,text/csv"
+                accept=".json,.csv,.txt,application/json,text/csv"
                 disabled={marketBusy}
                 onChange={(e) => {
                   const file = e.target.files?.[0];
@@ -873,45 +875,35 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
                   void (async () => {
                     try {
                       const name = file.name.toLowerCase();
+                      const text = await file.text();
                       let rawTicks: Array<Record<string, unknown>> = [];
                       let symbolGuess = symbol;
                       let dayGuess: string | undefined;
                       let sourceBars: import("../lib/types").Bar[] | undefined;
-                      if (name.endsWith(".parquet")) {
-                        const buf = await file.arrayBuffer();
-                        const pq = await tryReadTicksParquet(buf);
-                        if (!pq || pq.error) {
-                          window.alert(pq?.error || "Parquet not supported in this build. Export ticks as JSON from TR Market Data or use CSV.");
+                      if (name.endsWith(".json")) {
+                        let parsedRaw: unknown;
+                        try {
+                          parsedRaw = JSON.parse(text);
+                        } catch {
+                          window.alert("Invalid JSON");
                           return;
                         }
-                        rawTicks = pq.rows;
-                      } else {
-                        const text = await file.text();
-                        if (name.endsWith(".json")) {
-                          let parsedRaw: unknown;
-                          try {
-                            parsedRaw = JSON.parse(text);
-                          } catch {
-                            window.alert("Invalid JSON");
-                            return;
-                          }
-                          const parsed = parseTickJson(parsedRaw);
-                          if (parsed.errors.length && !parsed.ticks.length) {
-                            window.alert(parsed.errors.join("\n"));
-                            return;
-                          }
-                          rawTicks = parsed.ticks;
-                          if (parsed.symbol) symbolGuess = parsed.symbol;
-                          dayGuess = parsed.day;
-                          sourceBars = parsed.bars1s;
-                        } else {
-                          const csv = parseTickCsv(text);
-                          if (!csv.rows.length) {
-                            window.alert(csv.errors.join("\n") || "No tick rows");
-                            return;
-                          }
-                          rawTicks = csv.rows;
+                        const parsed = parseTickJson(parsedRaw);
+                        if (parsed.errors.length && !parsed.ticks.length) {
+                          window.alert(parsed.errors.join("\n"));
+                          return;
                         }
+                        rawTicks = parsed.ticks;
+                        if (parsed.symbol) symbolGuess = parsed.symbol;
+                        dayGuess = parsed.day;
+                        sourceBars = parsed.bars1s;
+                      } else {
+                        const csv = parseTickCsv(text);
+                        if (!csv.rows.length) {
+                          window.alert(csv.errors.join("\n") || "No tick rows");
+                          return;
+                        }
+                        rawTicks = csv.rows;
                       }
                       const onProgress = (p: TickImportProgress) => {
                         setTickImportLog(
@@ -930,7 +922,8 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
                           source: `file:${file.name}`,
                           onProgress,
                         });
-                        summary = `Tick day ${r.day}: ${r.validTicks} ticks → ${r.barsGenerated} bars` +
+                        summary =
+                          `Tick day ${r.day}: ${r.validTicks} ticks → ${r.barsGenerated} bars` +
                           (r.warnings.length ? ` · ${r.warnings.join("; ")}` : "") +
                           (r.errors.length ? ` · ERR ${r.errors.join("; ")}` : "");
                       } else {
@@ -957,6 +950,78 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
                 }}
               />
             </label>
+            <label className="import-btn">
+              Import TR Parquet day
+              <input
+                type="file"
+                accept=".parquet,.json,application/json"
+                multiple
+                disabled={marketBusy}
+                onChange={(e) => {
+                  const list = e.target.files ? Array.from(e.target.files) : [];
+                  e.target.value = "";
+                  if (!list.length) return;
+                  setMarketBusy(true);
+                  setTickImportLog("Reading TR Market Data files…");
+                  setImportProgress("TR Parquet import…");
+                  void (async () => {
+                    try {
+                      let ticksFile: File | null = null;
+                      let barsFile: File | null = null;
+                      let metaFile: File | null = null;
+                      for (const f of list) {
+                        const kind = classifyTrMarketDataFile(f.name);
+                        if (kind === "ticks") ticksFile = f;
+                        else if (kind === "bars_1s") barsFile = f;
+                        else if (kind === "metadata") metaFile = f;
+                        else if (f.name.toLowerCase().endsWith(".parquet") && !ticksFile) {
+                          // single anonymous parquet → treat as ticks
+                          ticksFile = f;
+                        }
+                      }
+                      if (!ticksFile) {
+                        window.alert(
+                          "Select ticks.parquet (required). Optionally also bars_1s.parquet and metadata.json."
+                        );
+                        return;
+                      }
+                      const ticksParquet = await ticksFile.arrayBuffer();
+                      const bars1sParquet = barsFile ? await barsFile.arrayBuffer() : null;
+                      const metadataJsonText = metaFile ? await metaFile.text() : null;
+                      const onProgress = (p: TickImportProgress) => {
+                        setTickImportLog(
+                          [p.phase, p.symbol, p.day, p.validTicks != null ? `valid=${p.validTicks}` : "", p.rejected != null ? `rej=${p.rejected}` : "", p.barsGenerated != null ? `bars=${p.barsGenerated}` : ""]
+                            .filter(Boolean)
+                            .join(" · ")
+                        );
+                      };
+                      const r = await importTrMarketDataDay({
+                        ticksParquet,
+                        bars1sParquet,
+                        metadataJsonText,
+                        symbolFallback: symbol,
+                        onProgress,
+                      });
+                      const summary =
+                        `TR day ${r.day || "?"} ${r.symbol}: ${r.validTicks} ticks → ${r.barsGenerated} bars` +
+                        (r.skippedBarsConflict ? " · bars conflict kept existing" : "") +
+                        (r.warnings.length ? ` · ${r.warnings.join("; ")}` : "") +
+                        (r.errors.length ? ` · ERR ${r.errors.join("; ")}` : "");
+                      pushLog(summary);
+                      setTickImportLog(summary);
+                      if (r.errors.length) window.alert(r.errors.join("\n"));
+                      await refreshMarketDays();
+                    } catch (err) {
+                      window.alert(err instanceof Error ? err.message : String(err));
+                    } finally {
+                      setMarketBusy(false);
+                      setImportProgress("");
+                    }
+                  })();
+                }}
+              />
+            </label>
+
 
           </div>
           {importPreview && (
