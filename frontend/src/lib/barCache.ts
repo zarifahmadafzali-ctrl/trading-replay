@@ -5,6 +5,8 @@
  */
 import type { Bar } from "./types";
 import { normalizeBars } from "./marketDataIntegrity";
+import type { DatasetDayMeta } from "./datasetMeta";
+import { metaFromDayRow, defaultBars1sMeta } from "./datasetMeta";
 
 const DB_NAME = "trading-replay-cache";
 const DB_VERSION = 3;
@@ -20,6 +22,15 @@ export type DayCacheRow = {
   classification?: string;
   complete?: boolean;
   barCount?: number;
+  /** Phase A dataset metadata (optional on legacy rows). */
+  dataKind?: DatasetDayMeta["dataKind"];
+  hasTicks?: boolean;
+  hasBars1s?: boolean;
+  tickCount?: number;
+  bars1sCount?: number;
+  priceBasis?: DatasetDayMeta["priceBasis"];
+  executionBasis?: DatasetDayMeta["executionBasis"];
+  source?: string;
 };
 
 function dayId(symbol: string, day: string): string {
@@ -100,12 +111,19 @@ export async function cachePutDay(
   symbol: string,
   day: string,
   bars: Bar[],
-  opts?: { classification?: string; complete?: boolean }
+  opts?: {
+    classification?: string;
+    complete?: boolean;
+    meta?: DatasetDayMeta;
+  }
 ): Promise<void> {
   const classification = opts?.classification || (bars.length ? "SUCCESS" : "EXPECTED_EMPTY");
   const complete = opts?.complete ?? true;
   // Validate OHLC + dedupe by timestamp (last wins) — v3.30.0
   const unique = normalizeBars(bars).bars;
+  const meta =
+    opts?.meta ??
+    defaultBars1sMeta({ bars1sCount: unique.length });
   try {
     const db = await openDb();
     await new Promise<void>((resolve, reject) => {
@@ -119,6 +137,14 @@ export async function cachePutDay(
         classification,
         complete,
         barCount: unique.length,
+        dataKind: meta.dataKind,
+        hasTicks: meta.hasTicks,
+        hasBars1s: meta.hasBars1s,
+        tickCount: meta.tickCount,
+        bars1sCount: meta.bars1sCount ?? unique.length,
+        priceBasis: meta.priceBasis,
+        executionBasis: meta.executionBasis,
+        source: meta.source,
       } satisfies DayCacheRow);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
@@ -327,6 +353,15 @@ export type MarketDayInfo = {
   complete?: boolean;
   /** Approximate size in bytes; not exact IndexedDB usage. */
   estimatedBytes: number;
+  /** Phase A — dataset kind (defaults applied for legacy rows). */
+  dataKind?: DatasetDayMeta["dataKind"];
+  hasTicks?: boolean;
+  hasBars1s?: boolean;
+  tickCount?: number;
+  bars1sCount?: number;
+  priceBasis?: DatasetDayMeta["priceBasis"];
+  executionBasis?: DatasetDayMeta["executionBasis"];
+  source?: string;
 };
 
 export async function listMarketDays(symbolFilter?: string): Promise<MarketDayInfo[]> {
@@ -343,6 +378,7 @@ export async function listMarketDays(symbolFilter?: string): Promise<MarketDayIn
       .filter((r) => !filt || r.symbol === filt)
       .map((r) => {
         const barCount = r.barCount ?? (Array.isArray(r.bars) ? r.bars.length : 0);
+        const meta = metaFromDayRow(r);
         return {
           id: r.id,
           symbol: r.symbol,
@@ -353,6 +389,14 @@ export async function listMarketDays(symbolFilter?: string): Promise<MarketDayIn
           classification: r.classification,
           complete: r.complete,
           estimatedBytes: estimateDayBytes(barCount),
+          dataKind: meta.dataKind,
+          hasTicks: meta.hasTicks,
+          hasBars1s: meta.hasBars1s,
+          tickCount: meta.tickCount,
+          bars1sCount: meta.bars1sCount ?? barCount,
+          priceBasis: meta.priceBasis,
+          executionBasis: meta.executionBasis,
+          source: meta.source,
         };
       })
       .sort((a, b) => (a.symbol === b.symbol ? (a.day < b.day ? 1 : -1) : a.symbol.localeCompare(b.symbol)));

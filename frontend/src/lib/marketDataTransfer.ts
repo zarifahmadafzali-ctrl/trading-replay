@@ -19,6 +19,13 @@ import {
   type MarketDayInfo,
 } from "./barCache";
 import { APP_VERSION, MARKET_DATA_EXPORT_FORMAT_VERSION } from "./storageVersions";
+import type { DatasetDayMeta } from "./datasetMeta";
+import {
+  detectKindFromColumnNames,
+  metaForImportPackage,
+  metaFromDayRow,
+  mergeDatasetMeta,
+} from "./datasetMeta";
 
 export type MarketDayPackage = {
   symbol: string;
@@ -29,6 +36,15 @@ export type MarketDayPackage = {
   firstTime: number | null;
   lastTime: number | null;
   bars: Bar[];
+  /** Phase A dataset metadata (optional on legacy packages). */
+  dataKind?: DatasetDayMeta["dataKind"];
+  hasTicks?: boolean;
+  hasBars1s?: boolean;
+  tickCount?: number;
+  bars1sCount?: number;
+  priceBasis?: DatasetDayMeta["priceBasis"];
+  executionBasis?: DatasetDayMeta["executionBasis"];
+  source?: string;
 };
 
 export type TrDataPackage = {
@@ -105,6 +121,64 @@ export function parseMarketCsv(text: string): {
   bars: Bar[];
   invalidRows: number;
   errors: string[];
+  columns: string[];
+} {
+  const errors: string[] = [];
+  const bars: Bar[] = [];
+  let invalidRows = 0;
+  let columns: string[] = [];
+  const raw = text.replace(/^\uFEFF/, "").trim();
+  if (!raw) {
+    return { bars: [], invalidRows: 0, errors: ["Empty CSV"], columns: [] };
+  }
+  const lines = raw.split(/\r?\n/).filter((l) => l.trim().length);
+  if (!lines.length) {
+    return { bars: [], invalidRows: 0, errors: ["Empty CSV"], columns: [] };
+  }
+  let start = 0;
+  const headerLine = lines[0];
+  const header = headerLine.toLowerCase();
+  if (header.includes("time") && (header.includes("open") || header.includes("bid"))) {
+    start = 1;
+    columns = headerLine.split(",").map((c) => c.trim());
+    const hasOhlc = header.includes("open") && header.includes("close");
+    const hasTick = header.includes("bid") && header.includes("ask");
+    if (!hasOhlc && !hasTick) {
+      errors.push("CSV header missing required columns (OHLCV or bid/ask)");
+    }
+  } else {
+    // No header — assume legacy OHLCV column order
+    columns = ["time", "open", "high", "low", "close", "volume"];
+  }
+  for (let i = start; i < lines.length; i++) {
+    const cols = lines[i].split(",").map((c) => c.trim());
+    let time = Number(cols[0]);
+    if (!Number.isFinite(time)) {
+      invalidRows += 1;
+      continue;
+    }
+    if (time > 1e12) time = Math.floor(time / 1000);
+    // Only parse OHLCV rows in Phase A (tick body not stored)
+    if (columns.length && columns.some((c) => c.toLowerCase() === "open")) {
+      const bar = {
+        time,
+        open: Number(cols[1]),
+        high: Number(cols[2]),
+        low: Number(cols[3]),
+        close: Number(cols[4]),
+        volume: cols[5] != null && cols[5] !== "" ? Number(cols[5]) : 0,
+      };
+      if (!isValidBar(bar)) {
+        invalidRows += 1;
+        continue;
+      }
+      bars.push(bar);
+    } else {
+      // Tick-only CSV: no OHLC bars in Phase A — counts via metadata only
+      invalidRows += 0;
+    }
+  }
+  return { bars, invalidRows, errors, columns };
 } {
   const errors: string[] = [];
   const bars: Bar[] = [];
@@ -195,6 +269,19 @@ export function parseTrData(raw: unknown): { ok: true; pkg: TrDataPackage } | { 
       }
     }
     const { bars: unique } = dedupeSort(bars);
+    const explicitMeta = {
+      dataKind: typeof row.dataKind === "string" ? row.dataKind : undefined,
+      hasTicks: row.hasTicks === true ? true : row.hasTicks === false ? false : undefined,
+      hasBars1s: row.hasBars1s === true ? true : row.hasBars1s === false ? false : undefined,
+      tickCount: typeof row.tickCount === "number" ? row.tickCount : undefined,
+      bars1sCount: typeof row.bars1sCount === "number" ? row.bars1sCount : unique.length,
+      source: typeof row.source === "string" ? row.source : undefined,
+    };
+    const meta = metaForImportPackage({
+      explicit: explicitMeta,
+      bars1sCount: unique.length,
+      source: explicitMeta.source,
+    });
     days.push({
       symbol,
       day,
@@ -204,6 +291,14 @@ export function parseTrData(raw: unknown): { ok: true; pkg: TrDataPackage } | { 
       firstTime: unique[0]?.time ?? null,
       lastTime: unique[unique.length - 1]?.time ?? null,
       bars: unique,
+      dataKind: meta.dataKind,
+      hasTicks: meta.hasTicks,
+      hasBars1s: meta.hasBars1s,
+      tickCount: meta.tickCount,
+      bars1sCount: meta.bars1sCount ?? unique.length,
+      priceBasis: meta.priceBasis,
+      executionBasis: meta.executionBasis,
+      source: meta.source,
     });
   }
   if (!days.length) {
@@ -227,6 +322,7 @@ export async function buildDayPackage(symbol: string, day: string): Promise<Mark
   if (!row) return null;
   const bars = Array.isArray(row.bars) ? [...row.bars] : [];
   const { bars: unique } = dedupeSort(bars);
+  const meta = metaFromDayRow(row);
   return {
     symbol: symbol.toUpperCase(),
     day,
@@ -236,6 +332,14 @@ export async function buildDayPackage(symbol: string, day: string): Promise<Mark
     firstTime: unique[0]?.time ?? null,
     lastTime: unique[unique.length - 1]?.time ?? null,
     bars: unique,
+    dataKind: meta.dataKind,
+    hasTicks: meta.hasTicks,
+    hasBars1s: meta.hasBars1s,
+    tickCount: meta.tickCount,
+    bars1sCount: meta.bars1sCount ?? unique.length,
+    priceBasis: meta.priceBasis,
+    executionBasis: meta.executionBasis,
+    source: meta.source,
   };
 }
 
@@ -363,7 +467,7 @@ export async function previewMarketImport(packages: MarketDayPackage[]): Promise
 export function csvTextToDayPackages(
   text: string,
   forcedSymbol?: string
-): { packages: MarketDayPackage[]; invalidRows: number; errors: string[] } {
+): { packages: MarketDayPackage[]; invalidRows: number; errors: string[]; detectedKind: string } {
   const parsed = parseMarketCsv(text);
   const { bars, duplicates } = dedupeSort(parsed.bars);
   const byDay = new Map<string, Bar[]>();
@@ -378,23 +482,51 @@ export function csvTextToDayPackages(
   }
   const symbol = (forcedSymbol || "IMPORT").toUpperCase();
   const packages: MarketDayPackage[] = [];
+  // Legacy OHLCV CSV (no bid/ask header) → always bars_1s
+  const kind = detectKindFromColumnNames(parsed.columns.length ? parsed.columns : ["time", "open", "high", "low", "close", "volume"]);
   for (const [day, dayBars] of [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     const { bars: unique } = dedupeSort(dayBars);
+    const meta = metaForImportPackage({
+      columns: parsed.columns,
+      bars1sCount: unique.length,
+      source: "csv-import",
+    });
     packages.push({
       symbol,
       day,
       complete: false, // CSV cannot prove full-day completeness
-      classification: "SUCCESS",
+      classification: unique.length ? "SUCCESS" : "EXPECTED_EMPTY",
       barCount: unique.length,
       firstTime: unique[0]?.time ?? null,
       lastTime: unique[unique.length - 1]?.time ?? null,
       bars: unique,
+      dataKind: meta.dataKind,
+      hasTicks: meta.hasTicks,
+      hasBars1s: meta.hasBars1s,
+      tickCount: meta.tickCount,
+      bars1sCount: meta.bars1sCount ?? unique.length,
+      priceBasis: meta.priceBasis,
+      executionBasis: meta.executionBasis,
+      source: meta.source,
     });
+  }
+  // Tick-only CSV with no OHLCV rows still yields empty packages — surface kind via errors/hint
+  if (!packages.length && kind === "ticks") {
+    return {
+      packages: [],
+      invalidRows: parsed.invalidRows,
+      errors: [
+        ...parsed.errors,
+        "Tick CSV detected (bid/ask). Phase A records kind only; tick body storage is Phase B.",
+      ],
+      detectedKind: "ticks",
+    };
   }
   return {
     packages,
     invalidRows: parsed.invalidRows,
     errors: parsed.errors,
+    detectedKind: kind,
   };
 }
 
@@ -428,15 +560,33 @@ export async function importMarketPackages(
         pkg.classification ||
         existing?.classification ||
         (merged.length ? "SUCCESS" : "EXPECTED_EMPTY");
+      const incomingMeta = metaForImportPackage({
+        explicit: {
+          dataKind: pkg.dataKind,
+          hasTicks: pkg.hasTicks,
+          hasBars1s: pkg.hasBars1s,
+          tickCount: pkg.tickCount,
+          bars1sCount: merged.length,
+          source: pkg.source,
+        },
+        bars1sCount: merged.length,
+        source: pkg.source || "import",
+      });
+      const existingMeta = existing ? metaFromDayRow(existing) : null;
+      const meta = mergeDatasetMeta(existingMeta, incomingMeta);
+      const putComplete =
+        complete && merged.length > 0 ? true : pkg.complete === true && merged.length === 0;
       await cachePutDay(pkg.symbol, pkg.day, merged, {
         classification,
-        complete: complete && merged.length > 0 ? true : pkg.complete === true && merged.length === 0,
+        complete: putComplete,
+        meta,
       });
       // If not proven complete and wasn't complete, force partial
       if (!wasComplete && pkg.complete !== true && merged.length > 0) {
         await cachePutDay(pkg.symbol, pkg.day, merged, {
           classification: "SUCCESS",
           complete: false,
+          meta,
         });
       }
       daysWritten += 1;
@@ -453,3 +603,13 @@ export async function listDaysForSymbol(symbol: string): Promise<MarketDayInfo[]
 }
 
 export { eachDay, classifyDayStatus };
+
+export type { DatasetDayMeta, DatasetKind } from "./datasetMeta";
+export {
+  defaultBars1sMeta,
+  normalizeDatasetDayMeta,
+  detectKindFromColumnNames,
+  metaForImportPackage,
+  metaFromDayRow,
+  mergeDatasetMeta,
+} from "./datasetMeta";
