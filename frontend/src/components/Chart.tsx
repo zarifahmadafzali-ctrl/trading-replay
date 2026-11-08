@@ -74,9 +74,11 @@ import {
 } from "../lib/positionSizing";
 import {
   CHART_FUTURE_LOGICAL_BARS,
+  CHART_FUTURE_MIN_BARS,
   followVisibleLogicalRange,
   shouldAutoFollowScroll,
   buildFutureWhitespaceTimes,
+  futureWhitespaceCount,
 } from "../lib/chartTimeScale";
 
 export type IndicatorKind = "sma" | "ema" | "vwap" | "rsi";
@@ -2277,10 +2279,16 @@ export function Chart({
     // C1.4-A: display-only WhitespaceData after last real bar (time only, no OHLC/volume).
     // Never fed to execution, journal, or caches — Chart series only.
     const stepSec = Math.max(1, Math.floor(barSeconds) || 1);
+    // Size future labels to the current viewport so times reach the right edge of the chart.
+    const ts0 = handles.chart.timeScale();
+    const cur0 = ts0.getVisibleLogicalRange();
+    const viewWidth =
+      cur0 && Number.isFinite(cur0.to - cur0.from)
+        ? Math.max(10, cur0.to - cur0.from)
+        : Math.min(160, Math.max(CHART_FUTURE_MIN_BARS, visible.length * 0.3));
+    const futureCount = futureWhitespaceCount(viewWidth);
     const futureTimes =
-      last != null
-        ? buildFutureWhitespaceTimes(last.time, stepSec, CHART_FUTURE_LOGICAL_BARS)
-        : [];
+      last != null ? buildFutureWhitespaceTimes(last.time, stepSec, futureCount) : [];
     const whitespacePts = futureTimes.map((t) => ({ time: t as UTCTimestamp }));
 
     // Full setData keeps candle + whitespace times aligned. Real OHLC unchanged.
@@ -2308,22 +2316,20 @@ export function Chart({
       firstTime,
       lastTime,
     };
-    // C1.3: follow mode keeps last real candle in view with future logical whitespace.
-    // Manual pan is preserved when Follow is OFF — no forced scroll.
+    // Follow: keep last real candle in view; future whitespace fills to the right edge.
     if (shouldAutoFollowScroll(followRef.current, visible.length)) {
       const ts = handles.chart.timeScale();
-      ts.applyOptions({ rightOffset: CHART_FUTURE_LOGICAL_BARS });
+      ts.applyOptions({ rightOffset: 2 });
       const cur = ts.getVisibleLogicalRange();
       const width =
         cur && Number.isFinite(cur.to - cur.from)
           ? Math.max(10, cur.to - cur.from)
-          : Math.min(120, visible.length + CHART_FUTURE_LOGICAL_BARS);
-      const next = followVisibleLogicalRange(visible.length, width, CHART_FUTURE_LOGICAL_BARS);
+          : viewWidth;
+      const next = followVisibleLogicalRange(visible.length, width, futureCount);
       if (next) {
         try {
           ts.setVisibleLogicalRange(next);
         } catch {
-          // Fallback for edge cases during series replacement.
           ts.scrollToRealTime();
         }
       }
