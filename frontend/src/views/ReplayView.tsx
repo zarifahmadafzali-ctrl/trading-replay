@@ -25,9 +25,12 @@ import {
   mapTimeToTickIndex,
   nextUtcDay,
   prevUtcDay,
+  secondsModeNextDeltaSec,
   shouldApplyTickNav,
   sortTicksStable,
+  tickModeNextDeltaSec,
   unixToUtcDay,
+  wallClockDelayMs,
   type ReplayResolution,
 } from "../lib/tickReplay";
 
@@ -271,6 +274,13 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const loadGenRef = useRef(0);
   const playLenRef = useRef(0);
   const playStepRef = useRef(1);
+  /** C1.2 real-time scheduler */
+  const playTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playGenRef = useRef(0);
+  const playingRef = useRef(false);
+  const speedRef = useRef(1);
+  const cursorRef = useRef(1);
+  const baseBarsRef = useRef<Bar[]>([]);
   const loadedSessionRef = useRef<string | null>(null);
   const [sessionLabel, setSessionLabel] = useState<string>("");
 
@@ -464,35 +474,142 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     workspaceLog,
   ]);
 
-  // Keep playback loop deps minimal: length/step read from refs so
-  // dataset growth or step changes do not thrash setInterval (v3.23.0).
+  // Keep playback loop deps minimal: length/step/cursor read from refs (C1.2).
   playLenRef.current = baseBars.length;
   playStepRef.current = Math.max(1, replayStepSeconds);
   replayResolutionRef.current = replayResolution;
   tickWindowRef.current = tickWindow;
   tickIndexRef.current = tickIndex;
   tickDayRef.current = tickDay;
+  playingRef.current = playing;
+  speedRef.current = speed > 0 ? speed : 1;
+  cursorRef.current = cursor;
+  baseBarsRef.current = baseBars;
 
   useEffect(() => {
-    if (!playing) return;
-    const id = window.setInterval(() => {
-      if (replayResolutionRef.current === "tick") {
-        // Advance one tick per interval tick; day roll handled in stepTickRef.
-        stepTickRef.current(1);
+    function clearPlayTimer() {
+      if (playTimerRef.current != null) {
+        window.clearTimeout(playTimerRef.current);
+        playTimerRef.current = null;
+      }
+    }
+
+    if (!playing) {
+      playGenRef.current += 1;
+      clearPlayTimer();
+      return;
+    }
+
+    const gen = ++playGenRef.current;
+    clearPlayTimer();
+
+    const scheduleNext = () => {
+      if (gen !== playGenRef.current) return;
+      if (!playingRef.current) return;
+
+      // Wait while an async tick day transition is in flight.
+      if (replayResolutionRef.current === "tick" && tickTransitionLockRef.current) {
+        playTimerRef.current = window.setTimeout(() => {
+          playTimerRef.current = null;
+          scheduleNext();
+        }, 25);
         return;
       }
-      const len = playLenRef.current;
-      const step = playStepRef.current;
-      setCursor((c) => {
-        if (c >= len) {
+
+      let delayMs = 0;
+
+      if (replayResolutionRef.current === "tick") {
+        const win = tickWindowRef.current;
+        const idx = tickIndexRef.current;
+        if (!win.length) {
           setPlaying(false);
-          return c;
+          return;
         }
-        return Math.min(len, c + step);
-      });
-    }, Math.max(15, 250 / speed));
-    return () => window.clearInterval(id);
-  }, [playing, speed]);
+        const info = tickModeNextDeltaSec(win, idx);
+        if (info.atEnd) {
+          // May trigger async day load inside stepTick; poll until unlocked or paused.
+          stepTickRef.current(1);
+          playTimerRef.current = window.setTimeout(() => {
+            playTimerRef.current = null;
+            if (gen !== playGenRef.current) return;
+            if (!playingRef.current) return;
+            // If still at end of the same day with no progress, stop.
+            // (Must stop here: playingRef may lag setPlaying until the next render.)
+            if (
+              tickWindowRef.current.length > 0 &&
+              tickIndexRef.current >= tickWindowRef.current.length - 1 &&
+              !tickTransitionLockRef.current
+            ) {
+              setPlaying(false);
+              return;
+            }
+            scheduleNext();
+          }, 25);
+          return;
+        }
+        delayMs = wallClockDelayMs(info.deltaSec, speedRef.current);
+      } else {
+        const bars = baseBarsRef.current;
+        const len = playLenRef.current;
+        const cur = cursorRef.current;
+        const step = playStepRef.current;
+        if (cur >= len || !bars.length) {
+          setPlaying(false);
+          return;
+        }
+        const info = secondsModeNextDeltaSec(bars, cur, step);
+        delayMs = wallClockDelayMs(info.deltaSec, speedRef.current);
+      }
+
+      playTimerRef.current = window.setTimeout(() => {
+        playTimerRef.current = null;
+        if (gen !== playGenRef.current) return;
+        if (!playingRef.current) return;
+
+        if (replayResolutionRef.current === "tick") {
+          const beforeDay = tickDayRef.current;
+          const beforeIdx = tickIndexRef.current;
+          stepTickRef.current(1);
+          // If step could not advance (still same day/index, no lock), stop.
+          if (
+            !tickTransitionLockRef.current &&
+            tickDayRef.current === beforeDay &&
+            tickIndexRef.current === beforeIdx &&
+            tickWindowRef.current.length > 0 &&
+            tickIndexRef.current >= tickWindowRef.current.length - 1
+          ) {
+            setPlaying(false);
+            return;
+          }
+        } else {
+          const len = playLenRef.current;
+          const step = playStepRef.current;
+          const c = cursorRef.current;
+          if (c >= len) {
+            setPlaying(false);
+            return;
+          }
+          const next = Math.min(len, c + step);
+          cursorRef.current = next;
+          setCursor(next);
+          if (next >= len) {
+            setPlaying(false);
+            return;
+          }
+        }
+
+        // One step per firing — no catch-up burst if the timer was late.
+        scheduleNext();
+      }, delayMs);
+    };
+
+    scheduleNext();
+
+    return () => {
+      playGenRef.current += 1;
+      clearPlayTimer();
+    };
+  }, [playing, speed, replayResolution, replayStepSeconds]);
 
   useEffect(() => {
     if (goToEditing) return; // preserve user datetime edits on desktop

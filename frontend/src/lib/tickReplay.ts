@@ -179,3 +179,83 @@ export function hasEligibleTickDayInRange(
   }
   return false;
 }
+
+// ---------------------------------------------------------------------------
+// C1.2 — Real-time playback delay helpers (pure, no timers)
+// ---------------------------------------------------------------------------
+
+/** Soft upper bound so multi-day gaps do not freeze the browser UI for hours. */
+export const PLAY_DELAY_MAX_MS = 300_000; // 5 minutes wall-clock
+
+/**
+ * Convert a market-time delta (seconds, may be fractional) into wall-clock delay.
+ * speed 1 = real time; 2 = twice as fast; 0.5 = half speed.
+ * Same-timestamp ticks (delta <= 0) yield 0 so they advance on the next macrotask.
+ */
+export function wallClockDelayMs(
+  marketTimeDeltaSeconds: number,
+  playbackSpeed: number
+): number {
+  const speed = playbackSpeed > 0 && Number.isFinite(playbackSpeed) ? playbackSpeed : 1;
+  if (!Number.isFinite(marketTimeDeltaSeconds) || marketTimeDeltaSeconds <= 0) {
+    return 0;
+  }
+  const ms = (marketTimeDeltaSeconds * 1000) / speed;
+  if (!Number.isFinite(ms) || ms < 0) return 0;
+  return Math.min(PLAY_DELAY_MAX_MS, ms);
+}
+
+/**
+ * Seconds-mode: market delta between the bar at the current exclusive cursor
+ * and the bar after advancing `stepBars` indices (1s bar array).
+ * `cursor` is the exclusive end index used by ReplayView (1..length).
+ */
+export function secondsModeNextDeltaSec(
+  bars: Array<{ time: number }>,
+  cursor: number,
+  stepBars: number
+): { deltaSec: number; nextCursor: number; atEnd: boolean } {
+  const len = bars.length;
+  const step = Math.max(1, Math.floor(stepBars) || 1);
+  if (len <= 0 || cursor >= len) {
+    return { deltaSec: 0, nextCursor: cursor, atEnd: true };
+  }
+  const nextCursor = Math.min(len, cursor + step);
+  const t0 = bars[Math.max(0, cursor - 1)]?.time;
+  const t1 = bars[Math.max(0, nextCursor - 1)]?.time;
+  let deltaSec = step;
+  if (t0 != null && t1 != null && Number.isFinite(t0) && Number.isFinite(t1) && t1 > t0) {
+    deltaSec = t1 - t0;
+  }
+  // If timestamps are equal or inverted, fall back to nominal step size so play continues.
+  if (!(deltaSec > 0)) deltaSec = step;
+  return {
+    deltaSec,
+    nextCursor,
+    atEnd: nextCursor >= len && cursor >= len,
+  };
+}
+
+/**
+ * Tick-mode: market delta from tick at `index` to the next tick in the same window.
+ * Same timestamps → deltaSec 0 (advance immediately, preserve seq order).
+ * atEnd true when there is no next tick in this window (caller may day-roll).
+ */
+export function tickModeNextDeltaSec(
+  ticks: Array<{ time: number }>,
+  index: number
+): { deltaSec: number; nextIndex: number; atEnd: boolean; sameTimestamp: boolean } {
+  if (!ticks.length || index < 0 || index >= ticks.length - 1) {
+    return { deltaSec: 0, nextIndex: index, atEnd: true, sameTimestamp: false };
+  }
+  const nextIndex = index + 1;
+  const t0 = ticks[index].time;
+  const t1 = ticks[nextIndex].time;
+  const deltaSec = Number.isFinite(t0) && Number.isFinite(t1) ? t1 - t0 : 0;
+  return {
+    deltaSec: deltaSec > 0 ? deltaSec : 0,
+    nextIndex,
+    atEnd: false,
+    sameTimestamp: !(deltaSec > 0),
+  };
+}

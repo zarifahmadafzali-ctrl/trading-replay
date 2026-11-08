@@ -43,6 +43,9 @@ jobs:
       - name: Phase C1 tick-replay unit tests
         run: node scripts/test-tick-replay-c1.mjs
 
+      - name: Phase C1.2 playback scheduler tests
+        run: node scripts/test-playback-scheduler-c12.mjs
+
       - name: Phase B tick pure tests
         run: node scripts/test-tick-phase-b.mjs
 
