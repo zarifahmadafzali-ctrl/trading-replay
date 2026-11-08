@@ -76,6 +76,7 @@ import {
   CHART_FUTURE_LOGICAL_BARS,
   followVisibleLogicalRange,
   shouldAutoFollowScroll,
+  buildFutureWhitespaceTimes,
 } from "../lib/chartTimeScale";
 
 export type IndicatorKind = "sma" | "ema" | "vwap" | "rsi";
@@ -2269,52 +2270,39 @@ export function Chart({
     // ReplayView already passes windowed/aggregated bars; cursor is typically bars.length.
     const end = Math.min(bars.length, Math.max(0, cursor));
     const visible = bars.slice(0, end);
-    const meta = chartDataMetaRef.current;
     const firstTime = visible[0]?.time ?? 0;
     const last = visible[visible.length - 1];
     const lastTime = last?.time ?? 0;
-    const canIncremental =
-      meta.len > 0 &&
-      visible.length >= meta.len &&
-      visible.length <= meta.len + 2 &&
-      firstTime === meta.firstTime &&
-      last != null;
 
-    if (canIncremental) {
-      // Forming candle or +1/+2 new candles: update() instead of full setData.
-      for (let i = Math.max(0, meta.len - 1); i < visible.length; i++) {
-        const b = visible[i];
-        handles.candles.update({
-          time: b.time as UTCTimestamp,
-          open: b.open,
-          high: b.high,
-          low: b.low,
-          close: b.close,
-        });
-        handles.volume.update({
-          time: b.time as UTCTimestamp,
-          value: b.volume ?? 0,
-          color: b.close >= b.open ? "rgba(38,166,154,0.45)" : "rgba(239,83,80,0.45)",
-        });
-      }
-    } else {
-      handles.candles.setData(
-        visible.map((b) => ({
-          time: b.time as UTCTimestamp,
-          open: b.open,
-          high: b.high,
-          low: b.low,
-          close: b.close,
-        }))
-      );
-      handles.volume.setData(
-        visible.map((b) => ({
-          time: b.time as UTCTimestamp,
-          value: b.volume ?? 0,
-          color: b.close >= b.open ? "rgba(38,166,154,0.45)" : "rgba(239,83,80,0.45)",
-        }))
-      );
-    }
+    // C1.4-A: display-only WhitespaceData after last real bar (time only, no OHLC/volume).
+    // Never fed to execution, journal, or caches — Chart series only.
+    const stepSec = Math.max(1, Math.floor(barSeconds) || 1);
+    const futureTimes =
+      last != null
+        ? buildFutureWhitespaceTimes(last.time, stepSec, CHART_FUTURE_LOGICAL_BARS)
+        : [];
+    const whitespacePts = futureTimes.map((t) => ({ time: t as UTCTimestamp }));
+
+    // Full setData keeps candle + whitespace times aligned. Real OHLC unchanged.
+    handles.candles.setData([
+      ...visible.map((b) => ({
+        time: b.time as UTCTimestamp,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+      })),
+      ...whitespacePts,
+    ]);
+    handles.volume.setData([
+      ...visible.map((b) => ({
+        time: b.time as UTCTimestamp,
+        value: b.volume ?? 0,
+        color: b.close >= b.open ? "rgba(38,166,154,0.45)" : "rgba(239,83,80,0.45)",
+      })),
+      // Matching times only — no value → LWC treats as whitespace (no histogram bar).
+      ...whitespacePts,
+    ]);
     chartDataMetaRef.current = {
       len: visible.length,
       firstTime,
@@ -2341,7 +2329,7 @@ export function Chart({
       }
     }
     scheduleRedraw();
-  }, [bars, cursor, followPrice]);
+  }, [bars, cursor, followPrice, barSeconds]);
 
   // Create/destroy one Line series per indicator spec as the list changes.
   useEffect(() => {
