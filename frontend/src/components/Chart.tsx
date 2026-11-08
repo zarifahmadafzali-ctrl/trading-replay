@@ -69,8 +69,14 @@ import {
   checkFillLot,
   tickAndDecimals,
   sizingInfo,
+  type PositionSizing,
+  type SnapLike,
 } from "../lib/positionSizing";
-import type { PositionSizing, SnapLike } from "../lib/positionSizing";
+import {
+  CHART_FUTURE_LOGICAL_BARS,
+  followVisibleLogicalRange,
+  shouldAutoFollowScroll,
+} from "../lib/chartTimeScale";
 
 export type IndicatorKind = "sma" | "ema" | "vwap" | "rsi";
 export type IndicatorSpec = { id: string; kind: IndicatorKind; period?: number; color: string };
@@ -1700,7 +1706,7 @@ export function Chart({
         lockVisibleTimeRangeOnResize: false,
         timeVisible: true,
         secondsVisible: true,
-        rightOffset: 8,
+        rightOffset: CHART_FUTURE_LOGICAL_BARS,
         borderVisible: true,
         borderColor: "#202a35",
         ticksVisible: true,
@@ -2314,9 +2320,25 @@ export function Chart({
       firstTime,
       lastTime,
     };
-    // Do NOT glue candles to the right every tick (TradingView-like free pan).
-    if (visible.length && followRef.current) {
-      handles.chart.timeScale().scrollToRealTime();
+    // C1.3: follow mode keeps last real candle in view with future logical whitespace.
+    // Manual pan is preserved when Follow is OFF — no forced scroll.
+    if (shouldAutoFollowScroll(followRef.current, visible.length)) {
+      const ts = handles.chart.timeScale();
+      ts.applyOptions({ rightOffset: CHART_FUTURE_LOGICAL_BARS });
+      const cur = ts.getVisibleLogicalRange();
+      const width =
+        cur && Number.isFinite(cur.to - cur.from)
+          ? Math.max(10, cur.to - cur.from)
+          : Math.min(120, visible.length + CHART_FUTURE_LOGICAL_BARS);
+      const next = followVisibleLogicalRange(visible.length, width, CHART_FUTURE_LOGICAL_BARS);
+      if (next) {
+        try {
+          ts.setVisibleLogicalRange(next);
+        } catch {
+          // Fallback for edge cases during series replacement.
+          ts.scrollToRealTime();
+        }
+      }
     }
     scheduleRedraw();
   }, [bars, cursor, followPrice]);
