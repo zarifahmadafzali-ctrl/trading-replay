@@ -7,12 +7,13 @@
 import type { Bar } from "./types";
 import type { DatasetDayMeta } from "./datasetMeta";
 import { normalizeDatasetDayMeta } from "./datasetMeta";
-import { cacheGetDay, cacheGetDayRow, cachePutDay } from "./barCache";
+import { cacheGetDay, cacheGetDayRow, cacheGetDayRowWithAlias, cachePutDay } from "./barCache";
 import { ticksToOneSecondBars, barsApproximatelyEqual } from "./tickAggregate";
 import { tickCacheGetDay, tickCachePutDay } from "./tickCache";
 import type { TickRecord } from "./tickTypes";
 import { normalizeTicks } from "./tickValidate";
 import {
+import { canonicalSymbol } from "./symbolAliases";
   readParquetObjects,
   mapTickParquetRows,
   mapBars1sParquetRows,
@@ -95,7 +96,14 @@ export async function importTicksForDay(opts: {
   /** When true, refuse to overwrite existing SUCCESS bars that disagree. Default true. */
   protectExistingBars?: boolean;
 }): Promise<TickImportDayResult> {
-  const symbol = opts.symbol.toUpperCase();
+  const providerSymbol = String(opts.symbol || "").trim().toUpperCase();
+  // D1: store under canonical key (US30) so Replay US30 sessions hit local cache.
+  // Preserve original provider symbol in metadata when it differs from canonical.
+  const symbol = canonicalSymbol(providerSymbol) || providerSymbol;
+  const providerSource =
+    providerSymbol && providerSymbol !== symbol
+      ? `provider:${providerSymbol}`
+      : undefined;
   const protect = opts.protectExistingBars !== false;
   const warnings: string[] = [];
   const errors: string[] = [];
@@ -174,8 +182,12 @@ export async function importTicksForDay(opts: {
 
   let barsWritten = false;
   let skippedBarsConflict = false;
-  const existing = await cacheGetDayRow(symbol, day);
+  // D1: detect existing bars under any alias (US30 or USA30IDXUSD) without migrating.
+  const existingHit = await cacheGetDayRowWithAlias(symbol, day);
+  const existing = existingHit?.row ?? (await cacheGetDayRow(symbol, day));
   const existingBars = existing?.bars?.length ? existing.bars : await cacheGetDay(symbol, day);
+  const resolvedSource =
+    opts.source || providerSource || existing?.source || "tick-import";
 
   if (existingBars && existingBars.length > 0 && protect) {
     const cmp = barsApproximatelyEqual(bars, existingBars);
@@ -185,14 +197,14 @@ export async function importTicksForDay(opts: {
         "Existing 1s bars differ from tick-aggregated bars; left existing bars unchanged"
       );
     } else {
-      // compatible — still refresh meta
+      // compatible — still refresh meta under canonical key (does not delete provider key)
       const meta: DatasetDayMeta = normalizeDatasetDayMeta({
         dataKind: "ticks",
         hasTicks: true,
         hasBars1s: true,
         tickCount: normalized.ticks.length,
         bars1sCount: existingBars.length,
-        source: opts.source || existing?.source || "tick-import",
+        source: resolvedSource,
       });
       await cachePutDay(symbol, day, existingBars, {
         classification: existing?.classification || "SUCCESS",
@@ -208,16 +220,16 @@ export async function importTicksForDay(opts: {
       hasBars1s: bars.length > 0,
       tickCount: normalized.ticks.length,
       bars1sCount: bars.length,
-      source: opts.source || "tick-import",
+      source: resolvedSource,
     });
     await cachePutDay(symbol, day, bars, { classification: "SUCCESS", complete: true, meta });
     barsWritten = true;
   }
 
-  // Finalize tick row as complete
+  // Finalize tick row as complete (canonical key)
   await tickCachePutDay(symbol, day, normalized.ticks, {
     complete: true,
-    source: opts.source || "tick-import",
+    source: resolvedSource,
   });
 
   opts.onProgress?.({
@@ -511,7 +523,9 @@ export async function importTrMarketDataDay(
     };
   }
 
-  const symbol = (meta?.symbol || input.symbolFallback || "UNKNOWN").toUpperCase();
+  const providerSymbol = (meta?.symbol || input.symbolFallback || "UNKNOWN").toUpperCase();
+  // D1: normalize provider aliases (USA30IDXUSD → US30) for storage; keep provider in source.
+  const symbol = canonicalSymbol(providerSymbol) || providerSymbol;
   let sourceBars: Bar[] | undefined;
 
   if (input.bars1sParquet && input.bars1sParquet.byteLength > 0) {

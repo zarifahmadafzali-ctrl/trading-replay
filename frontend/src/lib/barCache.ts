@@ -7,6 +7,7 @@ import type { Bar } from "./types";
 import { normalizeBars } from "./marketDataIntegrity";
 import type { DatasetDayMeta } from "./datasetMeta";
 import { metaFromDayRow, defaultBars1sMeta } from "./datasetMeta";
+import { canonicalSymbol, symbolLookupCandidates } from "./symbolAliases";
 
 const DB_NAME = "trading-replay-cache";
 const DB_VERSION = 4;
@@ -110,6 +111,54 @@ export async function cacheGetDayRow(symbol: string, day: string): Promise<DayCa
   }
 }
 
+/**
+ * D1 — Resolve a day row across symbol aliases (US30 ↔ USA30IDXUSD).
+ * Conflict policy when multiple keys have bars for the same day:
+ *   1. Prefer the row whose symbol equals canonicalSymbol(query).
+ *   2. Else prefer a COMPLETE row with the most bars.
+ *   3. Else first non-empty candidate in symbolLookupCandidates order.
+ * Never merges bars from two keys; never writes/migrates storage.
+ */
+export async function cacheGetDayRowWithAlias(
+  symbol: string,
+  day: string
+): Promise<{ row: DayCacheRow; symbolUsed: string } | null> {
+  const canon = canonicalSymbol(symbol);
+  const candidates = symbolLookupCandidates(symbol);
+  const found: Array<{ row: DayCacheRow; symbolUsed: string }> = [];
+  for (const cand of candidates) {
+    const row = await cacheGetDayRow(cand, day);
+    if (!row) continue;
+    const hasBars = Array.isArray(row.bars) && row.bars.length > 0;
+    const emptyOk = row.complete && row.classification === "EXPECTED_EMPTY";
+    if (hasBars || emptyOk) found.push({ row, symbolUsed: cand });
+  }
+  if (!found.length) return null;
+  const exactCanon = found.find((f) => f.symbolUsed === canon || f.row.symbol === canon);
+  if (exactCanon && (exactCanon.row.bars?.length || exactCanon.row.classification === "EXPECTED_EMPTY")) {
+    return exactCanon;
+  }
+  const withBars = found.filter((f) => f.row.bars && f.row.bars.length > 0);
+  if (withBars.length) {
+    withBars.sort((a, b) => {
+      const ac = a.row.complete ? 1 : 0;
+      const bc = b.row.complete ? 1 : 0;
+      if (bc !== ac) return bc - ac;
+      return (b.row.bars?.length || 0) - (a.row.bars?.length || 0);
+    });
+    return withBars[0];
+  }
+  return found[0];
+}
+
+export async function cacheGetDayWithAlias(symbol: string, day: string): Promise<Bar[] | null> {
+  const hit = await cacheGetDayRowWithAlias(symbol, day);
+  if (!hit) return null;
+  const row = hit.row;
+  if (row.complete && row.classification === "EXPECTED_EMPTY") return [];
+  return row.bars?.length ? row.bars : null;
+}
+
 /** Idempotent put for one UTC day. Empty bars allowed for EXPECTED_EMPTY. */
 export async function cachePutDay(
   symbol: string,
@@ -208,7 +257,9 @@ export async function cacheGetRange(
   let lastTime = -Infinity;
 
   for (const day of days) {
-    const row = await cacheGetDayRow(symbol, day);
+    // D1: resolve US30 / USA30IDXUSD (and other aliases) without migrating storage.
+    const hit = await cacheGetDayRowWithAlias(symbol, day);
+    const row = hit?.row ?? null;
     if (row?.complete && row.classification === "EXPECTED_EMPTY") {
       fromCacheDays.push(day);
       daysEmpty += 1;
@@ -264,7 +315,8 @@ export async function summarizeLocalCache(
   const missingDays: string[] = [];
   let barsCached = 0;
   for (const day of days) {
-    const row = await cacheGetDayRow(symbol, day);
+    const hit = await cacheGetDayRowWithAlias(symbol, day);
+    const row = hit?.row ?? null;
     if (row?.complete) {
       cachedDays.push(day);
       barsCached += row.barCount ?? row.bars?.length ?? 0;
@@ -377,59 +429,104 @@ export async function listMarketDays(symbolFilter?: string): Promise<MarketDayIn
       req.onsuccess = () => resolve((req.result || []) as DayCacheRow[]);
       req.onerror = () => reject(req.error);
     });
-    const filt = symbolFilter ? symbolFilter.toUpperCase() : null;
-    return rows
-      .filter((r) => !filt || r.symbol === filt)
-      .map((r) => {
-        const barCount = r.barCount ?? (Array.isArray(r.bars) ? r.bars.length : 0);
-        const meta = metaFromDayRow(r);
-        return {
-          id: r.id,
-          symbol: r.symbol,
-          day: r.day,
-          status: classifyDayStatus(r),
-          barCount,
-          savedAt: r.savedAt ?? 0,
-          classification: r.classification,
-          complete: r.complete,
-          estimatedBytes: estimateDayBytes(barCount),
-          dataKind: meta.dataKind,
-          hasTicks: meta.hasTicks,
-          hasBars1s: meta.hasBars1s,
-          tickCount: meta.tickCount,
-          bars1sCount: meta.bars1sCount ?? barCount,
-          priceBasis: meta.priceBasis,
-          executionBasis: meta.executionBasis,
-          source: meta.source,
-        };
-      })
-      .sort((a, b) => (a.symbol === b.symbol ? (a.day < b.day ? 1 : -1) : a.symbol.localeCompare(b.symbol)));
+    const filterCands = symbolFilter
+      ? new Set(symbolLookupCandidates(symbolFilter).map((s) => s.toUpperCase()))
+      : null;
+
+    // D1: collapse alias duplicates (US30 vs USA30IDXUSD same day) into one listing row.
+    type Agg = MarketDayInfo & { _canon: string; _prefer: number };
+    const byKey = new Map<string, Agg>();
+    for (const r of rows) {
+      const stored = String(r.symbol || "").toUpperCase();
+      if (filterCands && !filterCands.has(stored)) continue;
+      const canon = canonicalSymbol(stored);
+      const barCount = r.barCount ?? (Array.isArray(r.bars) ? r.bars.length : 0);
+      const meta = metaFromDayRow(r);
+      const prefer =
+        (stored === canon ? 100 : 0) +
+        (r.complete ? 10 : 0) +
+        Math.min(9, Math.floor(Math.log10(Math.max(1, barCount))));
+      const info: Agg = {
+        id: r.id,
+        symbol: canon,
+        day: r.day,
+        status: classifyDayStatus(r),
+        barCount,
+        savedAt: r.savedAt ?? 0,
+        classification: r.classification,
+        complete: r.complete,
+        estimatedBytes: estimateDayBytes(barCount),
+        dataKind: meta.dataKind,
+        hasTicks: meta.hasTicks,
+        hasBars1s: meta.hasBars1s,
+        tickCount: meta.tickCount,
+        bars1sCount: meta.bars1sCount ?? barCount,
+        priceBasis: meta.priceBasis,
+        executionBasis: meta.executionBasis,
+        source: meta.source
+          ? meta.source
+          : stored !== canon
+            ? `provider:${stored}`
+            : meta.source,
+        _canon: canon,
+        _prefer: prefer,
+      };
+      if (stored !== canon && info.source && !String(info.source).includes(stored)) {
+        info.source = `provider:${stored}`;
+      }
+      const k = `${canon}|${r.day}`;
+      const prev = byKey.get(k);
+      if (!prev || info._prefer > prev._prefer) byKey.set(k, info);
+    }
+    return Array.from(byKey.values())
+      .map(({ _canon, _prefer, ...rest }) => rest)
+      .sort((a, b) =>
+        a.symbol === b.symbol ? (a.day < b.day ? 1 : -1) : a.symbol.localeCompare(b.symbol)
+      );
   } catch {
     return [];
   }
 }
 
-/** Delete one symbol|day. Does not touch Sessions/Journal/Accounts. */
+/**
+ * Delete one symbol|day across all known aliases for that market.
+ * UI lists canonical symbols; storage may still hold provider keys (USA30IDXUSD).
+ * Does not touch Sessions/Journal/Accounts. Never migrates other days.
+ */
 export async function cacheDeleteDay(symbol: string, day: string): Promise<boolean> {
   try {
+    const candidates = symbolLookupCandidates(symbol);
+    // Always include the raw key in case it is not in the alias map.
+    const raw = String(symbol || "").trim().toUpperCase();
+    const keys = new Set(candidates.map((c) => dayId(c, day)));
+    if (raw) keys.add(dayId(raw, day));
     const db = await openDb();
+    let any = false;
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).delete(dayId(symbol, day));
+      const store = tx.objectStore(STORE);
+      for (const id of keys) {
+        store.delete(id);
+        any = true;
+      }
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
-    return true;
+    return any;
   } catch {
     return false;
   }
 }
 
-/** Delete all cached days for one symbol. */
+/**
+ * Delete all cached days for one market (canonical + provider aliases).
+ * Uses alias-aware listing so USA30IDXUSD rows are included when deleting US30.
+ */
 export async function cacheDeleteSymbol(symbol: string): Promise<number> {
   const rows = await listMarketDays(symbol);
   let n = 0;
   for (const r of rows) {
+    // Prefer the underlying id's day; delete all aliases for that day.
     if (await cacheDeleteDay(r.symbol, r.day)) n += 1;
   }
   return n;
