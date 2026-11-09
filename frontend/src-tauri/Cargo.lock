@@ -3998,7 +3998,7 @@ dependencies = [
 
 [[package]]
 name = "trading-replay"
-version = "3.48.8"
+version = "3.48.9"
 dependencies = [
  "rusqlite",
  "serde",
