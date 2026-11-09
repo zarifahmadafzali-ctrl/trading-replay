@@ -12,8 +12,8 @@ import { ticksToOneSecondBars, barsApproximatelyEqual } from "./tickAggregate";
 import { tickCacheGetDay, tickCachePutDay } from "./tickCache";
 import type { TickRecord } from "./tickTypes";
 import { normalizeTicks } from "./tickValidate";
-import {
 import { canonicalSymbol } from "./symbolAliases";
+import {
   readParquetObjects,
   mapTickParquetRows,
   mapBars1sParquetRows,
