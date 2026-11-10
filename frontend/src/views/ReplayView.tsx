@@ -35,6 +35,7 @@ import {
 } from "../lib/tickReplay";
 
 import { normalizeBars } from "../lib/marketDataIntegrity";
+import { decideCacheFirstLoad } from "../lib/cacheFirstLoad";
 import { recordRangeLoad, recordReplayWindow } from "../lib/replayDiagnostics";
 
 import { generateDemoBars, readCsvFile } from "../lib/demoData";
@@ -379,10 +380,25 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         setLoading(true);
         try {
           const local = await cacheGetRange(meta.symbol, meta.start, meta.end);
-          if (!cancelled && local.bars.length) {
+          if (cancelled) return;
+          if (local.bars.length) {
             setBaseBars(local.bars);
+            setDataSource("loaded");
             const c = Math.min(Math.max(1, rt.cursor || 1), local.bars.length);
-            setCursor(c);
+            setCursor(Math.max(1, c));
+            if (local.missingDays.length) {
+              setMessage(
+                `Session restore · ${local.fromCacheDays.length} local day(s), missing ${local.missingDays.length} (${local.missingDays.slice(0, 3).join(", ")}${local.missingDays.length > 3 ? "…" : ""})`
+              );
+            } else {
+              setMessage(
+                `Session restore · ${local.bars.length.toLocaleString()} bars from device`
+              );
+            }
+          } else if (local.missingDays.length) {
+            setMessage(
+              `No local bars for ${meta.symbol} ${meta.start}→${meta.end}. Missing: ${local.missingDays.slice(0, 5).join(", ")}${local.missingDays.length > 5 ? "…" : ""}. Use Load 1s or import in Data Engine.`
+            );
           }
         } finally {
           if (!cancelled) setLoading(false);
@@ -682,19 +698,30 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     const gen = ++loadGenRef.current;
     setLoading(true);
     setPlaying(false);
+    let localBarsApplied = 0;
     try {
       const local = await cacheGetRange(symbol, start, end);
       if (gen !== loadGenRef.current) return;
-      if (local.missingDays.length === 0 && local.bars.length) {
+      const plan = decideCacheFirstLoad({
+        localBarCount: local.bars.length,
+        missingDayCount: local.missingDays.length,
+        backendOnline,
+      });
+
+      // Cache-first: paint device bars before any network call.
+      // Desktop builds often report backendOnline=true while private imports
+      // only exist in IndexedDB — never block the chart on remote success.
+      if (plan.paintLocal && local.bars.length) {
         setBaseBars(local.bars);
-        setCursor(Math.min(800, local.bars.length));
+        setCursor(Math.min(800, Math.max(1, local.bars.length)));
         setDataSource("loaded");
+        localBarsApplied = local.bars.length;
         const d = local.diagnostics;
         recordRangeLoad({
           symbol,
           start,
           end,
-          source: "local-cache",
+          source: local.missingDays.length === 0 ? "local-cache" : "local-cache-partial",
           barCount: local.bars.length,
           daysHit: d.daysHit,
           daysMiss: d.daysMiss,
@@ -703,68 +730,73 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           sorted: d.sorted,
           at: Date.now(),
         });
+        if (plan.doneAfterLocal) {
+          setMessage(
+            local.missingDays.length === 0
+              ? `From device · ${local.bars.length.toLocaleString()} bars · ${local.fromCacheDays.length} day(s) · ${d.loadMs}ms · ${start} → ${end}`
+              : `Offline · ${local.fromCacheDays.length} cached day(s) · ${local.bars.length.toLocaleString()} bars`
+          );
+          return;
+        }
         setMessage(
-          `From device · ${local.bars.length.toLocaleString()} bars · ${local.fromCacheDays.length} day(s) · ${d.loadMs}ms · ${start} → ${end}`
-        );
-        return;
-      }
-      if (local.bars.length && local.missingDays.length) {
-        setMessage(
-          `Partial cache: ${local.fromCacheDays.length} day(s) on device, missing ${local.missingDays.length}…`
+          `From device · ${local.bars.length.toLocaleString()} bars · ${local.fromCacheDays.length} day(s), missing ${local.missingDays.length}…`
         );
       }
-      if (!backendOnline) {
+
+      if (!plan.fetchRemote) {
         if (gen !== loadGenRef.current) return;
-        if (local.bars.length) {
-          setBaseBars(local.bars);
-          setCursor(Math.min(800, local.bars.length));
-          setDataSource("loaded");
-          const d = local.diagnostics;
-          recordRangeLoad({
-            symbol,
-            start,
-            end,
-            source: "offline-cache",
-            barCount: local.bars.length,
-            daysHit: d.daysHit,
-            daysMiss: d.daysMiss,
-            daysEmpty: d.daysEmpty,
-            loadMs: d.loadMs,
-            sorted: d.sorted,
-            at: Date.now(),
-          });
-          setMessage(`Offline · ${local.fromCacheDays.length} cached day(s) · ${d.loadMs}ms`);
-        } else setMessage("No cache · backend offline");
+        if (!local.bars.length) setMessage("No cache · backend offline");
         return;
       }
-      const res = await fetchBars(symbol, 1, start, end);
-      if (gen !== loadGenRef.current) return;
-      if (!res.bars.length && !local.bars.length) {
-        setMessage(`No data · Sync in Data Engine first`);
-        return;
+
+      // Online: only fill gaps. On failure keep already-painted local bars.
+      try {
+        const res = await fetchBars(symbol, 1, start, end);
+        if (gen !== loadGenRef.current) return;
+        if (!res.bars.length && !local.bars.length) {
+          setMessage(`No data · Sync in Data Engine first`);
+          return;
+        }
+        if (!res.bars.length) {
+          setMessage(
+            `From device · ${local.bars.length.toLocaleString()} bars · remote had no extra days`
+          );
+          return;
+        }
+        const merged = normalizeBars([...local.bars, ...res.bars]).bars;
+        if (gen !== loadGenRef.current) return;
+        setBaseBars(merged);
+        setCursor(Math.min(800, Math.max(1, merged.length)));
+        setDataSource("loaded");
+        const d = local.diagnostics;
+        recordRangeLoad({
+          symbol,
+          start,
+          end,
+          source: local.bars.length ? "backend-merge" : "backend",
+          barCount: merged.length,
+          daysHit: d.daysHit,
+          daysMiss: d.daysMiss,
+          daysEmpty: d.daysEmpty,
+          loadMs: d.loadMs,
+          sorted: true,
+          at: Date.now(),
+        });
+        const daysSaved = await cachePutBars(symbol, merged);
+        if (gen !== loadGenRef.current) return;
+        setMessage(
+          `Loaded ${merged.length.toLocaleString()} · saved ${daysSaved} day(s) on device`
+        );
+      } catch (netErr) {
+        if (gen !== loadGenRef.current) return;
+        if (localBarsApplied > 0) {
+          setMessage(
+            `Network failed · showing ${localBarsApplied.toLocaleString()} local bars`
+          );
+        } else {
+          setMessage(netErr instanceof Error ? netErr.message : "Load failed");
+        }
       }
-      const merged = normalizeBars([...local.bars, ...res.bars]).bars;
-      if (gen !== loadGenRef.current) return;
-      setBaseBars(merged);
-      setCursor(Math.min(800, merged.length));
-      setDataSource("loaded");
-      const d = local.diagnostics;
-      recordRangeLoad({
-        symbol,
-        start,
-        end,
-        source: local.bars.length ? "backend-merge" : "backend-merge",
-        barCount: merged.length,
-        daysHit: d.daysHit,
-        daysMiss: d.daysMiss,
-        daysEmpty: d.daysEmpty,
-        loadMs: d.loadMs,
-        sorted: true,
-        at: Date.now(),
-      });
-      const daysSaved = await cachePutBars(symbol, merged);
-      if (gen !== loadGenRef.current) return;
-      setMessage(`Loaded ${merged.length.toLocaleString()} · saved ${daysSaved} day(s) on device`);
     } catch (e) {
       if (gen !== loadGenRef.current) return;
       setMessage(e instanceof Error ? e.message : "Load failed");
