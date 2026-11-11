@@ -463,6 +463,66 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   // Legacy localStorage-only restore is skipped to avoid racing session load.
   const restoreAttemptedRef = useRef(true);
 
+
+  // C5.1: build runtime payload from live state (used by effect + lifecycle flush)
+  const enqueueRuntimeSave = useCallback(() => {
+    const sid = sessionIdRef.current;
+    if (!sid || !sessionReady || loadedSessionRef.current !== sid) return;
+    const barT = baseBars[Math.max(0, cursor - 1)]?.time;
+    const gen = ++runtimeSaveGenRef.current;
+    const payload = {
+      sessionId: sid,
+      timeframeSeconds,
+      customTfs,
+      replayStepSeconds,
+      cursor,
+      replayTimeUnix: barT != null && Number.isFinite(barT) ? barT : 0,
+      speed,
+      followPrice,
+      orderType,
+      workspaceLog: workspaceLog.slice(0, 40),
+      drawTool,
+      activeIndicatorIds,
+      message,
+      playing: false,
+      updatedAt: Date.now(),
+      replayResolution: replayResolution === "tick" ? ("tick" as const) : ("seconds" as const),
+      tickIndex: replayResolution === "tick" ? tickIndex : 0,
+      tickDay: replayResolution === "tick" ? tickDay : null,
+      saveGeneration: gen,
+    };
+    runtimeWriteChainRef.current = runtimeWriteChainRef.current
+      .then(async () => {
+        if (gen !== runtimeSaveGenRef.current) return;
+        if (sessionIdRef.current !== sid) return;
+        await putRuntime(payload);
+        // Keep shapes aligned with last runtime flush
+        if (sessionIdRef.current === sid && loadedSessionRef.current === sid) {
+          await putSessionShapes(sid, shapesRefForUndo.current);
+        }
+      })
+      .catch(() => {
+        /* preserve last valid state */
+      });
+  }, [
+    sessionReady,
+    timeframeSeconds,
+    customTfs,
+    replayStepSeconds,
+    cursor,
+    baseBars,
+    speed,
+    followPrice,
+    orderType,
+    workspaceLog,
+    drawTool,
+    activeIndicatorIds,
+    message,
+    replayResolution,
+    tickIndex,
+    tickDay,
+  ]);
+
   // Persist lightweight meta (localStorage) + session runtime (IndexedDB).
   useEffect(() => {
     if (!sessionReady) return;
@@ -481,41 +541,9 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       drawTool,
       message,
     });
+    enqueueRuntimeSave();
     const sid = sessionIdRef.current;
     if (sid) {
-      const barT = baseBars[Math.max(0, cursor - 1)]?.time;
-      const gen = ++runtimeSaveGenRef.current;
-      const payload = {
-        sessionId: sid,
-        timeframeSeconds,
-        customTfs,
-        replayStepSeconds,
-        cursor,
-        replayTimeUnix: barT != null && Number.isFinite(barT) ? barT : 0,
-        speed,
-        followPrice,
-        orderType,
-        workspaceLog: workspaceLog.slice(0, 40),
-        drawTool,
-        activeIndicatorIds,
-        message,
-        playing: false,
-        updatedAt: Date.now(),
-        replayResolution: replayResolution === "tick" ? ("tick" as const) : ("seconds" as const),
-        tickIndex: replayResolution === "tick" ? tickIndex : 0,
-        tickDay: replayResolution === "tick" ? tickDay : null,
-        saveGeneration: gen,
-      };
-      // C5: serialize runtime writes; skip if a newer generation superseded this one
-      runtimeWriteChainRef.current = runtimeWriteChainRef.current
-        .then(async () => {
-          if (gen !== runtimeSaveGenRef.current) return;
-          if (sessionIdRef.current !== sid) return;
-          await putRuntime(payload);
-        })
-        .catch(() => {
-          /* keep last valid persisted state */
-        });
       void getSession(sid).then((meta) => {
         if (!meta) return;
         if (sessionIdRef.current !== sid) return;
@@ -551,6 +579,27 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     tickDay,
     baseBars,
   ]);
+
+  // C5.1: final-save safety net (not a guarantee under hard kill)
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") return;
+    const onHide = () => {
+      if (document.visibilityState === "hidden") {
+        enqueueRuntimeSave();
+      }
+    };
+    const onPageHide = () => {
+      enqueueRuntimeSave();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", onPageHide);
+    // Tauri / desktop often fires visibilitychange; pagehide covers tab close.
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", onPageHide);
+    };
+  }, [enqueueRuntimeSave]);
+
 
   // Keep playback loop deps minimal: length/step/cursor read from refs (C1.2).
   playLenRef.current = baseBars.length;
@@ -1242,6 +1291,12 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       netPnlPoints: closed.pnlPoints,
       entryPriceBasis: entryBasis,
       exitPriceBasis: exitBasis,
+      ...(closed.spreadAtEntry != null
+        ? { spreadAtEntry: closed.spreadAtEntry, spreadUnit: "price_points" as const }
+        : {}),
+      ...(closed.spreadAtExit != null
+        ? { spreadAtExit: closed.spreadAtExit, spreadUnit: "price_points" as const }
+        : {}),
       rMultiple: rMultEarly,
       note,
       accountId: (snap?.accountId as string) || acc?.accountId,

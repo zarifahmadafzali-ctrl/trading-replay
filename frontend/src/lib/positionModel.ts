@@ -82,6 +82,9 @@ export type PositionLike = {
   // ---- Brief 02 optional fields ----
   /** false = the order type was chosen by hand and is never auto-detected. Absent/true = auto. */
   orderTypeAuto?: boolean;
+  /** C5.1: Ask−Bid in price points at entry when both sides known. */
+  spreadAtEntry?: number;
+  spreadUnit?: "price_points";
   /** Fixed reward:risk. While enabled, the target follows entry/stop. */
   rrLock?: RRLock;
 };

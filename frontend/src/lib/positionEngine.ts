@@ -23,6 +23,11 @@ export type ClosedInfo = {
   riskSnapshot?: Record<string, unknown>;
   screenshot?: string;
   entryScreenshot?: string;
+  /** C5.1: Ask−Bid at entry when known (price points). */
+  spreadAtEntry?: number;
+  /** C5.1: Ask−Bid at exit when known (price points). */
+  spreadAtExit?: number;
+  spreadUnit?: "price_points";
 };
 
 export type EngineOpts = {

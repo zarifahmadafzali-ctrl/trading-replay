@@ -164,7 +164,12 @@ export type PositionShape = {
   orderTypeAuto?: boolean;
   /** Brief 02: fixed reward:risk — target follows entry/stop. */
   rrLock?: RRLock;
+  /** C5.1: Ask−Bid in price points at entry when both sides known. */
+  spreadAtEntry?: number;
+  /** Unit label for spreadAtEntry (always price points). */
+  spreadUnit?: "price_points";
 };
+
 
 export type ClosedPosition = {
   id: string;
@@ -182,6 +187,12 @@ export type ClosedPosition = {
   screenshot?: string;
   /** Chart PNG captured when the position opened (entry/confirm). */
   entryScreenshot?: string;
+  /** C5.1: Ask−Bid at entry when known (price points). */
+  spreadAtEntry?: number;
+  /** C5.1: Ask−Bid at exit when known (price points). */
+  spreadAtExit?: number;
+  /** Always "price_points" when spread fields are set. */
+  spreadUnit?: "price_points";
 };
 
 export type Shape = DrawingShape | PositionShape;
@@ -682,6 +693,12 @@ export function Chart({
       bid: marketRef.current.bid,
       ask: marketRef.current.ask,
     };
+    const entrySpread = (() => {
+      const b = market.bid;
+      const a = market.ask;
+      if (b == null || a == null || !Number.isFinite(b) || !Number.isFinite(a) || a < b) return undefined;
+      return a - b;
+    })();
     const next = shapesRef.current.map((s) => {
       if (s.kind !== "position" || s.status !== "draft") return s;
       // 1) MARKET orders are refreshed to the CURRENT replay price/time (they used to fill at the stale
@@ -722,6 +739,11 @@ export function Chart({
           ? { riskSnapshot: { ...snap, ...(fz.sizing ? { lotFrozenAtConfirm: true } : {}) } }
           : {}),
         ...(entryShot ? { entryScreenshot: entryShot } : {}),
+        ...(nextStatus === "open" && entrySpread != null
+          ? { spreadAtEntry: entrySpread, spreadUnit: "price_points" as const }
+          : entrySpread != null
+            ? { spreadAtEntry: entrySpread, spreadUnit: "price_points" as const }
+            : {}),
       } as Shape;
     });
     setShapes(next);
@@ -763,6 +785,12 @@ export function Chart({
     const pnlPoints =
       s.side === "long" ? exitPrice - s.entry.price : s.entry.price - exitPrice;
     const screenshot = capturePositionScreenshot(s, exitPrice);
+    const exitSpread = (() => {
+      const b = m.bid;
+      const a = m.ask;
+      if (b == null || a == null || !Number.isFinite(b) || !Number.isFinite(a) || a < b) return undefined;
+      return a - b;
+    })();
     const closed: ClosedPosition = {
       id: s.id,
       side: s.side,
@@ -777,6 +805,8 @@ export function Chart({
       riskSnapshot: s.riskSnapshot,
       screenshot,
       entryScreenshot: s.entryScreenshot,
+      ...(s.spreadAtEntry != null ? { spreadAtEntry: s.spreadAtEntry } : {}),
+      ...(exitSpread != null ? { spreadAtExit: exitSpread, spreadUnit: "price_points" as const } : {}),
     };
     const next = shapesRef.current.filter((x) => x.id !== id);
     shapesRef.current = next;
@@ -2522,11 +2552,26 @@ export function Chart({
                 }
               : undefined,
             entryScreenshot: capturePositionScreenshot(filled) ?? undefined,
+            ...( (() => {
+              const b = marketRef.current.bid;
+              const a = marketRef.current.ask;
+              if (b == null || a == null || !Number.isFinite(b) || !Number.isFinite(a) || a < b) return {};
+              return { spreadAtEntry: a - b, spreadUnit: "price_points" as const };
+            })() ),
           };
         },
-        onClose: (s, px) => ({
-          screenshot: capturePositionScreenshot(s as PositionShape, px) ?? undefined,
-        }),
+        onClose: (s, px) => {
+          const b = marketRef.current.bid;
+          const a = marketRef.current.ask;
+          const exitSpread =
+            b != null && a != null && Number.isFinite(b) && Number.isFinite(a) && a >= b ? a - b : undefined;
+          const pos = s as PositionShape;
+          return {
+            screenshot: capturePositionScreenshot(pos, px) ?? undefined,
+            ...(pos.spreadAtEntry != null ? { spreadAtEntry: pos.spreadAtEntry } : {}),
+            ...(exitSpread != null ? { spreadAtExit: exitSpread, spreadUnit: "price_points" as const } : {}),
+          };
+        },
         canFill: (s, bar) => {
           const fn = canFillRef.current;
           if (fn && !fn(s as PositionShape, bar)) return false;

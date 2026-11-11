@@ -76,6 +76,8 @@ export type JournalTrade = {
   spreadAtEntry?: number | null;
   /** Bid–Ask spread at exit when known. */
   spreadAtExit?: number | null;
+  /** Measurement unit for spread fields (price points, not money). */
+  spreadUnit?: "price_points";
   /** long_entry_ask | short_entry_bid | bar_close | … */
   entryPriceBasis?: string;
   /** long_exit_bid | short_exit_ask | bar_close | … */
@@ -137,6 +139,7 @@ export function normalizeJournalTrade(raw: Partial<JournalTrade> & Record<string
     netPnlPoints: numOrNull(raw.netPnlPoints) ?? numOrNull(raw.pnlPoints),
     spreadAtEntry: numOrNull(raw.spreadAtEntry),
     spreadAtExit: numOrNull(raw.spreadAtExit),
+    spreadUnit: raw.spreadUnit === "price_points" ? "price_points" : undefined,
     entryPriceBasis: raw.entryPriceBasis as string | undefined,
     exitPriceBasis: raw.exitPriceBasis as string | undefined,
     symbol: String(raw.symbol || ""),

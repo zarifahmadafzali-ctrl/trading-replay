@@ -523,13 +523,21 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
                 {selected.spreadAtEntry != null ? (
                   <>
                     <span>Spread @ entry</span>
-                    <span>{fmtNum(selected.spreadAtEntry, 4)}</span>
+                    <span>
+                      {fmtNum(selected.spreadAtEntry, 4)}
+                      {selected.spreadUnit === "price_points" || selected.spreadAtEntry != null
+                        ? " (price points)"
+                        : ""}
+                    </span>
                   </>
                 ) : null}
                 {selected.spreadAtExit != null ? (
                   <>
                     <span>Spread @ exit</span>
-                    <span>{fmtNum(selected.spreadAtExit, 4)}</span>
+                    <span>
+                      {fmtNum(selected.spreadAtExit, 4)}
+                      {" (price points)"}
+                    </span>
                   </>
                 ) : null}
               </div>
