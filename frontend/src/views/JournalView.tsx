@@ -35,6 +35,7 @@ import {
   whatIfFixedRiskPercent,
   whatIfFixedProfitPercent,
   computeExcursion,
+  endOfZoneCalendarDayUnix,
   type ExcursionResult,
 } from "../lib/tradeAnalyticsAdvanced";
 import { cacheGetRange } from "../lib/barCache";
@@ -199,14 +200,7 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
         const range = await cacheGetRange(selected.symbol, day, endDay);
         const bars = range.bars || [];
         const during = bars.filter((b) => b.time >= selected.entryTime && b.time <= selected.exitTime);
-        const dayEnd = Date.UTC(
-          Number(endDay.slice(0, 4)),
-          Number(endDay.slice(5, 7)) - 1,
-          Number(endDay.slice(8, 10)),
-          23,
-          59,
-          59
-        ) / 1000;
+        const dayEnd = endOfZoneCalendarDayUnix(selected.exitTime, "America/New_York");
         const after = bars.filter((b) => b.time > selected.exitTime && b.time <= dayEnd);
         let ticksDuring = null as import("../lib/tickTypes").TickRecord[] | null;
         let ticksAfter = null as import("../lib/tickTypes").TickRecord[] | null;
@@ -751,8 +745,14 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
                   <span>
                     {fmtNum(excursion.postExitMfePoints, 2)} / {fmtNum(excursion.postExitMfeR, 2)} R
                   </span>
+                  <span>Boundary</span>
+                  <span className="hint">
+                    {excursion.observationBoundary === "america_new_york_calendar_day"
+                      ? "America/New_York calendar day end (DST-aware; not exchange session close)"
+                      : excursion.observationBoundary}
+                  </span>
                   <span>Note</span>
-                  <span className="hint">{excursion.note || "Post-exit uses UTC calendar day end."}</span>
+                  <span className="hint">{excursion.note || "—"}</span>
                 </div>
               )}
             </section>
@@ -786,10 +786,11 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
                         ) : (
                           <span>
                             {" "}
-                            · risk {fmtUsd(r.riskAmount)} ({fmtNum(r.riskPercent, 2)}%) · PnL{" "}
-                            {r.pnl != null ? fmtUsd(r.pnl) : "—"} · vs actual{" "}
+                            · [{r.validation}] risk {fmtUsd(r.riskAmount)} ({fmtNum(r.riskPercent, 2)}%) ·
+                            PnL {r.pnl != null ? fmtUsd(r.pnl) : "—"} · vs actual{" "}
                             {r.pnlDiffVsActual != null ? fmtUsd(r.pnlDiffVsActual) : "—"}
                             {r.targetProfit != null ? ` · target ${fmtUsd(r.targetProfit)}` : ""}
+                            {r.impliedLot != null ? ` · lot~${fmtNum(r.impliedLot, 2)}` : ""}
                           </span>
                         )}
                         {r.notes ? <div className="hint">{r.notes}</div> : null}

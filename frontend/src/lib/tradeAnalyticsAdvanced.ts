@@ -1,12 +1,13 @@
 /**
- * C8 — Advanced trade analytics: risk gap, what-if scenarios, MFE/MAE, exit durations.
- * All hypothetical outputs are labeled separately from actual journal results.
+ * C8/C8.1 — Advanced trade analytics: risk gap, what-if, MFE/MAE, exit durations.
+ * Hypothetical results are never treated as real journal outcomes.
  */
 
 import type { JournalTrade } from "./journal";
-import { resolveCurrencyPnL, rMultiple as rMultFn } from "./journal";
+import { resolveCurrencyPnL } from "./journal";
 import type { Bar } from "./types";
 import type { TickRecord } from "./tickTypes";
+import { tradingDayKey } from "./propRules";
 
 export type RiskComparison = {
   balanceBefore: number | null;
@@ -22,6 +23,7 @@ export type RiskComparison = {
   finalLot: number | null;
   leverage: number | null;
   marginUsed: number | null;
+  freeMarginBefore: number | null;
   currencyPnL: number | null;
   rMultiple: number | null;
 };
@@ -48,9 +50,7 @@ export function compareActualVsTargetRisk(t: JournalTrade): RiskComparison {
         ? (actualAmt / balance) * 100
         : null;
   const targetAmt =
-    balance != null && targetPct != null && balance > 0
-      ? (balance * targetPct) / 100
-      : null;
+    balance != null && targetPct != null && balance > 0 ? (balance * targetPct) / 100 : null;
   const stopDist =
     Number.isFinite(t.entryPrice) && Number.isFinite(t.stopPrice)
       ? Math.abs(t.entryPrice - t.stopPrice)
@@ -62,20 +62,21 @@ export function compareActualVsTargetRisk(t: JournalTrade): RiskComparison {
     targetRiskAmount: targetAmt,
     actualRiskAmount: actualAmt,
     actualRiskPercent: actualPct,
-    riskAmountDiff:
-      targetAmt != null && actualAmt != null ? actualAmt - targetAmt : null,
-    riskPercentDiff:
-      targetPct != null && actualPct != null ? actualPct - targetPct : null,
+    riskAmountDiff: targetAmt != null && actualAmt != null ? actualAmt - targetAmt : null,
+    riskPercentDiff: targetPct != null && actualPct != null ? actualPct - targetPct : null,
     entryPrice: t.entryPrice,
     stopPrice: t.stopPrice,
     stopDistance: stopDist,
     finalLot: t.finalLot ?? null,
     leverage: t.leverage ?? null,
     marginUsed: t.marginUsed ?? null,
+    freeMarginBefore: t.freeMarginBefore ?? null,
     currencyPnL: resolveCurrencyPnL(t),
     rMultiple: t.rMultiple,
   };
 }
+
+export type WhatIfValidation = "theoretical" | "margin_validated" | "unavailable";
 
 export type WhatIfScenarioId =
   | "actual"
@@ -90,6 +91,8 @@ export type WhatIfResult = {
   label: string;
   hypothetical: true;
   available: boolean;
+  /** theoretical = scaled math only; margin_validated = margin fields support size; unavailable = cannot compute */
+  validation: WhatIfValidation;
   unavailableReason?: string;
   riskAmount: number | null;
   riskPercent: number | null;
@@ -97,69 +100,117 @@ export type WhatIfResult = {
   rewardRisk: number | null;
   pnl: number | null;
   pnlDiffVsActual: number | null;
+  impliedLot: number | null;
   notes?: string;
 };
 
 /**
- * Scale actual P&L by risk ratio (same R path). Does not invent fills.
+ * If lot and margin scale linearly with risk, check free+used margin covers scaled requirement.
+ * Without margin/lot history → theoretical only (never claim executable).
  */
-export function whatIfScaleRisk(
+function classifyMarginForScaledRisk(
   t: JournalTrade,
-  newRiskAmount: number
-): WhatIfResult {
+  scale: number
+): { validation: WhatIfValidation; impliedLot: number | null; notes: string } {
+  const lot = t.finalLot;
+  const marginUsed = t.marginUsed;
+  const free = t.freeMarginBefore;
+  const impliedLot =
+    lot != null && Number.isFinite(lot) && scale > 0 ? lot * scale : null;
+
+  if (marginUsed == null || !Number.isFinite(marginUsed) || marginUsed < 0) {
+    return {
+      validation: "theoretical",
+      impliedLot,
+      notes:
+        "Theoretical only: historical marginUsed missing — larger size is not verified as executable.",
+    };
+  }
+  if (free == null || !Number.isFinite(free)) {
+    return {
+      validation: "theoretical",
+      impliedLot,
+      notes:
+        "Theoretical only: freeMarginBefore missing — cannot validate margin headroom.",
+    };
+  }
+  const required = marginUsed * scale;
+  const available = free + marginUsed; // release current, re-allocate (simplified)
+  if (required > available + 1e-6) {
+    return {
+      validation: "theoretical",
+      impliedLot,
+      notes: `Theoretical only: scaled margin ~${required.toFixed(2)} exceeds available ~${available.toFixed(2)}.`,
+    };
+  }
+  return {
+    validation: "margin_validated",
+    impliedLot,
+    notes:
+      "Margin check passed under linear margin scaling assumption (same instrument/leverage). Still hypothetical — not a real trade.",
+  };
+}
+
+export function whatIfScaleRisk(t: JournalTrade, newRiskAmount: number): WhatIfResult {
   const actual = compareActualVsTargetRisk(t);
   const actualPnl = actual.currencyPnL;
+  const base = {
+    id: "scale_risk" as const,
+    label: `Scale risk to ${newRiskAmount}`,
+    hypothetical: true as const,
+    riskAmount: newRiskAmount,
+    riskPercent:
+      actual.balanceBefore != null && actual.balanceBefore > 0
+        ? (newRiskAmount / actual.balanceBefore) * 100
+        : null,
+    targetProfit: null as number | null,
+    rewardRisk: t.rMultiple,
+    impliedLot: null as number | null,
+  };
+
+  if (!(newRiskAmount > 0) || !Number.isFinite(newRiskAmount)) {
+    return {
+      ...base,
+      available: false,
+      validation: "unavailable",
+      unavailableReason: "Invalid risk amount",
+      pnl: null,
+      pnlDiffVsActual: null,
+    };
+  }
   if (actual.actualRiskAmount == null || actual.actualRiskAmount <= 0) {
     return {
-      id: "scale_risk",
-      label: `Scale risk to ${newRiskAmount}`,
-      hypothetical: true,
+      ...base,
       available: false,
+      validation: "unavailable",
       unavailableReason: "Actual risk amount unavailable",
-      riskAmount: null,
-      riskPercent: null,
-      targetProfit: null,
-      rewardRisk: t.rMultiple,
       pnl: null,
       pnlDiffVsActual: null,
     };
   }
   if (actualPnl == null) {
     return {
-      id: "scale_risk",
-      label: `Scale risk to ${newRiskAmount}`,
-      hypothetical: true,
+      ...base,
       available: false,
+      validation: "unavailable",
       unavailableReason: "Actual currency P&L unavailable",
-      riskAmount: newRiskAmount,
-      riskPercent:
-        actual.balanceBefore != null && actual.balanceBefore > 0
-          ? (newRiskAmount / actual.balanceBefore) * 100
-          : null,
-      targetProfit: null,
-      rewardRisk: t.rMultiple,
       pnl: null,
       pnlDiffVsActual: null,
     };
   }
+
   const scale = newRiskAmount / actual.actualRiskAmount;
   const pnl = actualPnl * scale;
+  const margin = classifyMarginForScaledRisk(t, scale);
+
   return {
-    id: "scale_risk",
-    label: `Hypothetical risk $${newRiskAmount.toFixed(0)} (scaled)`,
-    hypothetical: true,
+    ...base,
     available: true,
-    riskAmount: newRiskAmount,
-    riskPercent:
-      actual.balanceBefore != null && actual.balanceBefore > 0
-        ? (newRiskAmount / actual.balanceBefore) * 100
-        : null,
-    targetProfit: null,
-    rewardRisk: t.rMultiple,
+    validation: margin.validation,
     pnl,
     pnlDiffVsActual: pnl - actualPnl,
-    notes:
-      "Assumes same R multiple and fill prices; does not verify margin for larger size.",
+    impliedLot: margin.impliedLot,
+    notes: margin.notes,
   };
 }
 
@@ -171,6 +222,7 @@ export function whatIfFixedRiskPercent(t: JournalTrade, pct: number): WhatIfResu
       label: `Risk ${pct}% of balance`,
       hypothetical: true,
       available: false,
+      validation: "unavailable",
       unavailableReason: "Balance at entry unavailable",
       riskAmount: null,
       riskPercent: pct,
@@ -178,9 +230,11 @@ export function whatIfFixedRiskPercent(t: JournalTrade, pct: number): WhatIfResu
       rewardRisk: t.rMultiple,
       pnl: null,
       pnlDiffVsActual: null,
+      impliedLot: null,
     };
   }
-  return whatIfScaleRisk(t, (bal * pct) / 100);
+  const scaled = whatIfScaleRisk(t, (bal * pct) / 100);
+  return { ...scaled, id: "fixed_risk_pct", label: `Risk ${pct}% of balance` };
 }
 
 export function whatIfFixedProfitPercent(t: JournalTrade, pct: number): WhatIfResult {
@@ -192,6 +246,7 @@ export function whatIfFixedProfitPercent(t: JournalTrade, pct: number): WhatIfRe
       label: `Target profit ${pct}%`,
       hypothetical: true,
       available: false,
+      validation: "unavailable",
       unavailableReason: "Balance at entry unavailable",
       riskAmount: null,
       riskPercent: null,
@@ -199,15 +254,16 @@ export function whatIfFixedProfitPercent(t: JournalTrade, pct: number): WhatIfRe
       rewardRisk: null,
       pnl: null,
       pnlDiffVsActual: null,
+      impliedLot: null,
     };
   }
   const target = (bal * pct) / 100;
-  // Only meaningful for wins as a target level; still report as hypothetical target
   return {
     id: "fixed_profit_pct",
     label: `Hypothetical target profit ${pct}% of balance`,
     hypothetical: true,
     available: true,
+    validation: "theoretical",
     riskAmount: t.actualRiskAmount ?? t.riskAmount ?? null,
     riskPercent: t.actualRiskPercent ?? t.riskPercent ?? null,
     targetProfit: target,
@@ -217,8 +273,9 @@ export function whatIfFixedProfitPercent(t: JournalTrade, pct: number): WhatIfRe
         : null,
     pnl: null,
     pnlDiffVsActual: actualPnl != null ? target - actualPnl : null,
+    impliedLot: null,
     notes:
-      "Target profit level only — not an actual trade outcome. Does not claim this target was hit.",
+      "Target profit level only — not an actual outcome and not margin-validated.",
   };
 }
 
@@ -226,6 +283,8 @@ export type ExcursionResult = {
   available: boolean;
   unavailableReason?: string;
   dataSource: "tick" | "bars_1s" | "none";
+  /** long mark-to-market uses Bid; short uses Ask (exit-side quotes). */
+  priceBasis: "bid_mtm_long_ask_mtm_short" | "ohlc_estimate" | "none";
   mfePrice: number | null;
   maePrice: number | null;
   mfePoints: number | null;
@@ -236,6 +295,7 @@ export type ExcursionResult = {
   postExitMfePoints: number | null;
   postExitMfeR: number | null;
   observationEnd: number | null;
+  observationBoundary: "america_new_york_calendar_day" | "utc_calendar_day" | "unknown";
   note?: string;
 };
 
@@ -245,42 +305,80 @@ function riskPoints(t: JournalTrade): number | null {
 }
 
 /**
- * MFE/MAE from entry→exit and post-exit to end of UTC calendar day (fallback).
- * Long: favorable = high-side, adverse = low-side using bar high/low or tick mid extremes.
+ * Last unix second still on the same calendar day as `unixSec` in `timeZone`
+ * (DST-aware via tradingDayKey / Intl).
+ */
+export function endOfZoneCalendarDayUnix(
+  unixSec: number,
+  timeZone: string
+): number {
+  const key = tradingDayKey(unixSec, timeZone, 0);
+  let lo = Math.floor(unixSec);
+  let hi = lo + 48 * 3600;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi + 1) / 2);
+    if (tradingDayKey(mid, timeZone, 0) === key) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+/**
+ * MFE/MAE entry→exit and post-exit to end of zone calendar day.
+ *
+ * Tick mark-to-market (exit-side):
+ * - Long: Bid (sell side)
+ * - Short: Ask (buy-to-cover side)
+ *
+ * Entry price on the journal is already the execution fill (Ask long / Bid short from C2/C3).
+ * 1s OHLC is high/low estimate only — intrabar order unknown.
  */
 export function computeExcursion(
   t: JournalTrade,
   barsDuring: Bar[],
   barsAfter: Bar[],
   ticksDuring?: TickRecord[] | null,
-  ticksAfter?: TickRecord[] | null
+  ticksAfter?: TickRecord[] | null,
+  opts?: { postExitTimeZone?: string }
 ): ExcursionResult {
   const risk = riskPoints(t);
   const long = t.side === "long";
   const entry = t.entryPrice;
+  const tz = opts?.postExitTimeZone?.trim() || "America/New_York";
+  const zoneEnd = endOfZoneCalendarDayUnix(t.exitTime, tz);
+  const boundaryLabel =
+    tz === "UTC" || tz === "Etc/UTC"
+      ? ("utc_calendar_day" as const)
+      : tz === "America/New_York"
+        ? ("america_new_york_calendar_day" as const)
+        : ("unknown" as const);
 
   let dataSource: ExcursionResult["dataSource"] = "none";
+  let priceBasis: ExcursionResult["priceBasis"] = "none";
   let mfePrice: number | null = null;
   let maePrice: number | null = null;
 
   const useTicks = ticksDuring && ticksDuring.length > 0;
   if (useTicks) {
     dataSource = "tick";
+    priceBasis = "bid_mtm_long_ask_mtm_short";
     for (const tk of ticksDuring!) {
+      if (!Number.isFinite(tk.time) || !Number.isFinite(tk.bid) || !Number.isFinite(tk.ask)) continue;
+      if (tk.bid > tk.ask) continue;
       if (tk.time < t.entryTime || tk.time > t.exitTime) continue;
-      // Favorable/adverse using side-appropriate quotes when possible
-      const favPx = long ? tk.bid : tk.ask; // mark-to-market exit side
-      const advPx = long ? tk.bid : tk.ask;
+      // Exit-side mark-to-market only (consistent with closing the position)
+      const mtm = long ? tk.bid : tk.ask;
       if (long) {
-        if (mfePrice == null || favPx > mfePrice) mfePrice = favPx;
-        if (maePrice == null || advPx < maePrice) maePrice = advPx;
+        if (mfePrice == null || mtm > mfePrice) mfePrice = mtm;
+        if (maePrice == null || mtm < maePrice) maePrice = mtm;
       } else {
-        if (mfePrice == null || favPx < mfePrice) mfePrice = favPx;
-        if (maePrice == null || advPx > maePrice) maePrice = advPx;
+        if (mfePrice == null || mtm < mfePrice) mfePrice = mtm;
+        if (maePrice == null || mtm > maePrice) maePrice = mtm;
       }
     }
   } else if (barsDuring.length) {
     dataSource = "bars_1s";
+    priceBasis = "ohlc_estimate";
     for (const b of barsDuring) {
       if (b.time < t.entryTime || b.time > t.exitTime) continue;
       if (long) {
@@ -298,6 +396,7 @@ export function computeExcursion(
       available: false,
       unavailableReason: "No 1s or tick data for trade window",
       dataSource: "none",
+      priceBasis: "none",
       mfePrice: null,
       maePrice: null,
       mfePoints: null,
@@ -308,6 +407,7 @@ export function computeExcursion(
       postExitMfePoints: null,
       postExitMfeR: null,
       observationEnd: null,
+      observationBoundary: boundaryLabel,
     };
   }
 
@@ -316,21 +416,23 @@ export function computeExcursion(
   const maePoints =
     maePrice != null ? (long ? entry - maePrice : maePrice - entry) : null;
 
+  // Clamp post-exit samples to zone day end
   let postExitMfePrice: number | null = null;
   const afterTicks = ticksAfter && ticksAfter.length > 0;
   if (afterTicks) {
     for (const tk of ticksAfter!) {
-      if (tk.time <= t.exitTime) continue;
-      const px = long ? tk.bid : tk.ask;
+      if (!Number.isFinite(tk.time) || tk.time <= t.exitTime || tk.time > zoneEnd) continue;
+      if (!Number.isFinite(tk.bid) || !Number.isFinite(tk.ask) || tk.bid > tk.ask) continue;
+      const mtm = long ? tk.bid : tk.ask;
       if (long) {
-        if (postExitMfePrice == null || px > postExitMfePrice) postExitMfePrice = px;
+        if (postExitMfePrice == null || mtm > postExitMfePrice) postExitMfePrice = mtm;
       } else {
-        if (postExitMfePrice == null || px < postExitMfePrice) postExitMfePrice = px;
+        if (postExitMfePrice == null || mtm < postExitMfePrice) postExitMfePrice = mtm;
       }
     }
   } else {
     for (const b of barsAfter) {
-      if (b.time <= t.exitTime) continue;
+      if (b.time <= t.exitTime || b.time > zoneEnd) continue;
       if (long) {
         if (postExitMfePrice == null || b.high > postExitMfePrice) postExitMfePrice = b.high;
       } else {
@@ -346,16 +448,10 @@ export function computeExcursion(
         : entry - postExitMfePrice
       : null;
 
-  const observationEnd =
-    barsAfter.length > 0
-      ? barsAfter[barsAfter.length - 1]!.time
-      : barsDuring.length
-        ? barsDuring[barsDuring.length - 1]!.time
-        : t.exitTime;
-
   return {
     available: true,
     dataSource,
+    priceBasis,
     mfePrice,
     maePrice,
     mfePoints,
@@ -366,12 +462,13 @@ export function computeExcursion(
     postExitMfePoints,
     postExitMfeR:
       postExitMfePoints != null && risk ? postExitMfePoints / risk : null,
-    observationEnd,
+    observationEnd: zoneEnd,
+    observationBoundary: boundaryLabel,
     note:
       dataSource === "bars_1s"
-        ? "Excursion estimated from 1s OHLC high/low (intrabar order unknown)."
+        ? "Excursion estimated from 1s OHLC high/low (intrabar order unknown). Post-exit window ends at America/New_York calendar day (DST-aware), not exchange session close."
         : dataSource === "tick"
-          ? "Excursion from tick Bid/Ask mark-to-market."
+          ? "Tick MTM uses Bid for long / Ask for short. Post-exit ends at America/New_York calendar day (DST-aware). Not actual captured profit."
           : undefined,
   };
 }
@@ -383,6 +480,7 @@ export type DurationBucketStats = {
   maxSec: number | null;
   avgSec: number | null;
   medianSec: number | null;
+  excludedInvalidTimestamps: number;
 };
 
 function median(xs: number[]): number | null {
@@ -393,16 +491,23 @@ function median(xs: number[]): number | null {
 }
 
 function durationSec(t: JournalTrade): number | null {
-  if (t.durationSeconds != null && Number.isFinite(t.durationSeconds)) return t.durationSeconds;
-  const d = t.exitTime - t.entryTime;
-  return Number.isFinite(d) ? Math.max(0, d) : null;
+  if (
+    t.durationSeconds != null &&
+    Number.isFinite(t.durationSeconds) &&
+    t.durationSeconds >= 0
+  ) {
+    return t.durationSeconds;
+  }
+  if (!Number.isFinite(t.entryTime) || !Number.isFinite(t.exitTime)) return null;
+  if (t.exitTime < t.entryTime) return null;
+  return Math.max(0, t.exitTime - t.entryTime);
 }
 
 function isBreakeven(t: JournalTrade): boolean {
   const pnl = resolveCurrencyPnL(t);
   if (pnl != null && Math.abs(pnl) < 1e-8) return true;
   if (t.rMultiple != null && Math.abs(t.rMultiple) < 1e-8) return true;
-  if (Math.abs(t.pnlPoints) < 1e-8) return true;
+  if (Number.isFinite(t.pnlPoints) && Math.abs(t.pnlPoints) < 1e-8) return true;
   return false;
 }
 
@@ -414,9 +519,13 @@ export function durationStatsByExit(trades: JournalTrade[]): DurationBucketStats
     breakeven: [],
     all: [],
   };
+  let excluded = 0;
   for (const t of trades) {
     const d = durationSec(t);
-    if (d == null) continue;
+    if (d == null) {
+      excluded++;
+      continue;
+    }
     buckets.all!.push(d);
     if (isBreakeven(t)) {
       buckets.breakeven!.push(d);
@@ -426,13 +535,17 @@ export function durationStatsByExit(trades: JournalTrade[]): DurationBucketStats
     else if (t.reason === "sl") buckets.sl!.push(d);
     else buckets.manual!.push(d);
   }
-  const pack = (reason: DurationBucketStats["reason"], xs: number[]): DurationBucketStats => ({
+  const pack = (
+    reason: DurationBucketStats["reason"],
+    xs: number[]
+  ): DurationBucketStats => ({
     reason,
     count: xs.length,
     minSec: xs.length ? Math.min(...xs) : null,
     maxSec: xs.length ? Math.max(...xs) : null,
     avgSec: xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null,
     medianSec: median(xs),
+    excludedInvalidTimestamps: excluded,
   });
   return [
     pack("all", buckets.all!),
@@ -443,7 +556,6 @@ export function durationStatsByExit(trades: JournalTrade[]): DurationBucketStats
   ];
 }
 
-/** Aggregate risk gap across filtered trades (samples with both target and actual). */
 export function aggregateRiskGap(trades: JournalTrade[]): {
   samples: number;
   avgTargetPct: number | null;
@@ -463,7 +575,8 @@ export function aggregateRiskGap(trades: JournalTrade[]): {
     if (c.targetRiskAmount != null) targetAmts.push(c.targetRiskAmount);
     if (c.actualRiskAmount != null) actualAmts.push(c.actualRiskAmount);
   }
-  const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+  const avg = (xs: number[]) =>
+    xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
   const samples = trades.filter((t) => {
     const c = compareActualVsTargetRisk(t);
     return c.targetRiskPercent != null && c.actualRiskPercent != null;

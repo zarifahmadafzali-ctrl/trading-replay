@@ -619,7 +619,13 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
             <Card label="Longest" value={formatDuration(summary.maxDurationSec)} />
           </div>
           <h3>Duration by exit type</h3>
-          <p className="hint">Separate min/max/avg for TP, SL, Breakeven, and Manual (respects current filters).</p>
+          <p className="hint">
+            Separate min/max/avg for TP, SL, Breakeven, and Manual (respects current filters). Invalid
+            timestamps excluded
+            {durationByExit[0]?.excludedInvalidTimestamps
+              ? ` (${durationByExit[0].excludedInvalidTimestamps} trades)`
+              : ""}.
+          </p>
           <Table
             headers={["Exit", "Count", "Min", "Max", "Avg", "Median"]}
             rows={durationByExit.map((r) => [
