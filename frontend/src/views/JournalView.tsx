@@ -228,6 +228,7 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
             available: false,
             unavailableReason: "Could not load market data for excursion",
             dataSource: "none",
+            priceBasis: "none",
             mfePrice: null,
             maePrice: null,
             mfePoints: null,
@@ -238,6 +239,7 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
             postExitMfePoints: null,
             postExitMfeR: null,
             observationEnd: null,
+            observationBoundary: "america_new_york_calendar_day",
           });
         }
       }

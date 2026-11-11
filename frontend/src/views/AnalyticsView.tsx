@@ -20,6 +20,7 @@ import {
   loadJournalForSession,
   JOURNAL_CHANGED_EVENT,
   downloadJournalCsv,
+  resolveCurrencyPnL,
   type JournalTrade,
 } from "../lib/journal";
 import {
@@ -44,7 +45,6 @@ import {
   whatIfFixedRiskPercent,
   whatIfFixedProfitPercent,
 } from "../lib/tradeAnalyticsAdvanced";
-import { resolveCurrencyPnL, type JournalTrade } from "../lib/journal";
 
 
 function smoothPath(points: { x: number; y: number }[]): string {
@@ -638,30 +638,37 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
   const riskGap = useMemo(() => aggregateRiskGap(filtered), [filtered]);
   const allowedDailyDdPct = useMemo(() => {
     for (const a of sessionAccounts) {
-      const phases = a.prop?.phases || [];
+      const phases = a.propProgram?.phases || [];
       for (const ph of phases) {
         const v = ph.rules?.dailyLossLimitPct;
         if (v != null && Number.isFinite(v)) return Number(v);
       }
     }
-    return null;
-  }, [sessionAccounts]);
-  const allowedMaxDdPct = useMemo(() => {
-    for (const a of sessionAccounts) {
-      const trail = a.trailingDrawdownPercent;
-      if (trail != null && Number.isFinite(trail)) return Number(trail);
-      const phases = a.prop?.phases || [];
-      for (const ph of phases) {
-        const rules = ph.rules as Record<string, unknown> | undefined;
-        const v =
-          rules?.maxDrawdownPct ??
-          rules?.accountDrawdownPct ??
-          rules?.maxLossPct;
-        if (v != null && Number.isFinite(Number(v))) return Number(v);
-      }
+    for (const s of sessions) {
+      const v = s.propFirm?.dailyDdPercent;
+      if (v != null && Number.isFinite(v)) return Number(v);
     }
     return null;
-  }, [sessionAccounts]);
+  }, [sessionAccounts, sessions]);
+  const allowedMaxDdPct = useMemo(() => {
+    for (const a of sessionAccounts) {
+      const phases = a.propProgram?.phases || [];
+      for (const ph of phases) {
+        const v = ph.rules?.maxOverallLossPct;
+        if (v != null && Number.isFinite(v)) return Number(v);
+      }
+    }
+    for (const s of sessions) {
+      const pf = s.propFirm;
+      if (!pf) continue;
+      const v =
+        pf.overallDdPercent ??
+        pf.trailingDrawdownPercent ??
+        pf.staticDrawdownPercent;
+      if (v != null && Number.isFinite(v)) return Number(v);
+    }
+    return null;
+  }, [sessionAccounts, sessions]);
   const whatIfSample = useMemo(() => {
     // Aggregate hypothetical scale to 2% risk on trades that have balance+actual risk
     let n = 0;
