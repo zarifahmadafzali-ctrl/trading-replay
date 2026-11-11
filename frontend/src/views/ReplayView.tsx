@@ -273,6 +273,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const tfPanelRef = useRef<HTMLDivElement | null>(null);
   const indPanelRef = useRef<HTMLDivElement | null>(null);
   const sessionIdRef = useRef<string | null>(getActiveSessionId());
+  /** C4: position shape ids already written to journal this session (sync dedupe). */
+  const journaledPositionIdsRef = useRef<Set<string>>(new Set());
   /** Stale async Load 1s / cache reads must not overwrite newer requests (v3.23.0). */
   const loadGenRef = useRef(0);
   const playLenRef = useRef(0);
@@ -1129,6 +1131,13 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   }
 
   async function handlePositionClosed(closed: ClosedPosition) {
+    // C4: sync guard — same position cannot journal twice (seek / double callback).
+    if (journaledPositionIdsRef.current.has(closed.id)) {
+      auditJournalEvent("position_closed_skip_duplicate", { positionId: closed.id, exitTime: closed.exitTime });
+      return;
+    }
+    journaledPositionIdsRef.current.add(closed.id);
+
     const note = `auto-${closed.reason} · ${closed.pnlPoints >= 0 ? "+" : ""}${closed.pnlPoints.toFixed(2)} pts`;
     const snap = (closed.riskSnapshot || lastRiskSnapshotRef.current) as Record<string, unknown> | null;
     const meta = sessionMeta ? ensureSessionAccounts(sessionMeta) : null;
@@ -1152,9 +1161,14 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         : null;
     const propSnap = (snap as any)?.propRuleSnapshot;
 
+    const entryBasis =
+      closed.side === "long" ? "long_entry_ask_or_bar" : "short_entry_bid_or_bar";
+    const exitBasis =
+      closed.side === "long" ? "long_exit_bid_or_bar" : "short_exit_ask_or_bar";
     const localTrade = {
       id: `replay-${closed.id}-${closed.exitTime}`,
       tradeId: `replay-${closed.id}-${closed.exitTime}`,
+      positionId: closed.id,
       symbol,
       side: closed.side,
       orderType: closed.orderType,
@@ -1166,6 +1180,10 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       exitTime: closed.exitTime,
       reason: (closed.reason === "sl" || closed.reason === "tp" ? closed.reason : "manual") as "sl" | "tp" | "manual",
       pnlPoints: closed.pnlPoints,
+      grossPnlPoints: closed.pnlPoints,
+      netPnlPoints: closed.pnlPoints,
+      entryPriceBasis: entryBasis,
+      exitPriceBasis: exitBasis,
       rMultiple: rMultEarly,
       note,
       accountId: (snap?.accountId as string) || acc?.accountId,
@@ -1195,7 +1213,10 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       closeScreenshot: closed.screenshot,
       entryScreenshot: closed.entryScreenshot,
       fillStatus: "closed" as const,
-      entrySource: closed.orderType === "market" ? "market" : "pending_fill",
+      entrySource:
+        closed.orderType === "market"
+          ? "market_execution_price"
+          : "pending_fill_execution_price",
       accountType: (acc?.accountType as "personal" | "prop") || "personal",
       propFirmName: propSnap?.propFirmName || acc?.propFirmName,
       propProgramName: propSnap?.propProgramName || acc?.propProgramName,

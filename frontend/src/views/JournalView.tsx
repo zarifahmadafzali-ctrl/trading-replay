@@ -502,6 +502,36 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
                 <span>{durationLabel(selected.durationSeconds)}</span>
                 <span>Exit reason</span>
                 <span>{selected.reason.toUpperCase()}</span>
+                <span>Symbol</span>
+                <span>{selected.symbol}</span>
+                <span>Session</span>
+                <span>{selected.sessionId || sessionId || "—"}</span>
+                <span>Trade ID</span>
+                <span className="mono">{selected.tradeId || selected.id}</span>
+                <span>Position ID</span>
+                <span className="mono">{selected.positionId || "—"}</span>
+                <span>P&amp;L (pts)</span>
+                <span>
+                  {fmtNum(selected.netPnlPoints ?? selected.grossPnlPoints ?? selected.pnlPoints, 2)}
+                </span>
+                <span>R multiple</span>
+                <span>{fmtNum(selected.rMultiple, 2)}</span>
+                <span>Entry basis</span>
+                <span>{selected.entryPriceBasis || selected.entrySource || "—"}</span>
+                <span>Exit basis</span>
+                <span>{selected.exitPriceBasis || "—"}</span>
+                {selected.spreadAtEntry != null ? (
+                  <>
+                    <span>Spread @ entry</span>
+                    <span>{fmtNum(selected.spreadAtEntry, 4)}</span>
+                  </>
+                ) : null}
+                {selected.spreadAtExit != null ? (
+                  <>
+                    <span>Spread @ exit</span>
+                    <span>{fmtNum(selected.spreadAtExit, 4)}</span>
+                  </>
+                ) : null}
               </div>
             </section>
 

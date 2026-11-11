@@ -66,6 +66,20 @@ export type JournalTrade = {
 
   /** v3.19.0 extensions (optional for legacy rows) */
   tradeId?: string;
+  /** Chart position shape id — used for idempotent journal writes. */
+  positionId?: string;
+  /** Gross points P&L (entry/exit execution prices). */
+  grossPnlPoints?: number | null;
+  /** Net points if fees applied; else same as gross. */
+  netPnlPoints?: number | null;
+  /** Bid–Ask spread at entry when known (Tick Mode). */
+  spreadAtEntry?: number | null;
+  /** Bid–Ask spread at exit when known. */
+  spreadAtExit?: number | null;
+  /** long_entry_ask | short_entry_bid | bar_close | … */
+  entryPriceBasis?: string;
+  /** long_exit_bid | short_exit_ask | bar_close | … */
+  exitPriceBasis?: string;
   currencyPnL?: number | null;
   balanceAfter?: number | null;
   rewardAmount?: number | null;
@@ -118,6 +132,13 @@ export function normalizeJournalTrade(raw: Partial<JournalTrade> & Record<string
   return {
     id,
     tradeId: (raw.tradeId as string) || id,
+    positionId: raw.positionId ? String(raw.positionId) : undefined,
+    grossPnlPoints: numOrNull(raw.grossPnlPoints) ?? numOrNull(raw.pnlPoints),
+    netPnlPoints: numOrNull(raw.netPnlPoints) ?? numOrNull(raw.pnlPoints),
+    spreadAtEntry: numOrNull(raw.spreadAtEntry),
+    spreadAtExit: numOrNull(raw.spreadAtExit),
+    entryPriceBasis: raw.entryPriceBasis as string | undefined,
+    exitPriceBasis: raw.exitPriceBasis as string | undefined,
     symbol: String(raw.symbol || ""),
     side,
     orderType: String(raw.orderType || "market"),
@@ -215,6 +236,21 @@ export async function saveJournalForSession(sessionId: string | null, trades: Jo
  * Append a closed trade once. Idempotent on trade.id / tradeId.
  * Pending orders that never fill never call this.
  */
+/** In-flight keys to close the race between parallel close callbacks. */
+const _appendInflight = new Set<string>();
+
+function tradeDedupeKeys(t: JournalTrade): string[] {
+  const keys = [t.id, t.tradeId].filter(Boolean) as string[];
+  if (t.positionId) keys.push(`pos:${t.positionId}`);
+  // Legacy ids: replay-{positionId}-{exitTime}
+  for (const k of [t.id, t.tradeId]) {
+    if (!k) continue;
+    const m = /^replay-(.+)-(\d+)$/.exec(k);
+    if (m) keys.push(`pos:${m[1]}`);
+  }
+  return [...new Set(keys)];
+}
+
 export async function appendTradeAsync(trade: JournalTrade): Promise<JournalTrade[]> {
   const sessionId = trade.sessionId || getSessionStorageAdapter().getActiveSessionId();
   const normalized = normalizeJournalTrade({
@@ -223,25 +259,40 @@ export async function appendTradeAsync(trade: JournalTrade): Promise<JournalTrad
     tradeId: trade.tradeId || trade.id,
     createdAt: trade.createdAt ?? Date.now(),
     fillStatus: "closed",
+    grossPnlPoints: trade.grossPnlPoints ?? trade.pnlPoints,
+    netPnlPoints: trade.netPnlPoints ?? trade.pnlPoints,
   });
-  const prev = await loadJournalForSession(sessionId);
   const key = normalized.tradeId || normalized.id;
-  if (prev.some((t) => t.id === key || t.tradeId === key || t.id === normalized.id)) {
-    auditJournalEvent("journal_skip_duplicate", { id: key, sessionId });
-    return prev;
+  const inflightKey = `${sessionId || "legacy"}:${key}`;
+  if (_appendInflight.has(inflightKey)) {
+    auditJournalEvent("journal_skip_inflight", { id: key, sessionId });
+    return loadJournalForSession(sessionId);
   }
-  // v3.43.9: never drop trade rows (analytics/prop need full history).
-  // Images only are pruned in saveJournalForSession via pruneOldestImages.
-  const next = [normalized, ...prev];
-  await saveJournalForSession(sessionId, next);
-  auditJournalEvent("journal_persisted", {
-    id: key,
-    sessionId,
-    reason: normalized.reason,
-    side: normalized.side,
-    currencyPnL: normalized.currencyPnL,
-  });
-  return next;
+  _appendInflight.add(inflightKey);
+  try {
+    const prev = await loadJournalForSession(sessionId);
+    const newKeys = new Set(tradeDedupeKeys(normalized));
+    const dup = prev.some((t) => tradeDedupeKeys(t).some((k) => newKeys.has(k)));
+    if (dup) {
+      auditJournalEvent("journal_skip_duplicate", { id: key, sessionId, positionId: normalized.positionId });
+      return prev;
+    }
+    // v3.43.9: never drop trade rows (analytics/prop need full history).
+    // Images only are pruned in saveJournalForSession via pruneOldestImages.
+    const next = [normalized, ...prev];
+    await saveJournalForSession(sessionId, next);
+    auditJournalEvent("journal_persisted", {
+      id: key,
+      sessionId,
+      positionId: normalized.positionId,
+      reason: normalized.reason,
+      side: normalized.side,
+      currencyPnL: normalized.currencyPnL,
+    });
+    return next;
+  } finally {
+    _appendInflight.delete(inflightKey);
+  }
 }
 
 export function appendTrade(trade: JournalTrade): JournalTrade[] {
