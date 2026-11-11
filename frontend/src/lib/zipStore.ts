@@ -111,3 +111,87 @@ export function groupZipByDay(entries: ZipEntry[]): {
 
   return { packageJson, days, symbolHint };
 }
+
+/** CRC32 for ZIP local/central headers. */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+export function crc32(data: Uint8Array): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]!) & 0xff]! ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+/**
+ * Build a ZIP archive using stored (method 0) entries only.
+ * Suitable for journal backups with embedded image bytes.
+ */
+export function writeZipStored(files: { name: string; data: Uint8Array }[]): Uint8Array {
+  const enc = new TextEncoder();
+  const locals: Uint8Array[] = [];
+  const centrals: Uint8Array[] = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = f.name.replace(/^\/+/, "").replace(/\\/g, "/");
+    if (name.includes("..") || name.startsWith("/")) {
+      throw new Error(`Unsafe ZIP path: ${f.name}`);
+    }
+    const nameBytes = enc.encode(name);
+    const data = f.data;
+    const crc = crc32(data);
+    const local = new Uint8Array(30 + nameBytes.length + data.length);
+    const lv = new DataView(local.buffer);
+    lv.setUint32(0, 0x04034b50, true);
+    lv.setUint16(8, 0, true); // store
+    lv.setUint32(14, crc, true);
+    lv.setUint32(18, data.length, true);
+    lv.setUint32(22, data.length, true);
+    lv.setUint16(26, nameBytes.length, true);
+    local.set(nameBytes, 30);
+    local.set(data, 30 + nameBytes.length);
+    locals.push(local);
+
+    const cen = new Uint8Array(46 + nameBytes.length);
+    const cv = new DataView(cen.buffer);
+    cv.setUint32(0, 0x02014b50, true);
+    cv.setUint16(10, 0, true);
+    cv.setUint32(16, crc, true);
+    cv.setUint32(20, data.length, true);
+    cv.setUint32(24, data.length, true);
+    cv.setUint16(28, nameBytes.length, true);
+    cv.setUint32(42, offset, true);
+    cen.set(nameBytes, 46);
+    centrals.push(cen);
+    offset += local.length;
+  }
+  const centralStart = offset;
+  let centralSize = 0;
+  for (const c of centrals) centralSize += c.length;
+  const end = new Uint8Array(22);
+  const ev = new DataView(end.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(8, files.length, true);
+  ev.setUint16(10, files.length, true);
+  ev.setUint32(12, centralSize, true);
+  ev.setUint32(16, centralStart, true);
+  const total = offset + centralSize + 22;
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const l of locals) {
+    out.set(l, o);
+    o += l.length;
+  }
+  for (const c of centrals) {
+    out.set(c, o);
+    o += c.length;
+  }
+  out.set(end, o);
+  return out;
+}

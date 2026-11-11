@@ -10,6 +10,11 @@ import {
   type CloseReason,
 } from "../lib/journal";
 import {
+  downloadJournalBackupZip,
+  parseJournalBackupZip,
+  importJournalBackup,
+} from "../lib/journalBackup";
+import {
   renderHtfSnapshotToCanvas,
   normalizeJournalSnapshotConfig,
   DEFAULT_JOURNAL_SNAPSHOT_CONFIG,
@@ -357,6 +362,73 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
         <button type="button" onClick={() => downloadJournalCsv(filtered, "journal-export.csv")}>
           Export CSV
         </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            try {
+              downloadJournalBackupZip(filtered);
+            } catch (err) {
+              alert(`Backup failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }}
+        >
+          Export ZIP backup
+        </button>
+        <label className="import-btn" style={{ cursor: "pointer", display: "inline-flex", alignItems: "center" }}>
+          Import ZIP backup
+          <input
+            type="file"
+            accept=".zip,application/zip"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (!file) return;
+              void (async () => {
+                try {
+                  const buf = await file.arrayBuffer();
+                  const preview = await parseJournalBackupZip(buf);
+                  if (!preview.ok) {
+                    alert(`Invalid backup:\n${preview.errors.join("\n")}`);
+                    return;
+                  }
+                  const summary =
+                    `Trades: ${preview.trades.length}\n` +
+                    `Screenshots: ${preview.screenshotCount}\n` +
+                    `Sessions: ${preview.sessionIds.length ? preview.sessionIds.join(", ") : "(none)"}\n` +
+                    (preview.warnings.length ? `Warnings: ${preview.warnings.slice(0, 3).join("; ")}\n` : "") +
+                    `\nOK = MERGE (add missing)\nCancel = stop\n`;
+                  if (!window.confirm(summary + "Continue with MERGE?")) return;
+                  let mode: "merge" | "replace" = "merge";
+                  if (
+                    window.confirm(
+                      "Replace trades for sessions in this backup instead of merging?\n\nOK = REPLACE (destructive for those sessions)\nCancel = MERGE"
+                    )
+                  ) {
+                    mode = "replace";
+                    if (
+                      !window.confirm(
+                        "Confirm REPLACE: existing trades for the backup's session scope will be removed from this store."
+                      )
+                    ) {
+                      return;
+                    }
+                  }
+                  const result = await importJournalBackup(preview, mode, sessionId);
+                  await reload();
+                  alert(
+                    result.ok
+                      ? `Import ${result.mode}: added ${result.imported}, skipped ${result.skipped}, replaced ${result.replaced}, total ${result.totalAfter}`
+                      : `Import failed: ${result.errors.join("; ")}`
+                  );
+                } catch (err) {
+                  alert(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+                }
+              })();
+            }}
+          />
+        </label>
         <label className="import-btn" style={{ cursor: "pointer", display: "inline-flex", alignItems: "center" }}>
           Import CSV
           <input

@@ -23,6 +23,12 @@ import {
   type JournalTrade,
 } from "../lib/journal";
 import {
+  downloadJournalBackupZip,
+  downloadAnalyticsJson,
+  parseJournalBackupZip,
+  importJournalBackup,
+} from "../lib/journalBackup";
+import {
   ensureSessionAccounts,
   getActiveSessionId,
   getSession,
@@ -431,6 +437,71 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
         <button type="button" onClick={() => downloadJournalCsv(filtered, "analytics-trades.csv")}>
           Export CSV
         </button>
+        <button
+          type="button"
+          onClick={() => {
+            try {
+              downloadAnalyticsJson(filtered, "analytics-report.json");
+            } catch (err) {
+              alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }}
+        >
+          Export JSON report
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            try {
+              downloadJournalBackupZip(filtered);
+            } catch (err) {
+              alert(`Backup failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }}
+        >
+          Export ZIP backup
+        </button>
+        <label className="import-btn" style={{ cursor: "pointer", display: "inline-flex", alignItems: "center" }}>
+          Import Journal ZIP
+          <input
+            type="file"
+            accept=".zip,application/zip"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (!file) return;
+              void (async () => {
+                try {
+                  const buf = await file.arrayBuffer();
+                  const preview = await parseJournalBackupZip(buf);
+                  if (!preview.ok) {
+                    alert(`Invalid backup:\n${preview.errors.join("\n")}`);
+                    return;
+                  }
+                  if (
+                    !window.confirm(
+                      `Import Journal backup into Analytics source?\nTrades: ${preview.trades.length}\nScreenshots: ${preview.screenshotCount}\n\nMERGE only (OK).`
+                    )
+                  ) {
+                    return;
+                  }
+                  const sid = getSessionStorageAdapter().getActiveSessionId();
+                  const result = await importJournalBackup(preview, "merge", sid);
+                  // reload journal-driven analytics
+                  window.dispatchEvent(new Event("tr-journal-changed"));
+                  alert(
+                    result.ok
+                      ? `Imported ${result.imported}, skipped ${result.skipped}. Analytics will refresh from Journal.`
+                      : `Import failed: ${result.errors.join("; ")}`
+                  );
+                } catch (err) {
+                  alert(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+                }
+              })();
+            }}
+          />
+        </label>
         <label>
           Range
           <select
