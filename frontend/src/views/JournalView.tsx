@@ -31,9 +31,6 @@ import {
   type JournalSnapshotConfig,
 } from "../lib/journalSnapshots";
 import {
-  getActiveSessionId,
-  getSession,
-  upsertSession,
   SESSION_CHANGED_EVENT,
   type SessionMeta,
 } from "../lib/sessionStore";
@@ -108,7 +105,7 @@ function HtfSnapshotCanvas({ snap }: { snap: HtfSnapshot }) {
 export function JournalView(_props: { backendOnline?: boolean | null }) {
   const [trades, setTrades] = useState<JournalTrade[]>([]);
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
-  const [sessionId, setSessionId] = useState<string | null>(() => getActiveSessionId());
+  const [sessionId, setSessionId] = useState<string | null>(() => getSessionStorageAdapter().getActiveSessionId());
   const [excursion, setExcursion] = useState<ExcursionResult | null>(null);
   const [whatIfRisk, setWhatIfRisk] = useState(100);
   const [selected, setSelected] = useState<JournalTrade | null>(null);
@@ -116,7 +113,7 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const sid = getActiveSessionId();
+      const sid = getSessionStorageAdapter().getActiveSessionId();
       if (!sid) return;
       const meta = await getSessionStorageAdapter().getSession(sid);
       if (!cancelled && meta) {
@@ -127,7 +124,7 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
   }, []);
   async function saveSnapCfg(next: JournalSnapshotConfig) {
     setSnapCfg(next);
-    const sid = getActiveSessionId();
+    const sid = getSessionStorageAdapter().getActiveSessionId();
     if (!sid) return;
     const meta = await getSessionStorageAdapter().getSession(sid);
     if (!meta) return;
@@ -146,7 +143,7 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
   const [fPhase, setFPhase] = useState("all");
 
   const reload = useCallback(async () => {
-    const sid = getActiveSessionId();
+    const sid = getSessionStorageAdapter().getActiveSessionId();
     setSessionId(sid);
     const [rows, sess] = await Promise.all([loadJournalForSession(sid), getSessionStorageAdapter().listSessions()]);
     setTrades(rows);
@@ -162,7 +159,7 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
     ) {
       return;
     }
-    const sid = trade.sessionId || sessionId || getActiveSessionId();
+    const sid = trade.sessionId || sessionId || getSessionStorageAdapter().getActiveSessionId();
     await deleteJournalTrade(trade.tradeId || trade.id, sid);
     setSelected(null);
     await reload();

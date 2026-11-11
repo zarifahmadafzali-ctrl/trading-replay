@@ -44,21 +44,17 @@ import { aggregateVisible } from "../lib/replay";
 import { useReplayHotkeys } from "../lib/useReplayHotkeys";
 import { loadReplaySession, saveReplaySession, type ReplayDataSource } from "../lib/replaySession";
 import {
-  getActiveSessionId,
-  getRuntime,
-  getSession,
-  getSessionShapes,
   migrateLegacyToSessionIfNeeded,
-  putRuntime,
-  putSessionShapes,
   SESSION_CHANGED_EVENT,
-  setActiveSessionId,
-  upsertSession,
   defaultRuntime,
   ensureSessionAccounts,
   getActiveAccount,
   type SessionMeta,
 } from "../lib/sessionStore";
+import {
+  getSessionStorageAdapter,
+  onSessionStorageAdapterReady,
+} from "../lib/storageAdapter";
 import { isRiskMode, type RiskMode,
   applyRealizedPnL,
   calculateRisk,
@@ -183,12 +179,12 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [dataSource, setDataSource] = useState<ReplayDataSource>(() => saved?.dataSource ?? "demo");
   // v3.20.2: do not enter "Restoring…" when there is no active session (market data is global).
   const [message, setMessage] = useState(() => {
-    const hasActive = !!getActiveSessionId();
+    const hasActive = !!getSessionStorageAdapter().getActiveSessionId();
     if (hasActive && saved && saved.dataSource !== "demo") return "Restoring previous session…";
     return saved?.message ?? "Demo data · Sync then Load";
   });
   const [loading, setLoading] = useState(() => {
-    const hasActive = !!getActiveSessionId();
+    const hasActive = !!getSessionStorageAdapter().getActiveSessionId();
     return !!(hasActive && saved && saved.dataSource !== "demo");
   });
   const [drawTool, setDrawTool] = useState<DrawTool>(() => (saved?.drawTool as DrawTool) || "crosshair");
@@ -273,7 +269,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const restoredCursorRef = useRef<number>(saved?.cursor ?? 800);
   const tfPanelRef = useRef<HTMLDivElement | null>(null);
   const indPanelRef = useRef<HTMLDivElement | null>(null);
-  const sessionIdRef = useRef<string | null>(getActiveSessionId());
+  const sessionIdRef = useRef<string | null>(getSessionStorageAdapter().getActiveSessionId());
   /** C4: position shape ids already written to journal this session (sync dedupe). */
   const journaledPositionIdsRef = useRef<Set<string>>(new Set());
   /** positionId → entry memo captured before journal close */
@@ -329,7 +325,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     const sid = sessionIdRef.current;
     // Only persist once bootstrap has fully applied this session's shapes
     if (!sid || !sessionReady || loadedSessionRef.current !== sid) return;
-    void putSessionShapes(sid, shapes);
+    void getSessionStorageAdapter().putShapes(sid, shapes);
     try {
       localStorage.setItem(`tr-shapes-${symbol}`, JSON.stringify(shapes));
     } catch { /* */ }
@@ -374,15 +370,26 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         return;
       }
       sessionIdRef.current = id;
-      setActiveSessionId(id);
-      const meta = await getSession(id);
-      const rt = (await getRuntime(id)) || defaultRuntime(id);
-      const sh = (await getSessionShapes(id)) as Shape[];
+      getSessionStorageAdapter().setActiveSessionId(id);
+      const meta = await getSessionStorageAdapter().getSession(id);
+      const rt = (await getSessionStorageAdapter().getRuntime(id)) || defaultRuntime(id);
+      const sh = (await getSessionStorageAdapter().getShapes(id)) as Shape[];
       if (cancelled) return;
+      if (!meta) {
+        // Desktop previously wrote sessions to SQLite while Replay read IndexedDB — treat as missing.
+        setSessionMeta(null);
+        setSessionLabel("");
+        setMessage(
+          `Session id is active but metadata was not found in storage. Re-open the session from Backtest Sessions.`
+        );
+        setSessionReady(true);
+        setLoading(false);
+        return;
+      }
       if (meta) {
         const full = ensureSessionAccounts(meta);
         if (JSON.stringify(full) !== JSON.stringify(meta)) {
-          void upsertSession(full);
+          void getSessionStorageAdapter().upsertSession(full);
         }
         setSessionMeta(full);
         setSymbol(full.symbol);
@@ -468,14 +475,19 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         }
       }
     }
-    void loadSession(getActiveSessionId());
+    void loadSession(getSessionStorageAdapter().getActiveSessionId());
     const onChange = (ev: Event) => {
       const sid = (ev as CustomEvent).detail?.sessionId as string | null;
       void loadSession(sid);
     };
     window.addEventListener(SESSION_CHANGED_EVENT, onChange);
+    // Desktop: SQLite adapter may register after first paint — reload active session then.
+    const offAdapterReady = onSessionStorageAdapterReady(() => {
+      void loadSession(getSessionStorageAdapter().getActiveSessionId());
+    });
     return () => {
       cancelled = true;
+      offAdapterReady();
       window.removeEventListener(SESSION_CHANGED_EVENT, onChange);
     };
   }, []);
@@ -516,10 +528,10 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       .then(async () => {
         if (gen !== runtimeSaveGenRef.current) return;
         if (sessionIdRef.current !== sid) return;
-        await putRuntime(payload);
+        await getSessionStorageAdapter().putRuntime(payload);
         // Keep shapes aligned with last runtime flush
         if (sessionIdRef.current === sid && loadedSessionRef.current === sid) {
-          await putSessionShapes(sid, shapesRefForUndo.current);
+          await getSessionStorageAdapter().putShapes(sid, shapesRefForUndo.current);
         }
       })
       .catch(() => {
@@ -565,10 +577,10 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     enqueueRuntimeSave();
     const sid = sessionIdRef.current;
     if (sid) {
-      void getSession(sid).then((meta) => {
+      void getSessionStorageAdapter().getSession(sid).then((meta) => {
         if (!meta) return;
         if (sessionIdRef.current !== sid) return;
-        void upsertSession({
+        void getSessionStorageAdapter().upsertSession({
           ...meta,
           symbol,
           start,
@@ -1508,7 +1520,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         });
         const nextMeta = { ...full, accounts: nextAccounts, updatedAt: Date.now() };
         setSessionMeta(nextMeta);
-        void upsertSession(nextMeta);
+        void getSessionStorageAdapter().upsertSession(nextMeta);
       }
     } catch {
       /* non-fatal */
@@ -1960,7 +1972,7 @@ const exitTickMode = useCallback(() => {
 
 
   useEffect(() => {
-    const sid = sessionMeta?.id || getActiveSessionId();
+    const sid = sessionMeta?.id || getSessionStorageAdapter().getActiveSessionId();
     let cancelled = false;
     void loadJournalForSession(sid).then((rows) => {
       if (cancelled) return;
@@ -1988,7 +2000,7 @@ const exitTickMode = useCallback(() => {
   useEffect(() => {
     const onAcc = (ev: Event) => {
       const detail = (ev as CustomEvent).detail as SessionMeta | undefined;
-      if (detail && detail.id === (sessionMeta?.id || getActiveSessionId())) {
+      if (detail && detail.id === (sessionMeta?.id || getSessionStorageAdapter().getActiveSessionId())) {
         setSessionMeta(ensureSessionAccounts(detail));
       }
     };

@@ -174,6 +174,14 @@ export function createSqliteSessionAdapter(driver: SqliteDriver): SessionStorage
 
     setActiveSessionId(id: string | null): void {
       _activeSessionCache = id;
+      // Mirror to localStorage so web-oriented helpers (sessionStore.getActiveSessionId)
+      // and any code that still reads ACTIVE_KEY stay consistent on desktop.
+      try {
+        if (id) localStorage.setItem("tr-active-session-id", id);
+        else localStorage.removeItem("tr-active-session-id");
+      } catch {
+        /* */
+      }
       void ensure().then(() =>
         driver.exec("INSERT OR REPLACE INTO app_kv (key, value) VALUES (?, ?)", [
           KV_ACTIVE_SESSION,
@@ -192,6 +200,12 @@ export async function hydrateActiveSessionId(driver: SqliteDriver): Promise<stri
   const rows = await driver.query("SELECT * FROM app_kv WHERE key = ?", [KV_ACTIVE_SESSION]);
   const v = rows[0]?.value;
   _activeSessionCache = typeof v === "string" && v.length ? v : null;
+  try {
+    if (_activeSessionCache) localStorage.setItem("tr-active-session-id", _activeSessionCache);
+    else localStorage.removeItem("tr-active-session-id");
+  } catch {
+    /* */
+  }
   return _activeSessionCache;
 }
 
