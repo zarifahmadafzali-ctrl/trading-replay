@@ -55,6 +55,14 @@ export type SessionRuntime = {
   updatedAt: number;
   /** Optional lightweight trade/workspace event lines (v3.25.0, capped). Not a second Journal. */
   workspaceLog?: { t: number; text: string }[];
+  /** C5: "seconds" | "tick" — optional for older runtimes. */
+  replayResolution?: "seconds" | "tick";
+  /** C5: tick index within tickDay when resolution is tick. */
+  tickIndex?: number;
+  /** C5: UTC day YYYY-MM-DD for the active tick window. */
+  tickDay?: string | null;
+  /** C5: monotonic write stamp used by the client to drop stale async saves. */
+  saveGeneration?: number;
 };
 
 const DB_NAME = "trading-replay-sessions";

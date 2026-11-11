@@ -275,6 +275,11 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const sessionIdRef = useRef<string | null>(getActiveSessionId());
   /** C4: position shape ids already written to journal this session (sync dedupe). */
   const journaledPositionIdsRef = useRef<Set<string>>(new Set());
+  /** C5: latest-wins serial for async putRuntime. */
+  const runtimeSaveGenRef = useRef(0);
+  const runtimeWriteChainRef = useRef(Promise.resolve());
+  /** C5: pending tick restore after bars load. */
+  const pendingTickRestoreRef = useRef<{ day: string; index: number } | null>(null);
   /** Stale async Load 1s / cache reads must not overwrite newer requests (v3.23.0). */
   const loadGenRef = useRef(0);
   const playLenRef = useRef(0);
@@ -368,14 +373,35 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       setTimeframeSeconds(rt.timeframeSeconds);
       setCustomTfs(rt.customTfs || []);
       setReplayStepSeconds(Math.max(1, rt.replayStepSeconds || 1));
-      setCursor(Math.max(1, rt.cursor || 1));
-      restoredCursorRef.current = Math.max(1, rt.cursor || 1);
+      const restoredCursor = Math.max(1, rt.cursor || 1);
+      setCursor(restoredCursor);
+      restoredCursorRef.current = restoredCursor;
+      prevCursorRef.current = restoredCursor;
       setSpeed(rt.speed || 1);
       setFollowPrice(!!rt.followPrice);
       setOrderType((rt.orderType as OrderType) || "market");
       setDrawTool((rt.drawTool as DrawTool) || "crosshair");
       setActiveIndicatorIds(rt.activeIndicatorIds || []);
       setShapes(Array.isArray(sh) ? sh : []);
+      // C5: reset tick engine state for this session (avoid cross-session bleed)
+      setTickWindow([]);
+      setTickDay(null);
+      setTickIndex(0);
+      tickIndexRef.current = 0;
+      prevTickIndexRef.current = -1;
+      tickWindowRef.current = [];
+      journaledPositionIdsRef.current = new Set();
+      const wantTick = rt.replayResolution === "tick";
+      setReplayResolution(wantTick ? "tick" : "seconds");
+      if (wantTick && rt.tickDay) {
+        pendingTickRestoreRef.current = {
+          day: rt.tickDay,
+          index: Math.max(0, rt.tickIndex || 0),
+        };
+      } else {
+        pendingTickRestoreRef.current = null;
+        setReplayResolution("seconds");
+      }
       setPlaying(false);
       setMessage(rt.message || (meta ? meta.name : "Session loaded"));
       loadedSessionRef.current = id;
@@ -388,8 +414,20 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           if (local.bars.length) {
             setBaseBars(local.bars);
             setDataSource("loaded");
-            const c = Math.min(Math.max(1, rt.cursor || 1), local.bars.length);
+            let c = Math.min(Math.max(1, rt.cursor || 1), local.bars.length);
+            // C5: prefer exact replayTimeUnix when bars are available
+            const unix = rt.replayTimeUnix;
+            if (unix != null && Number.isFinite(unix) && unix > 0) {
+              let best = 0;
+              for (let i = 0; i < local.bars.length; i++) {
+                if (local.bars[i]!.time <= unix) best = i;
+                else break;
+              }
+              c = Math.min(local.bars.length, Math.max(1, best + 1));
+            }
             setCursor(Math.max(1, c));
+            prevCursorRef.current = Math.max(1, c);
+            restoredCursorRef.current = Math.max(1, c);
             if (local.missingDays.length) {
               setMessage(
                 `Session restore · ${local.fromCacheDays.length} local day(s), missing ${local.missingDays.length} (${local.missingDays.slice(0, 3).join(", ")}${local.missingDays.length > 3 ? "…" : ""})`
@@ -446,7 +484,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     const sid = sessionIdRef.current;
     if (sid) {
       const barT = baseBars[Math.max(0, cursor - 1)]?.time;
-      void putRuntime({
+      const gen = ++runtimeSaveGenRef.current;
+      const payload = {
         sessionId: sid,
         timeframeSeconds,
         customTfs,
@@ -462,9 +501,24 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         message,
         playing: false,
         updatedAt: Date.now(),
-      });
+        replayResolution: replayResolution === "tick" ? ("tick" as const) : ("seconds" as const),
+        tickIndex: replayResolution === "tick" ? tickIndex : 0,
+        tickDay: replayResolution === "tick" ? tickDay : null,
+        saveGeneration: gen,
+      };
+      // C5: serialize runtime writes; skip if a newer generation superseded this one
+      runtimeWriteChainRef.current = runtimeWriteChainRef.current
+        .then(async () => {
+          if (gen !== runtimeSaveGenRef.current) return;
+          if (sessionIdRef.current !== sid) return;
+          await putRuntime(payload);
+        })
+        .catch(() => {
+          /* keep last valid persisted state */
+        });
       void getSession(sid).then((meta) => {
         if (!meta) return;
+        if (sessionIdRef.current !== sid) return;
         void upsertSession({
           ...meta,
           symbol,
@@ -492,6 +546,10 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     message,
     activeIndicatorIds,
     workspaceLog,
+    replayResolution,
+    tickIndex,
+    tickDay,
+    baseBars,
   ]);
 
   // Keep playback loop deps minimal: length/step/cursor read from refs (C1.2).
@@ -1771,7 +1829,36 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     );
   }, [applyTickWindow, baseBars, cursor, loadTickDay, symbol]);
 
-  const exitTickMode = useCallback(() => {
+  
+  // C5: restore Tick mode after session + bars load without replaying prior ticks
+  useEffect(() => {
+    const pending = pendingTickRestoreRef.current;
+    if (!pending || !sessionReady || !baseBars.length) return;
+    let cancelled = false;
+    void (async () => {
+      const loaded = await loadTickDay(pending.day);
+      if (cancelled) return;
+      if (!loaded) {
+        pendingTickRestoreRef.current = null;
+        setReplayResolution("seconds");
+        setMessage("Tick state could not be restored · using 1s step");
+        return;
+      }
+      if (sessionIdRef.current !== loadedSessionRef.current) return;
+      const idx = Math.max(0, Math.min(pending.index, Math.max(0, loaded.ticks.length - 1)));
+      applyTickWindow(loaded.ticks, pending.day, idx, loaded.symbolUsed);
+      prevTickIndexRef.current = idx;
+      tickIndexRef.current = idx;
+      setReplayResolution("tick");
+      pendingTickRestoreRef.current = null;
+      setMessage(`Restored Tick Replay · ${pending.day} · index ${idx}`);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionReady, baseBars.length, loadTickDay, applyTickWindow]);
+
+const exitTickMode = useCallback(() => {
     setPlaying(false);
     const t = tickWindowRef.current[tickIndexRef.current]?.time;
     if (t != null) syncBarsCursorFromTickTime(t);
