@@ -62,6 +62,7 @@ import {
   type PositionPart,
 } from "../lib/positionModel";
 import { runPositionBars, manualClose as engineManualClose } from "../lib/positionEngine";
+import { runPositionTicks, type TickLike } from "../lib/positionEngineTick";
 import { drawPosition } from "../lib/positionRender";
 import {
   freezeSizing,
@@ -327,6 +328,7 @@ export function Chart({
   /** Ordered 1s bars from previous cursor → current (inclusive of new bar).
    *  When Replay Step > 1s, this may contain many bars; each is evaluated for SL/TP. */
   execBars = null,
+  execTicks = null,
   followPrice = false,
   shapes,
   onShapesChange,
@@ -354,6 +356,8 @@ export function Chart({
   replayBar?: Bar | null;
   /** 1s bars to evaluate for SL/TP this tick (step jumps). Falls back to [replayBar]. */
   execBars?: Bar[] | null;
+  /** C2: tick Bid/Ask stream for this step; null keeps 1s bar engine. */
+  execTicks?: TickLike[] | null;
   /** If true, keep latest bar near the right edge while playing */
   followPrice?: boolean;
   shapes: Shape[];
@@ -2385,8 +2389,92 @@ export function Chart({
 
   // Execution engine: exact 1-second bars only — never aggregated TF.
   // Order: (1) pending entry / stop-limit stages → (2) SL/TP on open only.
-  // Engine lives in positionEngine.ts — single source of truth (no duplicate inline loop).
+  // Engine: 1s OHLC (positionEngine) or C2 tick Bid/Ask (positionEngineTick).
   useEffect(() => {
+    const hasWork = shapesRef.current.some(
+      (s) =>
+        s.kind === "position" && (s.status === "open" || s.status === "pending")
+    );
+    if (!hasWork) return;
+
+    const tickSeq =
+      execTicks && execTicks.length
+        ? execTicks.filter(
+            (x) =>
+              Number.isFinite(x.time) &&
+              Number.isFinite(x.bid) &&
+              Number.isFinite(x.ask) &&
+              x.bid <= x.ask
+          )
+        : null;
+
+    if (tickSeq && tickSeq.length) {
+      const res = runPositionTicks(
+        shapesRef.current,
+        tickSeq,
+        {
+          onFill: (f) => {
+            const filled = f as PositionShape;
+            const fz = filled.sizing;
+            const forSnap = fz ? ({ ...filled, risk: lotOverrideRisk(fz) } as PositionShape) : filled;
+            const snap = captureRiskSnapshotRef.current?.(forSnap) ?? undefined;
+            return {
+              riskSnapshot: snap
+                ? {
+                    ...snap,
+                    ...(fz
+                      ? {
+                          riskMode: fz.mode ?? (snap as { riskMode?: unknown }).riskMode,
+                          lotFrozenAtConfirm: true,
+                          lotFrozenAt: fz.atTime,
+                          riskAmountAtConfirm: fz.riskAmountAtConfirm ?? null,
+                        }
+                      : {}),
+                  }
+                : undefined,
+              entryScreenshot: capturePositionScreenshot(filled) ?? undefined,
+            };
+          },
+          onClose: (s, px) => ({
+            screenshot: capturePositionScreenshot(s as PositionShape, px) ?? undefined,
+          }),
+          canFill: (s, bar) => {
+            const fn = canFillRef.current;
+            if (fn && !fn(s as PositionShape, bar)) return false;
+            const sz = (s as PositionShape).sizing;
+            if (sz && captureRiskSnapshotRef.current) {
+              const chk = captureRiskSnapshotRef.current({ ...(s as PositionShape), risk: lotOverrideRisk(sz) });
+              const verdict = checkFillLot(sz.lot, (chk as { finalLot?: number | null } | null)?.finalLot);
+              if (!verdict.ok) return { ok: false as const, reason: verdict.reason || "Cancelled · insufficient margin" };
+            }
+            return true;
+          },
+        },
+        { gapFill: true }
+      );
+      if (!res.mutated) return;
+      shapesRef.current = res.shapes as Shape[];
+      onShapesChangeRef.current(res.shapes as Shape[]);
+      for (const c of res.closed) {
+        onPositionClosedRef.current?.(c as unknown as ClosedPosition);
+      }
+      for (const e of res.events) {
+        window.dispatchEvent(new CustomEvent("tr-workspace-event", { detail: { text: e.text } }));
+      }
+      scheduleRedraw();
+      if (res.closed.length) {
+        setHint(
+          res.closed
+            .map((c) => `${String(c.side).toUpperCase()} ${String(c.reason).toUpperCase()} @ ${Number(c.exitPrice).toFixed(2)}`)
+            .join(" · ")
+        );
+      }
+      return;
+    }
+
+    // Tick mode with empty slice (e.g. step back): do not fall through to 1s OHLC engine.
+    if (execTicks !== null && execTicks !== undefined) return;
+
     const sequence: Bar[] =
       execBars && execBars.length
         ? execBars
@@ -2394,12 +2482,6 @@ export function Chart({
           ? [replayBar]
           : [];
     if (!sequence.length) return;
-
-    const hasWork = shapesRef.current.some(
-      (s) =>
-        s.kind === "position" && (s.status === "open" || s.status === "pending")
-    );
-    if (!hasWork) return;
 
     const res = runPositionBars(
       shapesRef.current,
@@ -2465,7 +2547,7 @@ export function Chart({
           .join(" · ")
       );
     }
-  }, [marketPrice, marketTime, replayBar, execBars]);
+  }, [marketPrice, marketTime, replayBar, execBars, execTicks]);
 
   useEffect(() => {
     scheduleRedraw();

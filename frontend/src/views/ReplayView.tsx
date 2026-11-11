@@ -159,6 +159,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const replayResolutionRef = useRef<ReplayResolution>("seconds");
   const tickWindowRef = useRef<TickRecord[]>([]);
   const tickIndexRef = useRef(0);
+  const prevTickIndexRef = useRef(-1);
+  const lastTickExecKeyRef = useRef("");
   const tickDayRef = useRef<string | null>(null);
   const stepTickRef = useRef<(dir: number) => void>(() => {});
   const navigateReplayToUnixTimeRef = useRef<(t: number, opts?: { cursor?: number }) => void>(() => {});
@@ -1471,6 +1473,38 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       ? tickWindow[Math.max(0, Math.min(tickIndex, tickWindow.length - 1))] ?? null
       : null;
 
+  /** C2: ticks to evaluate this step (Bid/Ask). null = use 1s bar engine. */
+  const execTicks = useMemo(() => {
+    if (replayResolution !== "tick" || !tickWindow.length) return null;
+    const cur = Math.max(0, Math.min(tickIndex, tickWindow.length - 1));
+    const prev = prevTickIndexRef.current;
+    let slice: TickRecord[] = [];
+    if (prev < 0) {
+      slice = tickWindow.slice(0, cur + 1);
+    } else if (cur > prev) {
+      slice = tickWindow.slice(prev + 1, cur + 1);
+    } else if (cur < prev) {
+      // No reverse execution (C2 spec)
+      slice = [];
+    } else {
+      slice = [];
+    }
+    return slice.map((x) => ({
+      time: x.time,
+      bid: x.bid,
+      ask: x.ask,
+      seq: x.seq,
+    }));
+  }, [replayResolution, tickWindow, tickIndex]);
+
+  useEffect(() => {
+    if (replayResolution === "tick") {
+      prevTickIndexRef.current = Math.max(0, Math.min(tickIndex, Math.max(0, tickWindow.length - 1)));
+    } else {
+      prevTickIndexRef.current = -1;
+    }
+  }, [tickIndex, replayResolution, tickWindow.length]);
+
   const loadTickDay = useCallback(
     async (day: string): Promise<{ ticks: TickRecord[]; symbolUsed: string } | null> => {
       const gen = ++tickLoadGenRef.current;
@@ -1531,6 +1565,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     (ticks: TickRecord[], day: string, index: number, symbolUsed: string) => {
       const sorted = sortTicksStable(ticks);
       const i = Math.max(0, Math.min(index, Math.max(0, sorted.length - 1)));
+      prevTickIndexRef.current = -1; // force C2 to process up to index once
       setTickWindow(sorted);
       setTickDay(day);
       setTickIndex(i);
@@ -2264,6 +2299,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           marketTime={activeTick ? activeTick.time : currentBase?.time ?? null}
           replayBar={currentBase ?? null}
           execBars={execBars}
+          execTicks={execTicks}
           followPrice={followPrice}
           shapes={shapes}
           onShapesChange={pushShapes}
