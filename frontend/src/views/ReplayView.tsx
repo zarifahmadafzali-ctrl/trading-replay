@@ -10,6 +10,7 @@ import {
 } from "../lib/drawingTools";
 import { fetchBars, addTrade } from "../lib/api";
 import { appendTradeAsync, rMultiple, auditJournalEvent } from "../lib/journal";
+import { createMemo, type TradeMemo, type TradeMemoType } from "../lib/tradeMemos";
 import {
   buildHtfSnapshots,
   normalizeJournalSnapshotConfig,
@@ -275,6 +276,14 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const sessionIdRef = useRef<string | null>(getActiveSessionId());
   /** C4: position shape ids already written to journal this session (sync dedupe). */
   const journaledPositionIdsRef = useRef<Set<string>>(new Set());
+  /** positionId → entry memo captured before journal close */
+  const pendingEntryMemosRef = useRef<Map<string, TradeMemo>>(new Map());
+  const [memoPrompt, setMemoPrompt] = useState<null | {
+    kind: TradeMemoType;
+    positionId: string;
+    tradeId?: string;
+  }>(null);
+  const [memoDraft, setMemoDraft] = useState("");
   /** C5: latest-wins serial for async putRuntime. */
   const runtimeSaveGenRef = useRef(0);
   const runtimeWriteChainRef = useRef(Promise.resolve());
@@ -331,6 +340,18 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       localStorage.setItem("tr-indicators", JSON.stringify(activeIndicatorIds));
     } catch { /* */ }
   }, [activeIndicatorIds]);
+
+
+  useEffect(() => {
+    const onEntry = (ev: Event) => {
+      const d = (ev as CustomEvent).detail as { positionId?: string } | undefined;
+      if (!d?.positionId) return;
+      setMemoDraft("");
+      setMemoPrompt({ kind: "entry", positionId: d.positionId });
+    };
+    window.addEventListener("tr-entry-memo-request", onEntry);
+    return () => window.removeEventListener("tr-entry-memo-request", onEntry);
+  }, []);
 
   // Bootstrap / switch Backtest Session from IndexedDB
   useEffect(() => {
@@ -1245,6 +1266,13 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     }
     journaledPositionIdsRef.current.add(closed.id);
 
+    const tradeId = `replay-${closed.id}-${closed.exitTime}`;
+    const pendingEntry = pendingEntryMemosRef.current.get(closed.id);
+    if (pendingEntry) pendingEntryMemosRef.current.delete(closed.id);
+    const entryMemo = pendingEntry
+      ? { ...pendingEntry, tradeId }
+      : null;
+
     const note = `auto-${closed.reason} · ${closed.pnlPoints >= 0 ? "+" : ""}${closed.pnlPoints.toFixed(2)} pts`;
     const snap = (closed.riskSnapshot || lastRiskSnapshotRef.current) as Record<string, unknown> | null;
     const meta = sessionMeta ? ensureSessionAccounts(sessionMeta) : null;
@@ -1276,6 +1304,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       id: `replay-${closed.id}-${closed.exitTime}`,
       tradeId: `replay-${closed.id}-${closed.exitTime}`,
       positionId: closed.id,
+      memos: entryMemo ? [entryMemo] : undefined,
       symbol,
       side: closed.side,
       orderType: closed.orderType,
@@ -1377,6 +1406,10 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       ...(htfSnapshots && htfSnapshots.length ? { htfSnapshots } : {}),
       sessionId: sessionIdRef.current || undefined,
     });
+
+    // C8.2: optional exit memo (non-blocking; trade already journaled)
+    setMemoDraft("");
+    setMemoPrompt({ kind: "exit", positionId: closed.id, tradeId: localTrade.tradeId || localTrade.id });
 
     // Realized currency PnL → owning account.balance (initialBalance stays immutable)
     try {
@@ -2656,6 +2689,72 @@ const exitTickMode = useCallback(() => {
           {replayResolution === "tick" ? " · exec=1s OHLC" : ""}
         </p>
       </aside>
+
+      {memoPrompt && (
+        <div
+          className="card"
+          style={{
+            position: "fixed",
+            right: 12,
+            bottom: 12,
+            zIndex: 40,
+            width: "min(320px, calc(100vw - 24px))",
+            maxHeight: "40vh",
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            padding: 12,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+          }}
+        >
+          <strong>{memoPrompt.kind === "entry" ? "ENTRY MEMO" : "EXIT MEMO"}</strong>
+          <textarea
+            value={memoDraft}
+            onChange={(e) => setMemoDraft(e.target.value)}
+            rows={4}
+            placeholder="Optional notes…"
+            style={{ width: "100%", resize: "vertical", minHeight: 72 }}
+          />
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => {
+                setMemoPrompt(null);
+                setMemoDraft("");
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const text = memoDraft;
+                const prompt = memoPrompt;
+                setMemoPrompt(null);
+                setMemoDraft("");
+                if (!prompt) return;
+                const tid = prompt.tradeId || prompt.positionId;
+                const memo = createMemo(tid, prompt.kind, text);
+                if (!memo) return;
+                if (prompt.kind === "entry") {
+                  pendingEntryMemosRef.current.set(prompt.positionId, memo);
+                  setMessage("Entry memo saved (will attach when trade closes)");
+                  return;
+                }
+                void (async () => {
+                  const { addMemoToTrade } = await import("../lib/tradeMemos");
+                  await addMemoToTrade(sessionIdRef.current, tid, "exit", text);
+                  setMessage("Exit memo saved");
+                })();
+              }}
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      )}
+
     </section>
   );
 }

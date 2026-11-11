@@ -95,6 +95,8 @@ export type JournalTrade = {
   postExitMfePoints?: number | null;
   postExitMfeR?: number | null;
   excursionDataSource?: string;
+  /** C8.2 optional timestamped memos. */
+  memos?: import("./tradeMemos").TradeMemo[];
   marginUsed?: number | null;
   pointValue?: number | null;
   fillStatus?: "filled" | "closed";
@@ -195,6 +197,7 @@ export function normalizeJournalTrade(raw: Partial<JournalTrade> & Record<string
     postExitMfePoints: numOrNull(raw.postExitMfePoints),
     postExitMfeR: numOrNull(raw.postExitMfeR),
     excursionDataSource: raw.excursionDataSource as string | undefined,
+    memos: Array.isArray(raw.memos) ? (raw.memos as import("./tradeMemos").TradeMemo[]) : undefined,
     marginUsed: numOrNull(raw.marginUsed),
     pointValue: numOrNull(raw.pointValue),
     fillStatus: raw.fillStatus === "filled" || raw.fillStatus === "closed" ? raw.fillStatus : "closed",

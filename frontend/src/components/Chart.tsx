@@ -727,6 +727,21 @@ export function Chart({
       const entryShot = nextStatus === "open" ? capturePositionScreenshot(sized) : undefined;
       if (nextStatus === "open") {
         events.push(`Filled · ${sized.side.toUpperCase()} market @ ${sized.entry.price.toFixed(dec)}`);
+        try {
+          window.dispatchEvent(
+            new CustomEvent("tr-entry-memo-request", {
+              detail: {
+                positionId: sized.id,
+                side: sized.side,
+                orderType: sized.orderType,
+                entryPrice: sized.entry.price,
+                entryTime: sized.entry.time,
+              },
+            })
+          );
+        } catch {
+          /* */
+        }
       } else {
         events.push(
           `Pending · ${(sized.orderType || "").replace(/_/g, " ")} · ${sized.side.toUpperCase()} @ ${sized.entry.price.toFixed(dec)}`
@@ -2596,6 +2611,17 @@ export function Chart({
     }
     for (const e of res.events) {
       window.dispatchEvent(new CustomEvent("tr-workspace-event", { detail: { text: e.text } }));
+      if (e.type === "filled") {
+        try {
+          window.dispatchEvent(
+            new CustomEvent("tr-entry-memo-request", {
+              detail: { positionId: e.id },
+            })
+          );
+        } catch {
+          /* */
+        }
+      }
     }
     scheduleRedraw();
     if (res.closed.length) {

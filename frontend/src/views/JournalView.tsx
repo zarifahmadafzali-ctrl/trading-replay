@@ -15,6 +15,15 @@ import {
   importJournalBackup,
 } from "../lib/journalBackup";
 import {
+  memosOfType,
+  normalizeMemos,
+  addMemoToTrade,
+  updateMemoText,
+  deleteMemoFromTrade,
+  downloadAiReviewPackage,
+  type TradeMemo,
+} from "../lib/tradeMemos";
+import {
   renderHtfSnapshotToCanvas,
   normalizeJournalSnapshotConfig,
   DEFAULT_JOURNAL_SNAPSHOT_CONFIG,
@@ -439,6 +448,18 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
           }}
         >
           Export ZIP backup
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            try {
+              downloadAiReviewPackage(filtered);
+            } catch (err) {
+              alert(`AI export failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }}
+        >
+          Export AI Review Package
         </button>
         <label className="import-btn" style={{ cursor: "pointer", display: "inline-flex", alignItems: "center" }}>
           Import ZIP backup
@@ -899,33 +920,155 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
               </section>
             )}
 
-            {selected.entryScreenshot && (
-              <section>
-                <h4>Entry snapshot</h4>
-                <p className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
-                  Chart at order fill / confirmation (Entry, SL, TP + drawings)
-                </p>
-                <img
-                  src={selected.entryScreenshot}
-                  alt="Trade entry chart"
-                  className="journal-screenshot"
-                />
-              </section>
-            )}
+            <section>
+              <h4>Entry section</h4>
+              {selected.entryScreenshot ? (
+                <>
+                  <p className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
+                    Chart at order fill / confirmation (Entry, SL, TP + drawings)
+                  </p>
+                  <img
+                    src={selected.entryScreenshot}
+                    alt="Trade entry chart"
+                    className="journal-screenshot"
+                  />
+                </>
+              ) : (
+                <p className="hint">No entry screenshot</p>
+              )}
+              <div style={{ marginTop: 10 }}>
+                <strong>Entry Memo</strong>
+                {(() => {
+                  const list = memosOfType(normalizeMemos(selected.memos, selected.tradeId || selected.id), "entry");
+                  if (!list.length) return <p className="hint">No entry memo</p>;
+                  return list.map((m) => (
+                    <div key={m.id} className="card" style={{ marginTop: 6, padding: 8 }}>
+                      <div className="muted" style={{ fontSize: 11 }}>
+                        {m.createdAt}
+                        {m.updatedAt ? ` · edited ${m.updatedAt}` : ""}
+                      </div>
+                      <pre style={{ whiteSpace: "pre-wrap", margin: "6px 0", fontFamily: "inherit" }}>{m.text}</pre>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          onClick={() => {
+                            const next = window.prompt("Edit entry memo", m.text);
+                            if (next == null) return;
+                            void updateMemoText(sessionId, selected.tradeId || selected.id, m.id, next).then(
+                              (u) => u && setSelected(u)
+                            );
+                          }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          onClick={() => {
+                            if (!window.confirm("Delete this entry memo?")) return;
+                            void deleteMemoFromTrade(sessionId, selected.tradeId || selected.id, m.id).then(
+                              (u) => u && setSelected(u)
+                            );
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ));
+                })()}
+              </div>
+            </section>
 
-            {selected.closeScreenshot && (
-              <section>
-                <h4>Exit snapshot</h4>
-                <p className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
-                  Chart at close ({selected.reason || "exit"}) — Entry, SL, TP preserved
-                </p>
-                <img
-                  src={selected.closeScreenshot}
-                  alt="Trade exit chart"
-                  className="journal-screenshot"
-                />
-              </section>
-            )}
+            <section>
+              <h4>Exit section</h4>
+              {selected.closeScreenshot ? (
+                <>
+                  <p className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
+                    Chart at close ({selected.reason || "exit"}) — Entry, SL, TP preserved
+                  </p>
+                  <img
+                    src={selected.closeScreenshot}
+                    alt="Trade exit chart"
+                    className="journal-screenshot"
+                  />
+                </>
+              ) : (
+                <p className="hint">No exit screenshot</p>
+              )}
+              <div style={{ marginTop: 10 }}>
+                <strong>Exit Memo</strong>
+                {(() => {
+                  const list = memosOfType(normalizeMemos(selected.memos, selected.tradeId || selected.id), "exit");
+                  if (!list.length) return <p className="hint">No exit memo</p>;
+                  return list.map((m) => (
+                    <div key={m.id} className="card" style={{ marginTop: 6, padding: 8 }}>
+                      <div className="muted" style={{ fontSize: 11 }}>
+                        {m.createdAt}
+                        {m.updatedAt ? ` · edited ${m.updatedAt}` : ""}
+                      </div>
+                      <pre style={{ whiteSpace: "pre-wrap", margin: "6px 0", fontFamily: "inherit" }}>{m.text}</pre>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          onClick={() => {
+                            const next = window.prompt("Edit exit memo", m.text);
+                            if (next == null) return;
+                            void updateMemoText(sessionId, selected.tradeId || selected.id, m.id, next).then(
+                              (u) => u && setSelected(u)
+                            );
+                          }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          onClick={() => {
+                            if (!window.confirm("Delete this exit memo?")) return;
+                            void deleteMemoFromTrade(sessionId, selected.tradeId || selected.id, m.id).then(
+                              (u) => u && setSelected(u)
+                            );
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ));
+                })()}
+              </div>
+            </section>
+
+            <section>
+              <h4>Trade Notes</h4>
+              {(() => {
+                const all = normalizeMemos(selected.memos, selected.tradeId || selected.id);
+                const other = all.filter((m) => m.type === "post_analysis" || m.type === "general");
+                if (!other.length) return <p className="hint">No additional notes</p>;
+                return other.map((m) => (
+                  <div key={m.id} style={{ marginBottom: 8 }}>
+                    <b>{m.type}</b> · <span className="muted">{m.createdAt}</span>
+                    <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{m.text}</pre>
+                  </div>
+                ));
+              })()}
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => {
+                  const text = window.prompt("Add post-analysis note");
+                  if (!text) return;
+                  void addMemoToTrade(sessionId, selected.tradeId || selected.id, "post_analysis", text).then(
+                    (u) => u && setSelected(u)
+                  );
+                }}
+              >
+                Add post-analysis note
+              </button>
+            </section>
 
             {selected.htfSnapshots && selected.htfSnapshots.length > 0 && (
               <section>
