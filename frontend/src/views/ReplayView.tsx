@@ -1707,26 +1707,42 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     setPlaying(false);
     const bar = baseBars[Math.max(0, cursor - 1)];
     if (!bar) {
-      setMessage("Load 1s data before Tick replay");
+      setMessage("Load 1s data (or import ZIP) before Tick replay");
       return;
     }
     const day = unixToUtcDay(bar.time);
-    const loaded = await loadTickDay(day);
+    let loaded = await loadTickDay(day);
+    // If the cursor day has bars but ticks only on another day in range, try listing
+    if (!loaded) {
+      const listed = await tickCacheListCompleteDaysWithAlias(symbol);
+      const startDay = baseBars.length ? unixToUtcDay(baseBars[0].time) : day;
+      const endDay = baseBars.length
+        ? unixToUtcDay(baseBars[baseBars.length - 1].time)
+        : day;
+      const inRange = listed
+        .map((r) => r.day)
+        .filter((d) => d >= startDay && d <= endDay)
+        .sort();
+      for (const d of inRange) {
+        loaded = await loadTickDay(d);
+        if (loaded) break;
+      }
+    }
     if (!loaded) {
       setTickEligible(false);
       setMessage(
-        "Tick Replay needs imported tick data for this symbol/day. Only 1-second OHLC is available."
+        "Tick step needs ticks.parquet imported for this symbol (Data Engine → Import range ZIP or TR Parquet). Chart candles stay 1s OHLC; the clock and fills use ticks."
       );
       return;
     }
     const idx = mapTimeToTickIndex(loaded.ticks, bar.time);
-    applyTickWindow(loaded.ticks, day, idx, loaded.symbolUsed);
+    applyTickWindow(loaded.ticks, day, idx >= 0 ? idx : 0, loaded.symbolUsed);
     setReplayResolution("tick");
     setTickEligible(true);
     setMessage(
-      `Tick Replay · ${loaded.ticks.length.toLocaleString()} ticks on ${day} · execution still uses 1s OHLC`
+      `Tick Replay · ${loaded.ticks.length.toLocaleString()} ticks · clock steps per tick · fills use Bid/Ask (not 1s OHLC)`
     );
-  }, [applyTickWindow, baseBars, cursor, loadTickDay]);
+  }, [applyTickWindow, baseBars, cursor, loadTickDay, symbol]);
 
   const exitTickMode = useCallback(() => {
     setPlaying(false);
