@@ -288,28 +288,45 @@ export function hasErrors(issues: PositionIssue[]): boolean {
  */
 export function prepareConfirm<T extends PositionLike>(
   p: T,
-  market: { price: number | null | undefined; time: number | null | undefined }
+  market: {
+    price: number | null | undefined;
+    time: number | null | undefined;
+    /** C3: when present, market long fills at ask and short at bid (Tick Mode). */
+    bid?: number | null;
+    ask?: number | null;
+  }
 ): { ok: boolean; pos: T; issues: PositionIssue[] } {
   const mp = market.price != null && Number.isFinite(market.price) ? market.price : null;
   const mt = market.time != null && Number.isFinite(market.time) ? market.time : null;
+  const bid = market.bid != null && Number.isFinite(market.bid) ? market.bid : null;
+  const ask = market.ask != null && Number.isFinite(market.ask) ? market.ask : null;
   let pos: T = p;
-  if (p.orderType === "market" && mp != null && mt != null) {
-    // entry.time/price become the fill — but the on-chart box stays at the place/click anchor.
-    const anchor =
-      p.anchorTime != null && Number.isFinite(p.anchorTime) ? p.anchorTime : p.entry.time;
-    const width =
-      p.rightTime != null && Number.isFinite(p.rightTime)
-        ? Math.max(1, p.rightTime - anchor)
-        : 60 * 18;
-    pos = {
-      ...p,
-      entry: { time: mt, price: mp },
-      anchorTime: anchor,
-      rightTime: anchor + width,
-    };
+  if (p.orderType === "market" && mt != null) {
+    // Market fill at current execution price — never the chart click coordinate.
+    // C2/C3: long → Ask, short → Bid when side prices exist; else mid/close.
+    let fillPx: number | null = null;
+    if (p.side === "long" && ask != null) fillPx = ask;
+    else if (p.side === "short" && bid != null) fillPx = bid;
+    else fillPx = mp;
+    if (fillPx != null) {
+      const anchor =
+        p.anchorTime != null && Number.isFinite(p.anchorTime) ? p.anchorTime : p.entry.time;
+      const width =
+        p.rightTime != null && Number.isFinite(p.rightTime)
+          ? Math.max(1, p.rightTime - anchor)
+          : 60 * 18;
+      pos = {
+        ...p,
+        entry: { time: mt, price: fillPx },
+        anchorTime: anchor,
+        rightTime: anchor + width,
+      };
+    }
   }
+  const validateAt =
+    p.orderType === "market" && pos.entry?.price != null ? pos.entry.price : mp;
   const asOpen: PositionLike = p.orderType === "market" ? { ...pos, status: "open" } : pos;
-  const issues = validatePosition(asOpen, mp);
+  const issues = validatePosition(asOpen, validateAt);
   return { ok: !hasErrors(issues), pos, issues };
 }
 

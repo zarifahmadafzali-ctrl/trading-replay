@@ -1451,10 +1451,14 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       : cursor >= baseBars.length;
 
   // 1s bars from previous cursor → current for SL/TP (covers Replay Step jumps).
+  // C3: never re-run the engine on backward seeks (no reverse fills / duplicate closes).
   const execBars = useMemo(() => {
     const prev = prevCursorRef.current;
-    const lo = Math.min(prev, cursor);
-    const hi = Math.max(prev, cursor);
+    if (cursor < prev) {
+      return [];
+    }
+    const lo = prev;
+    const hi = cursor;
     if (hi <= lo) {
       return currentBase ? [currentBase] : [];
     }
@@ -1478,6 +1482,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     if (replayResolution !== "tick" || !tickWindow.length) return null;
     const cur = Math.max(0, Math.min(tickIndex, tickWindow.length - 1));
     const prev = prevTickIndexRef.current;
+    // C3: backward tick seek must not re-execute
+    if (prev >= 0 && cur < prev) return [];
     let slice: TickRecord[] = [];
     if (prev < 0) {
       slice = tickWindow.slice(0, cur + 1);
@@ -2313,6 +2319,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           orderType={orderType}
           marketPrice={activeTick ? activeTick.mid : currentBase?.close ?? null}
           marketTime={activeTick ? activeTick.time : currentBase?.time ?? null}
+          marketBid={activeTick ? activeTick.bid : null}
+          marketAsk={activeTick ? activeTick.ask : null}
           replayBar={currentBase ?? null}
           execBars={execBars}
           execTicks={execTicks}

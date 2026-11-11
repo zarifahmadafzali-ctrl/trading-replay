@@ -324,6 +324,8 @@ export function Chart({
   orderType = "market",
   marketPrice = null,
   marketTime = null,
+  marketBid = null,
+  marketAsk = null,
   replayBar = null,
   /** Ordered 1s bars from previous cursor → current (inclusive of new bar).
    *  When Replay Step > 1s, this may contain many bars; each is evaluated for SL/TP. */
@@ -352,6 +354,8 @@ export function Chart({
   orderType?: OrderType;
   marketPrice?: number | null;
   marketTime?: number | null;
+  marketBid?: number | null;
+  marketAsk?: number | null;
   /** Exact 1-second bar at the replay cursor. Execution uses this, never the displayed/aggregated timeframe bar. */
   replayBar?: Bar | null;
   /** 1s bars to evaluate for SL/TP this tick (step jumps). Falls back to [replayBar]. */
@@ -404,7 +408,7 @@ export function Chart({
   const magnetModeRef = useRef(magnetMode);
   magnetModeRef.current = magnetMode;
   const orderTypeRef = useRef(orderType);
-  const marketRef = useRef({ price: marketPrice, time: marketTime });
+  const marketRef = useRef({ price: marketPrice, time: marketTime, bid: marketBid, ask: marketAsk });
   const replayBarRef = useRef<Bar | null>(replayBar);
   const followRef = useRef(followPrice);
   const selectedShapeIdRef = useRef(selectedShapeId);
@@ -452,7 +456,7 @@ export function Chart({
   );
   drawToolRef.current = drawTool;
   orderTypeRef.current = orderType;
-  marketRef.current = { price: marketPrice, time: marketTime };
+  marketRef.current = { price: marketPrice, time: marketTime, bid: marketBid, ask: marketAsk };
   replayBarRef.current = replayBar;
   followRef.current = followPrice;
   selectedShapeIdRef.current = selectedShapeId;
@@ -672,7 +676,12 @@ export function Chart({
     const events: string[] = [];
     const blocked: string[] = [];
     const dec = instRef.current.decimals;
-    const market = { price: marketRef.current.price, time: marketRef.current.time };
+    const market = {
+      price: marketRef.current.price,
+      time: marketRef.current.time,
+      bid: marketRef.current.bid,
+      ask: marketRef.current.ask,
+    };
     const next = shapesRef.current.map((s) => {
       if (s.kind !== "position" || s.status !== "draft") return s;
       // 1) MARKET orders are refreshed to the CURRENT replay price/time (they used to fill at the stale
@@ -741,8 +750,12 @@ export function Chart({
       | PositionShape
       | undefined;
     if (!s || s.status !== "open") return;
-    const exitPrice = marketRef.current.price;
-    const exitTime = marketRef.current.time;
+    // C3: manual close uses Bid/Ask when available (long → Bid, short → Ask).
+    const m = marketRef.current;
+    let exitPrice = m.price;
+    if (s.side === "long" && m.bid != null && Number.isFinite(m.bid)) exitPrice = m.bid;
+    else if (s.side === "short" && m.ask != null && Number.isFinite(m.ask)) exitPrice = m.ask;
+    const exitTime = m.time;
     if (exitPrice == null || exitTime == null) {
       setHint("No market price for manual close");
       return;
