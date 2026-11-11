@@ -35,6 +35,7 @@ import {
   parseTickJson,
   tryReadTicksParquet,
   importTrMarketDataDay,
+  importTrMarketDataZip,
   classifyTrMarketDataFile,
   type TickImportProgress,
 } from "../lib/tickImport";
@@ -1011,6 +1012,65 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
                       pushLog(summary);
                       setTickImportLog(summary);
                       if (r.errors.length) window.alert(r.errors.join("\n"));
+                      await refreshMarketDays();
+                    } catch (err) {
+                      window.alert(err instanceof Error ? err.message : String(err));
+                    } finally {
+                      setMarketBusy(false);
+                      setImportProgress("");
+                    }
+                  })();
+                }}
+              />
+            </label>
+
+            <label className="import-btn">
+              Import range ZIP
+              <input
+                type="file"
+                accept=".zip,application/zip"
+                multiple
+                disabled={marketBusy}
+                onChange={(e) => {
+                  const list = e.target.files ? Array.from(e.target.files) : [];
+                  e.target.value = "";
+                  if (!list.length) return;
+                  setMarketBusy(true);
+                  setTickImportLog("Reading range ZIP…");
+                  setImportProgress("Range ZIP import…");
+                  void (async () => {
+                    try {
+                      const lines: string[] = [];
+                      for (const file of list) {
+                        const buf = await file.arrayBuffer();
+                        const summary = await importTrMarketDataZip(buf, {
+                          onProgress: (p) => {
+                            if (p.day && p.dayIndex && p.dayCount) {
+                              setImportProgress(
+                                `ZIP ${file.name}: day ${p.dayIndex}/${p.dayCount} (${p.day})`
+                              );
+                            }
+                          },
+                        });
+                        lines.push(
+                          `${file.name}: ${summary.symbol || "?"} · days ok ${summary.daysOk}/${summary.daysAttempted}` +
+                            (summary.daysFailed ? ` · failed ${summary.daysFailed}` : "") +
+                            (summary.packageMeta &&
+                            summary.packageMeta["start"] &&
+                            summary.packageMeta["end"]
+                              ? ` · package ${String(summary.packageMeta["start"])}→${String(summary.packageMeta["end"])}`
+                              : "")
+                        );
+                        if (summary.errors.length) {
+                          lines.push(`  errors: ${summary.errors.slice(0, 5).join("; ")}`);
+                        }
+                        if (summary.warnings.length) {
+                          lines.push(`  warnings: ${summary.warnings.slice(0, 3).join("; ")}`);
+                        }
+                      }
+                      const msg = lines.join("\n");
+                      pushLog(msg);
+                      setTickImportLog(msg);
                       await refreshMarketDays();
                     } catch (err) {
                       window.alert(err instanceof Error ? err.message : String(err));

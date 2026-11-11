@@ -18,6 +18,7 @@ import {
   mapTickParquetRows,
   mapBars1sParquetRows,
 } from "./parquetCodec";
+import { groupZipByDay, readZipEntries } from "./zipStore";
 
 export type TickImportProgress = {
   phase: string;
@@ -579,4 +580,191 @@ export function classifyTrMarketDataFile(
   if (base.includes("tick") && base.endsWith(".parquet")) return "ticks";
   if (base.endsWith(".parquet")) return "other";
   return "other";
+}
+
+export type TrMarketZipImportSummary = {
+  symbol: string;
+  packageMeta: Record<string, unknown> | null;
+  daysAttempted: number;
+  daysOk: number;
+  daysFailed: number;
+  dayResults: Array<TickImportDayResult & { metadata?: TrMarketDataMetadata }>;
+  warnings: string[];
+  errors: string[];
+};
+
+function pickDayFile(files: Map<string, Uint8Array>, kind: "ticks" | "bars_1s" | "metadata"): Uint8Array | null {
+  for (const [name, data] of files) {
+    const c = classifyTrMarketDataFile(name);
+    if (c === kind) return data;
+  }
+  // exact names
+  const exact =
+    kind === "ticks"
+      ? ["ticks.parquet"]
+      : kind === "bars_1s"
+        ? ["bars_1s.parquet"]
+        : ["metadata.json"];
+  for (const e of exact) {
+    if (files.has(e)) return files.get(e)!;
+  }
+  return null;
+}
+
+/**
+ * Import a TR Market Data range ZIP (ephemeral delivery package).
+ * Merges into IndexedDB tick + 1s bar caches by day; existing compatible bars are kept.
+ */
+export async function importTrMarketDataZip(
+  zipBytes: ArrayBuffer,
+  opts?: {
+    symbolFallback?: string;
+    protectExistingBars?: boolean;
+    onProgress?: (p: TickImportProgress & { day?: string; dayIndex?: number; dayCount?: number }) => void;
+  }
+): Promise<TrMarketZipImportSummary> {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  const entries = await readZipEntries(zipBytes);
+  const grouped = groupZipByDay(entries);
+
+  let packageMeta: Record<string, unknown> | null = null;
+  if (grouped.packageJson) {
+    try {
+      packageMeta = JSON.parse(new TextDecoder().decode(grouped.packageJson)) as Record<string, unknown>;
+    } catch {
+      warnings.push("package.json present but not valid JSON");
+    }
+  }
+
+  const symbolFallback =
+    opts?.symbolFallback ||
+    (typeof packageMeta?.symbol === "string" ? packageMeta.symbol : null) ||
+    grouped.symbolHint ||
+    "";
+
+  const dayKeys = [...grouped.days.keys()].sort();
+  const dayResults: Array<TickImportDayResult & { metadata?: TrMarketDataMetadata }> = [];
+  let daysOk = 0;
+  let daysFailed = 0;
+
+  for (let i = 0; i < dayKeys.length; i++) {
+    const day = dayKeys[i]!;
+    const files = grouped.days.get(day)!;
+    opts?.onProgress?.({
+      phase: "validate",
+      day,
+      dayIndex: i + 1,
+      dayCount: dayKeys.length,
+      symbol: symbolFallback,
+    });
+
+    const ticksU8 = pickDayFile(files, "ticks");
+    const barsU8 = pickDayFile(files, "bars_1s");
+    const metaU8 = pickDayFile(files, "metadata");
+
+    if (!ticksU8 && barsU8) {
+      // 1s-only package day
+      const barRead = await tryReadBars1sParquet(barsU8.buffer.slice(barsU8.byteOffset, barsU8.byteOffset + barsU8.byteLength));
+      if (barRead.error || !barRead.bars.length) {
+        daysFailed++;
+        errors.push(`${day}: bars_1s only but read failed (${barRead.error || "empty"})`);
+        continue;
+      }
+      const symbol = canonicalSymbol(symbolFallback) || symbolFallback.toUpperCase() || "UNKNOWN";
+      const existingHit = await cacheGetDayRowWithAlias(symbol, day);
+      const existingBars = existingHit?.row?.bars?.length
+        ? existingHit.row.bars
+        : await cacheGetDay(symbol, day);
+      if (existingBars && existingBars.length && opts?.protectExistingBars !== false) {
+        const cmp = barsApproximatelyEqual(barRead.bars, existingBars);
+        if (!cmp.ok) {
+          warnings.push(`${day}: existing 1s bars differ; left unchanged`);
+          daysOk++;
+          dayResults.push({
+            symbol,
+            day,
+            validTicks: 0,
+            rejected: 0,
+            barsGenerated: existingBars.length,
+            barsWritten: false,
+            ticksWritten: false,
+            skippedBarsConflict: true,
+            warnings: [`${day}: kept existing bars`],
+            errors: [],
+          });
+          continue;
+        }
+      }
+      const meta = normalizeDatasetDayMeta({
+        dataKind: "bars_1s",
+        hasTicks: false,
+        hasBars1s: true,
+        bars1sCount: barRead.bars.length,
+        source: "tr-market-data:zip",
+      });
+      await cachePutDay(symbol, day, barRead.bars, {
+        classification: "SUCCESS",
+        complete: true,
+        meta,
+      });
+      daysOk++;
+      dayResults.push({
+        symbol,
+        day,
+        validTicks: 0,
+        rejected: 0,
+        barsGenerated: barRead.bars.length,
+        barsWritten: true,
+        ticksWritten: false,
+        skippedBarsConflict: false,
+        warnings: [],
+        errors: [],
+      });
+      continue;
+    }
+
+    if (!ticksU8) {
+      daysFailed++;
+      errors.push(`${day}: no ticks.parquet (and no bars_1s.parquet)`);
+      continue;
+    }
+
+    const ticksBuf = ticksU8.buffer.slice(ticksU8.byteOffset, ticksU8.byteOffset + ticksU8.byteLength);
+    const barsBuf = barsU8
+      ? barsU8.buffer.slice(barsU8.byteOffset, barsU8.byteOffset + barsU8.byteLength)
+      : undefined;
+    const metaText = metaU8 ? new TextDecoder().decode(metaU8) : undefined;
+
+    const r = await importTrMarketDataDay({
+      ticksParquet: ticksBuf,
+      bars1sParquet: barsBuf,
+      metadataJsonText: metaText,
+      symbolFallback: symbolFallback || undefined,
+      protectExistingBars: opts?.protectExistingBars,
+      onProgress: opts?.onProgress,
+    });
+    // Force day from path if metadata missing
+    if (!r.day) r.day = day;
+    dayResults.push(r);
+    if (r.errors.length && !r.ticksWritten && !r.barsWritten) daysFailed++;
+    else daysOk++;
+  }
+
+  const symbol =
+    dayResults.find((d) => d.symbol)?.symbol ||
+    canonicalSymbol(symbolFallback) ||
+    symbolFallback.toUpperCase() ||
+    "";
+
+  return {
+    symbol,
+    packageMeta,
+    daysAttempted: dayKeys.length,
+    daysOk,
+    daysFailed,
+    dayResults,
+    warnings,
+    errors,
+  };
 }
