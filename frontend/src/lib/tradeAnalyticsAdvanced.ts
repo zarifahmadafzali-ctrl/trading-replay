@@ -592,3 +592,142 @@ export function aggregateRiskGap(trades: JournalTrade[]): {
     avgActualAmt: avg(actualAmts),
   };
 }
+
+
+export type ProfitDurationBucket = {
+  outcome: "win" | "loss" | "breakeven";
+  count: number;
+  minSec: number | null;
+  maxSec: number | null;
+  avgSec: number | null;
+  medianSec: number | null;
+  excludedInvalidTimestamps: number;
+};
+
+/** Duration stats by actual realized P&L sign (not exit reason, not What-If). */
+export function durationStatsByProfitability(trades: JournalTrade[]): ProfitDurationBucket[] {
+  const buckets: Record<"win" | "loss" | "breakeven", number[]> = {
+    win: [],
+    loss: [],
+    breakeven: [],
+  };
+  let excluded = 0;
+  for (const t of trades) {
+    const d = durationSec(t);
+    if (d == null) {
+      excluded++;
+      continue;
+    }
+    const pnl = resolveCurrencyPnL(t);
+    if (pnl == null || !Number.isFinite(pnl)) {
+      excluded++;
+      continue;
+    }
+    if (pnl > 0) buckets.win.push(d);
+    else if (pnl < 0) buckets.loss.push(d);
+    else buckets.breakeven.push(d);
+  }
+  const pack = (outcome: ProfitDurationBucket["outcome"], xs: number[]): ProfitDurationBucket => ({
+    outcome,
+    count: xs.length,
+    minSec: xs.length ? Math.min(...xs) : null,
+    maxSec: xs.length ? Math.max(...xs) : null,
+    avgSec: xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null,
+    medianSec: median(xs),
+    excludedInvalidTimestamps: excluded,
+  });
+  return [pack("win", buckets.win), pack("loss", buckets.loss), pack("breakeven", buckets.breakeven)];
+}
+
+export type DailyTwoTradeCategory =
+  | "both_profit"
+  | "first_profit_second_loss"
+  | "first_loss_second_profit"
+  | "both_loss"
+  | "has_breakeven"
+  | "unclassified";
+
+export type DailyTwoTradeAnalysis = {
+  exactlyTwoDays: number;
+  moreThanTwoDays: number;
+  categories: Record<DailyTwoTradeCategory, number>;
+  pctSecondProfitable: number | null;
+  pctBothLosing: number | null;
+  pctBothProfitable: number | null;
+  timezone: string;
+};
+
+function pnlOutcome(t: JournalTrade): "win" | "loss" | "breakeven" | "unknown" {
+  const pnl = resolveCurrencyPnL(t);
+  if (pnl == null || !Number.isFinite(pnl)) return "unknown";
+  if (pnl > 0) return "win";
+  if (pnl < 0) return "loss";
+  return "breakeven";
+}
+
+/**
+ * Days with exactly two completed trades — first/second by entryTime.
+ * Uses tradingDayKey(..., America/New_York, 0) by default.
+ */
+export function analyzeDailyTwoTradeBehavior(
+  trades: JournalTrade[],
+  timeZone = "America/New_York"
+): DailyTwoTradeAnalysis {
+  const byDay = new Map<string, JournalTrade[]>();
+  for (const t of trades) {
+    const key = tradingDayKey(t.entryTime, timeZone, 0);
+    const arr = byDay.get(key) || [];
+    arr.push(t);
+    byDay.set(key, arr);
+  }
+
+  const categories: Record<DailyTwoTradeCategory, number> = {
+    both_profit: 0,
+    first_profit_second_loss: 0,
+    first_loss_second_profit: 0,
+    both_loss: 0,
+    has_breakeven: 0,
+    unclassified: 0,
+  };
+  let exactlyTwo = 0;
+  let moreThanTwo = 0;
+  let secondProfitable = 0;
+
+  for (const [, list] of byDay) {
+    if (list.length > 2) {
+      moreThanTwo++;
+      continue;
+    }
+    if (list.length !== 2) continue;
+    exactlyTwo++;
+    const ordered = list.slice().sort((a, b) => a.entryTime - b.entryTime);
+    const a = pnlOutcome(ordered[0]!);
+    const b = pnlOutcome(ordered[1]!);
+    if (a === "unknown" || b === "unknown") {
+      categories.unclassified++;
+      continue;
+    }
+    if (a === "breakeven" || b === "breakeven") {
+      categories.has_breakeven++;
+      continue;
+    }
+    if (a === "win" && b === "win") categories.both_profit++;
+    else if (a === "win" && b === "loss") categories.first_profit_second_loss++;
+    else if (a === "loss" && b === "win") categories.first_loss_second_profit++;
+    else if (a === "loss" && b === "loss") categories.both_loss++;
+    else categories.unclassified++;
+
+    if (b === "win") secondProfitable++;
+  }
+
+  const den = exactlyTwo > 0 ? exactlyTwo : null;
+  return {
+    exactlyTwoDays: exactlyTwo,
+    moreThanTwoDays: moreThanTwo,
+    categories,
+    pctSecondProfitable: den ? (secondProfitable / den) * 100 : null,
+    pctBothLosing: den ? (categories.both_loss / den) * 100 : null,
+    pctBothProfitable: den ? (categories.both_profit / den) * 100 : null,
+    timezone: timeZone,
+  };
+}
