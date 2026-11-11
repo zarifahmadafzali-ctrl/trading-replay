@@ -9,7 +9,7 @@ import type { DatasetDayMeta } from "./datasetMeta";
 import { normalizeDatasetDayMeta } from "./datasetMeta";
 import { cacheGetDay, cacheGetDayRow, cacheGetDayRowWithAlias, cachePutDay } from "./barCache";
 import { ticksToOneSecondBars, barsApproximatelyEqual } from "./tickAggregate";
-import { tickCacheGetDay, tickCachePutDay } from "./tickCache";
+import { tickCacheGetDay, tickCachePutDay, tickCacheGetDayWithAlias } from "./tickCache";
 import type { TickRecord } from "./tickTypes";
 import { normalizeTicks } from "./tickValidate";
 import { canonicalSymbol } from "./symbolAliases";
@@ -609,6 +609,124 @@ function pickDayFile(files: Map<string, Uint8Array>, kind: "ticks" | "bars_1s" |
     if (files.has(e)) return files.get(e)!;
   }
   return null;
+}
+
+
+export type TrMarketZipPreview = {
+  symbol: string;
+  dateStart: string | null;
+  dateEnd: string | null;
+  dayCount: number;
+  daysWithTicks: number;
+  daysWithBars1s: number;
+  daysWithBoth: number;
+  emptyDaysDeclared: string[];
+  failedDaysDeclared: string[];
+  daysAlreadyInCache: string[];
+  potentialConflictDays: string[];
+  dayBreakdown: Array<{
+    day: string;
+    hasTicksFile: boolean;
+    hasBars1sFile: boolean;
+    localBars: boolean;
+    localTicks: boolean;
+  }>;
+  packageMeta: Record<string, unknown> | null;
+  warnings: string[];
+  errors: string[];
+};
+
+/**
+ * C7 dry-run: inspect ZIP structure + local cache presence without writing IndexedDB
+ * and without parsing Parquet payloads.
+ */
+export async function previewTrMarketDataZip(
+  zipBytes: ArrayBuffer,
+  opts?: { symbolFallback?: string }
+): Promise<TrMarketZipPreview> {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  const entries = await readZipEntries(zipBytes);
+  const grouped = groupZipByDay(entries);
+
+  let packageMeta: Record<string, unknown> | null = null;
+  if (grouped.packageJson) {
+    try {
+      packageMeta = JSON.parse(new TextDecoder().decode(grouped.packageJson)) as Record<string, unknown>;
+    } catch {
+      warnings.push("package.json present but not valid JSON");
+    }
+  }
+
+  const symbol =
+    opts?.symbolFallback ||
+    (typeof packageMeta?.symbol === "string" ? packageMeta.symbol : null) ||
+    grouped.symbolHint ||
+    "UNKNOWN";
+
+  const dayKeys = [...grouped.days.keys()].sort();
+  const emptyDaysDeclared: string[] = [];
+  const failedDaysDeclared: string[] = [];
+  if (packageMeta) {
+    for (const key of ["empty_days", "emptyDays", "expected_empty", "EXPECTED_EMPTY"]) {
+      const v = packageMeta[key];
+      if (Array.isArray(v)) {
+        for (const d of v) if (typeof d === "string") emptyDaysDeclared.push(d);
+      }
+    }
+    for (const key of ["failed_days", "failedDays", "FAILED"]) {
+      const v = packageMeta[key];
+      if (Array.isArray(v)) {
+        for (const d of v) if (typeof d === "string") failedDaysDeclared.push(d);
+      }
+    }
+  }
+
+  let daysWithTicks = 0;
+  let daysWithBars1s = 0;
+  let daysWithBoth = 0;
+  const daysAlreadyInCache: string[] = [];
+  const potentialConflictDays: string[] = [];
+  const dayBreakdown: TrMarketZipPreview["dayBreakdown"] = [];
+
+  for (const day of dayKeys) {
+    const files = grouped.days.get(day)!;
+    const hasTicksFile = !!pickDayFile(files, "ticks");
+    const hasBars1sFile = !!pickDayFile(files, "bars_1s");
+    if (hasTicksFile) daysWithTicks++;
+    if (hasBars1sFile) daysWithBars1s++;
+    if (hasTicksFile && hasBars1sFile) daysWithBoth++;
+
+    const barHit = await cacheGetDayRowWithAlias(symbol, day);
+    const tickHit = await tickCacheGetDayWithAlias(symbol, day);
+    const localBars = !!(barHit?.row && ((barHit.row.barCount ?? barHit.row.bars?.length ?? 0) > 0 || barHit.row.complete));
+    const localTicks = !!(tickHit?.row && ((tickHit.row.tickCount ?? tickHit.row.ticks?.length ?? 0) > 0));
+    if (localBars || localTicks) daysAlreadyInCache.push(day);
+    // Conflict only relevant when package brings bars_1s and local bars already exist
+    if (hasBars1sFile && localBars) potentialConflictDays.push(day);
+
+    dayBreakdown.push({ day, hasTicksFile, hasBars1sFile, localBars, localTicks });
+  }
+
+  if (!dayKeys.length) errors.push("No day folders with TR Market Data files found in ZIP");
+
+  return {
+    symbol: String(symbol),
+    dateStart: dayKeys[0] || (typeof packageMeta?.start === "string" ? packageMeta.start : null),
+    dateEnd: dayKeys.length ? dayKeys[dayKeys.length - 1]! : (typeof packageMeta?.end === "string" ? packageMeta.end : null),
+    dayCount: dayKeys.length,
+    daysWithTicks,
+    daysWithBars1s,
+    daysWithBoth,
+    emptyDaysDeclared: [...new Set(emptyDaysDeclared)],
+    failedDaysDeclared: [...new Set(failedDaysDeclared)],
+    daysAlreadyInCache,
+    potentialConflictDays,
+    dayBreakdown,
+    packageMeta,
+    warnings,
+    errors,
+  };
 }
 
 /**

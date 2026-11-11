@@ -8,6 +8,7 @@ import { normalizeBars } from "./marketDataIntegrity";
 import type { DatasetDayMeta } from "./datasetMeta";
 import { metaFromDayRow, defaultBars1sMeta } from "./datasetMeta";
 import { canonicalSymbol, symbolLookupCandidates } from "./symbolAliases";
+import { tickCacheDeleteDay } from "./tickCache";
 
 const DB_NAME = "trading-replay-cache";
 const DB_VERSION = 4;
@@ -512,6 +513,16 @@ export async function cacheDeleteDay(symbol: string, day: string): Promise<boole
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
+    // C7: also remove matching tick day rows (all aliases) — market data only
+    const tickSyms = new Set(candidates.map((c) => c));
+    if (raw) tickSyms.add(raw);
+    for (const sym of tickSyms) {
+      try {
+        await tickCacheDeleteDay(sym, day);
+      } catch {
+        /* report at UI layer if needed; bar delete already applied */
+      }
+    }
     return any;
   } catch {
     return false;

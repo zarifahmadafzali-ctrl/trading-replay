@@ -11,13 +11,17 @@ import {
 } from "../lib/api";
 import {
   summarizeLocalCache,
-  listMarketDays,
   cacheDeleteDay,
   cacheDeleteSymbol,
   cacheDeleteAll,
   type LocalCacheSummary,
-  type MarketDayInfo,
 } from "../lib/barCache";
+import {
+  listUnifiedMarketDays,
+  estimateMarketStorage,
+  estimateBrowserQuota,
+  type UnifiedMarketDay,
+} from "../lib/marketCoverage";
 import {
   exportDaysToCsv,
   exportDaysToTrData,
@@ -36,8 +40,10 @@ import {
   tryReadTicksParquet,
   importTrMarketDataDay,
   importTrMarketDataZip,
+  previewTrMarketDataZip,
   classifyTrMarketDataFile,
   type TickImportProgress,
+  type TrMarketZipPreview,
 } from "../lib/tickImport";
 import { reconcileLocalFromBackendStatus } from "../lib/localCache";
 import { getLastRangeLoad, getLastReplayWindow } from "../lib/replayDiagnostics";
@@ -64,16 +70,18 @@ function monthLabel(ym: string): string {
 type MonthGroup = {
   key: string;
   label: string;
-  days: MarketDayInfo[];
+  days: UnifiedMarketDay[];
   bars: number;
   complete: number;
   partial: number;
   empty: number;
   failed: number;
+  both: number;
+  tickOnly: number;
 };
 
-function groupDaysByMonth(days: MarketDayInfo[]): MonthGroup[] {
-  const map = new Map<string, MarketDayInfo[]>();
+function groupDaysByMonth(days: UnifiedMarketDay[]): MonthGroup[] {
+  const map = new Map<string, UnifiedMarketDay[]>();
   for (const d of days) {
     const k = monthKeyFromDay(d.day);
     const arr = map.get(k) || [];
@@ -88,10 +96,12 @@ function groupDaysByMonth(days: MarketDayInfo[]): MonthGroup[] {
       label: monthLabel(key),
       days: list,
       bars: list.reduce((s, d) => s + (d.barCount || 0), 0),
-      complete: list.filter((d) => d.status === "COMPLETE").length,
-      partial: list.filter((d) => d.status === "PARTIAL").length,
-      empty: list.filter((d) => d.status === "EMPTY").length,
-      failed: list.filter((d) => d.status === "FAILED").length,
+      complete: list.filter((d) => d.coverage === "both" || d.coverage === "1s_only").length,
+      partial: list.filter((d) => d.coverage === "partial").length,
+      empty: list.filter((d) => d.barStatus === "EMPTY").length,
+      failed: list.filter((d) => d.barStatus === "FAILED").length,
+      both: list.filter((d) => d.coverage === "both").length,
+      tickOnly: list.filter((d) => d.coverage === "tick_only").length,
     };
   });
 }
@@ -142,7 +152,19 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
   const [deviceVerified, setDeviceVerified] = useState(false);
   const [localSummary, setLocalSummary] = useState<LocalCacheSummary | null>(null);
   const [localCaching, setLocalCaching] = useState(false);
-  const [marketDays, setMarketDays] = useState<MarketDayInfo[]>([]);
+  const [marketDays, setMarketDays] = useState<UnifiedMarketDay[]>([]);
+  const [zipPreview, setZipPreview] = useState<TrMarketZipPreview | null>(null);
+  const [zipPreviewBytes, setZipPreviewBytes] = useState<ArrayBuffer | null>(null);
+  const [storageInfo, setStorageInfo] = useState<{
+    barBytes: number;
+    tickBytes: number;
+    combinedBytes: number;
+    barDays: number;
+    tickDays: number;
+    quotaSupported: boolean;
+    usage?: number;
+    quota?: number;
+  } | null>(null);
   const [marketBusy, setMarketBusy] = useState(false);
   const [selectedMarketDays, setSelectedMarketDays] = useState<Record<string, boolean>>({});
   /** "all" or YYYY-MM */
@@ -171,10 +193,26 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
 
   const refreshMarketDays = async () => {
     try {
-      const rows = await listMarketDays();
+      const rows = await listUnifiedMarketDays();
       setMarketDays(rows);
     } catch {
       setMarketDays([]);
+    }
+    try {
+      const est = await estimateMarketStorage();
+      const q = await estimateBrowserQuota();
+      setStorageInfo({
+        barBytes: est.barBytes,
+        tickBytes: est.tickBytes,
+        combinedBytes: est.combinedBytes,
+        barDays: est.barDays,
+        tickDays: est.tickDays,
+        quotaSupported: q.supported,
+        usage: q.usage,
+        quota: q.quota,
+      });
+    } catch {
+      /* non-fatal */
     }
   };
 
@@ -648,22 +686,26 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
               {(() => {
                 void diagTick;
                 const forSym = marketDays.filter((d) => d.symbol === symbol);
-                const complete = forSym.filter((d) => d.status === "COMPLETE").length;
-                const partial = forSym.filter((d) => d.status === "PARTIAL").length;
-                const empty = forSym.filter((d) => d.status === "EMPTY").length;
-                const failed = forSym.filter((d) => d.status === "FAILED").length;
+                const complete = forSym.filter((d) => d.coverage === "both" || d.coverage === "1s_only").length;
+                const partial = forSym.filter((d) => d.coverage === "partial").length;
+                const empty = forSym.filter((d) => d.barStatus === "EMPTY").length;
+                const failed = forSym.filter((d) => d.barStatus === "FAILED").length;
+                const both = forSym.filter((d) => d.coverage === "both").length;
+                const tickOnly = forSym.filter((d) => d.coverage === "tick_only").length;
                 const bars = forSym.reduce((s, d) => s + (d.barCount || 0), 0);
+                const ticks = forSym.reduce((s, d) => s + (d.tickCount || 0), 0);
                 const last = getLastRangeLoad();
                 const win = getLastReplayWindow();
                 return (
                   <>
                     <p>
                       <b>Symbol</b> {symbol} · <b>Cached days</b> {forSym.length} ·{" "}
-                      <b>Complete</b> {complete} · <b>Partial</b> {partial} · <b>Empty</b> {empty}
+                      <b>Both</b> {both} · <b>1s/Complete</b> {complete} · <b>Tick only</b> {tickOnly} ·{" "}
+                      <b>Partial</b> {partial} · <b>Empty</b> {empty}
                       {failed ? ` · Failed ${failed}` : ""}
                     </p>
                     <p>
-                      <b>Bars in device cache (listed)</b> {bars.toLocaleString()}
+                      <b>Bars</b> {bars.toLocaleString()} · <b>Ticks (count sum)</b> {ticks.toLocaleString()}
                     </p>
                     {last ? (
                       <p>
@@ -696,11 +738,37 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
         <div className="card market-data-mgmt">
           <h3>Market Data Management</h3>
           <p className="hint">
-            Global 1-second cache (symbol|day). Independent of Sessions. Size is estimated (bars × 40 bytes).
+            Global market cache (symbol|day): <b>1s OHLC</b> + <b>Ticks</b> in IndexedDB. Independent of Sessions.
+            Delete removes both 1s and Tick rows for the selected scope. Sizes are estimates.
             <br />
             <b>App Backup</b> = Sessions/Journal/Accounts (no market bars).{" "}
             <b>Market Data Export</b> = 1s bars only (no Journal). Works with zero Sessions.
           </p>
+
+          {storageInfo && (
+            <div className="card" style={{ margin: "8px 0", padding: 10, fontSize: 13 }}>
+              <b>Storage (estimate)</b>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "12px 20px", marginTop: 6 }}>
+                <span>1s OHLC: ~{(storageInfo.barBytes / 1024).toFixed(1)} KB ({storageInfo.barDays} day keys)</span>
+                <span>Ticks: ~{(storageInfo.tickBytes / 1024).toFixed(1)} KB ({storageInfo.tickDays} day keys)</span>
+                <span>Combined: ~{(storageInfo.combinedBytes / 1024).toFixed(1)} KB</span>
+              </div>
+              <div className="muted" style={{ marginTop: 4 }}>
+                {storageInfo.quotaSupported
+                  ? `Browser storage: used ${
+                      storageInfo.usage != null ? `${(storageInfo.usage / (1024 * 1024)).toFixed(1)} MB` : "—"
+                    } / quota ${
+                      storageInfo.quota != null ? `${(storageInfo.quota / (1024 * 1024)).toFixed(0)} MB` : "—"
+                    }${
+                      storageInfo.usage != null && storageInfo.quota
+                        ? ` · ~${Math.max(0, (storageInfo.quota - storageInfo.usage) / (1024 * 1024)).toFixed(0)} MB free`
+                        : ""
+                    }`
+                  : "Browser storage quota API unavailable in this environment."}
+              </div>
+              <div className="hint">Estimates use bar×40B and tick×48B metadata counts — not exact IndexedDB disk usage.</div>
+            </div>
+          )}
           <div className="sync-row" style={{ flexWrap: "wrap", gap: 8 }}>
             <button type="button" disabled={marketBusy} onClick={() => void refreshMarketDays()}>
               Refresh list
@@ -1029,49 +1097,29 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
               <input
                 type="file"
                 accept=".zip,application/zip"
-                multiple
                 disabled={marketBusy}
                 onChange={(e) => {
-                  const list = e.target.files ? Array.from(e.target.files) : [];
+                  const file = e.target.files?.[0];
                   e.target.value = "";
-                  if (!list.length) return;
+                  if (!file) return;
                   setMarketBusy(true);
-                  setTickImportLog("Reading range ZIP…");
-                  setImportProgress("Range ZIP import…");
+                  setTickImportLog("Previewing range ZIP (no writes)…");
+                  setImportProgress("ZIP dry-run…");
+                  setZipPreview(null);
+                  setZipPreviewBytes(null);
                   void (async () => {
                     try {
-                      const lines: string[] = [];
-                      for (const file of list) {
-                        const buf = await file.arrayBuffer();
-                        const summary = await importTrMarketDataZip(buf, {
-                          onProgress: (p) => {
-                            if (p.day && p.dayIndex && p.dayCount) {
-                              setImportProgress(
-                                `ZIP ${file.name}: day ${p.dayIndex}/${p.dayCount} (${p.day})`
-                              );
-                            }
-                          },
-                        });
-                        lines.push(
-                          `${file.name}: ${summary.symbol || "?"} · days ok ${summary.daysOk}/${summary.daysAttempted}` +
-                            (summary.daysFailed ? ` · failed ${summary.daysFailed}` : "") +
-                            (summary.packageMeta &&
-                            summary.packageMeta["start"] &&
-                            summary.packageMeta["end"]
-                              ? ` · package ${String(summary.packageMeta["start"])}→${String(summary.packageMeta["end"])}`
-                              : "")
-                        );
-                        if (summary.errors.length) {
-                          lines.push(`  errors: ${summary.errors.slice(0, 5).join("; ")}`);
-                        }
-                        if (summary.warnings.length) {
-                          lines.push(`  warnings: ${summary.warnings.slice(0, 3).join("; ")}`);
-                        }
+                      const buf = await file.arrayBuffer();
+                      const preview = await previewTrMarketDataZip(buf);
+                      setZipPreview(preview);
+                      setZipPreviewBytes(buf);
+                      setTickImportLog(
+                        `ZIP preview ${file.name}: ${preview.symbol} · ${preview.dayCount} days · ` +
+                          `ticks ${preview.daysWithTicks} · 1s ${preview.daysWithBars1s} · both ${preview.daysWithBoth}`
+                      );
+                      if (preview.errors.length) {
+                        window.alert(preview.errors.join("; "));
                       }
-                      const msg = lines.join("\n");
-                      pushLog(msg);
-                      setTickImportLog(msg);
-                      await refreshMarketDays();
                     } catch (err) {
                       window.alert(err instanceof Error ? err.message : String(err));
                     } finally {
@@ -1085,6 +1133,112 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
 
 
           </div>
+          {zipPreview && (
+            <div className="card import-preview">
+              <h4>Range ZIP preview (dry-run — nothing written yet)</h4>
+              <p>
+                Symbol <b>{zipPreview.symbol}</b>
+                {zipPreview.dateStart && zipPreview.dateEnd
+                  ? ` · ${zipPreview.dateStart} → ${zipPreview.dateEnd}`
+                  : ""}
+              </p>
+              <p>
+                Days in package: <b>{zipPreview.dayCount}</b> · Tick files: {zipPreview.daysWithTicks} · 1s
+                files: {zipPreview.daysWithBars1s} · Both: {zipPreview.daysWithBoth}
+              </p>
+              <p>
+                Already in local cache: {zipPreview.daysAlreadyInCache.length}
+                {zipPreview.daysAlreadyInCache.length
+                  ? ` (${zipPreview.daysAlreadyInCache.slice(0, 5).join(", ")}${
+                      zipPreview.daysAlreadyInCache.length > 5 ? "…" : ""
+                    })`
+                  : ""}
+              </p>
+              <p>
+                Potential 1s conflicts (protectExistingBars may keep local bars):{" "}
+                {zipPreview.potentialConflictDays.length}
+                {zipPreview.potentialConflictDays.length
+                  ? ` (${zipPreview.potentialConflictDays.slice(0, 5).join(", ")}${
+                      zipPreview.potentialConflictDays.length > 5 ? "…" : ""
+                    })`
+                  : ""}
+              </p>
+              {zipPreview.emptyDaysDeclared.length > 0 && (
+                <p className="hint">
+                  Empty days in package.json: {zipPreview.emptyDaysDeclared.slice(0, 8).join(", ")}
+                  {zipPreview.emptyDaysDeclared.length > 8 ? "…" : ""}
+                </p>
+              )}
+              {zipPreview.failedDaysDeclared.length > 0 && (
+                <p className="warn-text">
+                  Failed days in package.json: {zipPreview.failedDaysDeclared.slice(0, 8).join(", ")}
+                </p>
+              )}
+              {zipPreview.warnings.length > 0 && (
+                <p className="hint">{zipPreview.warnings.join("; ")}</p>
+              )}
+              {zipPreview.errors.length > 0 && (
+                <p className="warn-text">{zipPreview.errors.join("; ")}</p>
+              )}
+              <p className="hint">
+                Import reuses the existing pipeline. If local 1s bars differ, they are left unchanged
+                (not treated as a hard import failure).
+              </p>
+              <div className="sync-row" style={{ gap: 8 }}>
+                <button
+                  type="button"
+                  disabled={marketBusy || !zipPreviewBytes || zipPreview.errors.length > 0}
+                  onClick={() => {
+                    if (!zipPreviewBytes) return;
+                    setMarketBusy(true);
+                    setImportProgress("Importing ZIP…");
+                    void (async () => {
+                      try {
+                        const summary = await importTrMarketDataZip(zipPreviewBytes, {
+                          onProgress: (p) => {
+                            if (p.day && p.dayIndex && p.dayCount) {
+                              setImportProgress(
+                                `Import day ${p.dayIndex}/${p.dayCount} (${p.day})`
+                              );
+                            }
+                          },
+                        });
+                        const msg =
+                          `ZIP import ${summary.symbol}: ok ${summary.daysOk}/${summary.daysAttempted}` +
+                          (summary.daysFailed ? ` · failed ${summary.daysFailed}` : "") +
+                          (summary.warnings.length
+                            ? ` · warnings ${summary.warnings.slice(0, 3).join("; ")}`
+                            : "");
+                        pushLog(msg);
+                        setTickImportLog(msg);
+                        setZipPreview(null);
+                        setZipPreviewBytes(null);
+                        await refreshMarketDays();
+                      } catch (err) {
+                        window.alert(err instanceof Error ? err.message : String(err));
+                      } finally {
+                        setMarketBusy(false);
+                        setImportProgress("");
+                      }
+                    })();
+                  }}
+                >
+                  Import
+                </button>
+                <button
+                  type="button"
+                  disabled={marketBusy}
+                  onClick={() => {
+                    setZipPreview(null);
+                    setZipPreviewBytes(null);
+                    setTickImportLog("");
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
           {importPreview && (
             <div className="card import-preview">
               <h4>Import preview</h4>
@@ -1146,7 +1300,8 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
                   return (
                     d.day.includes(q) ||
                     d.symbol.toLowerCase().includes(q) ||
-                    d.status.toLowerCase().includes(q) ||
+                    d.coverage.toLowerCase().includes(q) ||
+                    String(d.barStatus).toLowerCase().includes(q) ||
                     monthLabel(monthKeyFromDay(d.day)).toLowerCase().includes(q)
                   );
                 });
@@ -1266,11 +1421,22 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
                                     </label>
                                     <span className="market-day-sym">{d.symbol}</span>
                                     <span>{d.day}</span>
-                                    <span className={`market-day-status st-${d.status.toLowerCase()}`}>
-                                      {d.status}
+                                    <span className={`market-day-status st-${d.coverage}`}>
+                                      {d.coverage === "both"
+                                        ? "Both"
+                                        : d.coverage === "1s_only"
+                                          ? "1s Only"
+                                          : d.coverage === "tick_only"
+                                            ? "Tick Only"
+                                            : d.coverage === "partial"
+                                              ? "Partial"
+                                              : "Missing"}
                                     </span>
                                     <span>{d.barCount.toLocaleString()} bars</span>
-                                    <span>~{(d.estimatedBytes / 1024).toFixed(1)} KB est.</span>
+                                    <span>{d.tickCount.toLocaleString()} ticks</span>
+                                    <span>
+                                      ~{((d.estimatedBarBytes + d.estimatedTickBytes) / 1024).toFixed(1)} KB est.
+                                    </span>
                                     <span className="muted">
                                       {d.savedAt
                                         ? new Date(d.savedAt).toISOString().slice(0, 16).replace("T", " ")
