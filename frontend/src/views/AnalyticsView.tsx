@@ -36,6 +36,13 @@ import {
 } from "../lib/sessionStore";
 import { getSessionStorageAdapter } from "../lib/storageAdapter";
 import type { AccountProfile } from "../lib/riskModel";
+import {
+  aggregateRiskGap,
+  durationStatsByExit,
+  whatIfFixedRiskPercent,
+  whatIfFixedProfitPercent,
+} from "../lib/tradeAnalyticsAdvanced";
+import { resolveCurrencyPnL } from "../lib/journal";
 
 function EquitySvg({
   points,
@@ -326,6 +333,21 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
     () => computeSummary(filtered, startingBalance ?? 0),
     [filtered, startingBalance]
   );
+  const durationByExit = useMemo(() => durationStatsByExit(filtered), [filtered]);
+  const riskGap = useMemo(() => aggregateRiskGap(filtered), [filtered]);
+  const whatIfSample = useMemo(() => {
+    // Aggregate hypothetical scale to 2% risk on trades that have balance+actual risk
+    let n = 0;
+    let sumDiff = 0;
+    for (const tr of filtered) {
+      const w = whatIfFixedRiskPercent(tr, 2);
+      if (w.available && w.pnlDiffVsActual != null) {
+        n++;
+        sumDiff += w.pnlDiffVsActual;
+      }
+    }
+    return { samples: n, totalPnlDiffIf2pctRisk: n ? sumDiff : null };
+  }, [filtered]);
   const curve = useMemo(
     () => buildEquityCurve(filtered, startingBalance ?? 0),
     [filtered, startingBalance]
@@ -589,12 +611,48 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
             <RHist buckets={rHist} />
           </div>
 
-          <h3>Duration</h3>
+          <h3>Duration (all exits combined)</h3>
           <div className="stat-grid">
             <Card label="Avg" value={formatDuration(summary.avgDurationSec)} />
             <Card label="Median" value={formatDuration(summary.medianDurationSec)} />
             <Card label="Shortest" value={formatDuration(summary.minDurationSec)} />
             <Card label="Longest" value={formatDuration(summary.maxDurationSec)} />
+          </div>
+          <h3>Duration by exit type</h3>
+          <p className="hint">Separate min/max/avg for TP, SL, Breakeven, and Manual (respects current filters).</p>
+          <Table
+            headers={["Exit", "Count", "Min", "Max", "Avg", "Median"]}
+            rows={durationByExit.map((r) => [
+              r.reason.toUpperCase(),
+              r.count,
+              formatDuration(r.minSec),
+              formatDuration(r.maxSec),
+              formatDuration(r.avgSec),
+              formatDuration(r.medianSec),
+            ])}
+          />
+
+          <h3>Actual vs target risk</h3>
+          <div className="stat-grid">
+            <Card label="Samples" value={String(riskGap.samples)} />
+            <Card label="Avg target %" value={formatNum(riskGap.avgTargetPct)} />
+            <Card label="Avg actual %" value={formatNum(riskGap.avgActualPct)} />
+            <Card label="Avg diff (pp)" value={formatNum(riskGap.avgDiffPct)} />
+            <Card label="Avg target $" value={formatNum(riskGap.avgTargetAmt)} />
+            <Card label="Avg actual $" value={formatNum(riskGap.avgActualAmt)} />
+          </div>
+
+          <h3>What-If (hypothetical)</h3>
+          <p className="hint">
+            Not real performance. Example: if every filtered trade with known risk had been sized at 2% of
+            balance-before (scaled P&amp;L by risk ratio).
+          </p>
+          <div className="stat-grid">
+            <Card label="2% risk samples" value={String(whatIfSample.samples)} />
+            <Card
+              label="Sum Δ P&L vs actual"
+              value={formatNum(whatIfSample.totalPnlDiffIf2pctRisk)}
+            />
           </div>
 
           <h3>Trade breakdown</h3>

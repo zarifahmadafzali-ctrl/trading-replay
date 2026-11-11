@@ -29,6 +29,16 @@ import {
   type SessionMeta,
 } from "../lib/sessionStore";
 import { getSessionStorageAdapter } from "../lib/storageAdapter";
+import {
+  compareActualVsTargetRisk,
+  whatIfScaleRisk,
+  whatIfFixedRiskPercent,
+  whatIfFixedProfitPercent,
+  computeExcursion,
+  type ExcursionResult,
+} from "../lib/tradeAnalyticsAdvanced";
+import { cacheGetRange } from "../lib/barCache";
+import { tickCacheGetDayWithAlias } from "../lib/tickCache";
 
 type SortKey =
   | "exitTime"
@@ -89,6 +99,8 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
   const [trades, setTrades] = useState<JournalTrade[]>([]);
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(() => getActiveSessionId());
+  const [excursion, setExcursion] = useState<ExcursionResult | null>(null);
+  const [whatIfRisk, setWhatIfRisk] = useState(100);
   const [selected, setSelected] = useState<JournalTrade | null>(null);
   const [snapCfg, setSnapCfg] = useState<JournalSnapshotConfig>(DEFAULT_JOURNAL_SNAPSHOT_CONFIG);
   useEffect(() => {
@@ -172,6 +184,65 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
     for (const t of trades) if (t.propPhaseName || t.propPhaseId) s.add(t.propPhaseName || t.propPhaseId || "");
     return [...s].filter(Boolean);
   }, [trades]);
+
+
+  useEffect(() => {
+    if (!selected) {
+      setExcursion(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const day = new Date(selected.entryTime * 1000).toISOString().slice(0, 10);
+        const endDay = new Date(selected.exitTime * 1000).toISOString().slice(0, 10);
+        const range = await cacheGetRange(selected.symbol, day, endDay);
+        const bars = range.bars || [];
+        const during = bars.filter((b) => b.time >= selected.entryTime && b.time <= selected.exitTime);
+        const dayEnd = Date.UTC(
+          Number(endDay.slice(0, 4)),
+          Number(endDay.slice(5, 7)) - 1,
+          Number(endDay.slice(8, 10)),
+          23,
+          59,
+          59
+        ) / 1000;
+        const after = bars.filter((b) => b.time > selected.exitTime && b.time <= dayEnd);
+        let ticksDuring = null as import("../lib/tickTypes").TickRecord[] | null;
+        let ticksAfter = null as import("../lib/tickTypes").TickRecord[] | null;
+        const tickHit = await tickCacheGetDayWithAlias(selected.symbol, endDay);
+        if (tickHit?.row?.ticks?.length) {
+          const ticks = tickHit.row.ticks;
+          ticksDuring = ticks.filter((x) => x.time >= selected.entryTime && x.time <= selected.exitTime);
+          ticksAfter = ticks.filter((x) => x.time > selected.exitTime);
+        }
+        if (!cancelled) {
+          setExcursion(computeExcursion(selected, during, after, ticksDuring, ticksAfter));
+        }
+      } catch {
+        if (!cancelled) {
+          setExcursion({
+            available: false,
+            unavailableReason: "Could not load market data for excursion",
+            dataSource: "none",
+            mfePrice: null,
+            maePrice: null,
+            mfePoints: null,
+            maePoints: null,
+            mfeR: null,
+            maeR: null,
+            postExitMfePrice: null,
+            postExitMfePoints: null,
+            postExitMfeR: null,
+            observationEnd: null,
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selected]);
 
   const filtered = useMemo(() => {
     let rows = trades.slice();
@@ -613,6 +684,120 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
                   </>
                 ) : null}
               </div>
+            </section>
+
+            <section>
+              <h4>Actual risk vs target</h4>
+              {(() => {
+                const c = compareActualVsTargetRisk(selected);
+                return (
+                  <div className="journal-detail-grid">
+                    <span>Balance before</span>
+                    <span>{fmtUsd(c.balanceBefore)}</span>
+                    <span>Target risk</span>
+                    <span>
+                      {fmtUsd(c.targetRiskAmount)} / {fmtNum(c.targetRiskPercent, 2)}%
+                    </span>
+                    <span>Actual risk</span>
+                    <span>
+                      {fmtUsd(c.actualRiskAmount)} / {fmtNum(c.actualRiskPercent, 2)}%
+                    </span>
+                    <span>Risk difference</span>
+                    <span>
+                      {fmtUsd(c.riskAmountDiff)} / {fmtNum(c.riskPercentDiff, 2)} pp
+                    </span>
+                    <span>Stop distance</span>
+                    <span>{fmtNum(c.stopDistance, 2)}</span>
+                    <span>Lot</span>
+                    <span>{fmtNum(c.finalLot, 2)}</span>
+                    <span>Leverage</span>
+                    <span>{c.leverage != null ? fmtNum(c.leverage, 1) : "—"}</span>
+                    <span>Margin used</span>
+                    <span>{c.marginUsed != null ? fmtUsd(c.marginUsed) : "—"}</span>
+                  </div>
+                );
+              })()}
+            </section>
+
+            <section>
+              <h4>MFE / MAE (excursion)</h4>
+              {!excursion ? (
+                <p className="hint">Loading market data…</p>
+              ) : !excursion.available ? (
+                <p className="hint">{excursion.unavailableReason || "Unavailable"}</p>
+              ) : (
+                <div className="journal-detail-grid">
+                  <span>Data source</span>
+                  <span>
+                    {excursion.dataSource === "tick"
+                      ? "Tick Bid/Ask"
+                      : excursion.dataSource === "bars_1s"
+                        ? "1s OHLC estimate"
+                        : "—"}
+                  </span>
+                  <span>MFE points / R</span>
+                  <span>
+                    {fmtNum(excursion.mfePoints, 2)} / {fmtNum(excursion.mfeR, 2)} R
+                  </span>
+                  <span>MAE points / R</span>
+                  <span>
+                    {fmtNum(excursion.maePoints, 2)} / {fmtNum(excursion.maeR, 2)} R
+                  </span>
+                  <span>MFE price</span>
+                  <span>{fmtNum(excursion.mfePrice)}</span>
+                  <span>MAE price</span>
+                  <span>{fmtNum(excursion.maePrice)}</span>
+                  <span>Post-exit MFE pts / R</span>
+                  <span>
+                    {fmtNum(excursion.postExitMfePoints, 2)} / {fmtNum(excursion.postExitMfeR, 2)} R
+                  </span>
+                  <span>Note</span>
+                  <span className="hint">{excursion.note || "Post-exit uses UTC calendar day end."}</span>
+                </div>
+              )}
+            </section>
+
+            <section>
+              <h4>What-If scenarios (hypothetical)</h4>
+              <p className="hint">Does not change historical results.</p>
+              <label>
+                Scale risk $
+                <input
+                  type="number"
+                  value={whatIfRisk}
+                  onChange={(e) => setWhatIfRisk(Number(e.target.value) || 0)}
+                  style={{ width: 80, marginLeft: 8 }}
+                />
+              </label>
+              {(() => {
+                const rows = [
+                  whatIfScaleRisk(selected, whatIfRisk),
+                  whatIfFixedRiskPercent(selected, 1),
+                  whatIfFixedRiskPercent(selected, 2),
+                  whatIfFixedProfitPercent(selected, 4),
+                ];
+                return (
+                  <div className="journal-detail-grid" style={{ marginTop: 8 }}>
+                    {rows.map((r) => (
+                      <div key={r.id + r.label} style={{ gridColumn: "1 / -1" }}>
+                        <b>{r.label}</b>
+                        {!r.available ? (
+                          <span className="hint"> — {r.unavailableReason}</span>
+                        ) : (
+                          <span>
+                            {" "}
+                            · risk {fmtUsd(r.riskAmount)} ({fmtNum(r.riskPercent, 2)}%) · PnL{" "}
+                            {r.pnl != null ? fmtUsd(r.pnl) : "—"} · vs actual{" "}
+                            {r.pnlDiffVsActual != null ? fmtUsd(r.pnlDiffVsActual) : "—"}
+                            {r.targetProfit != null ? ` · target ${fmtUsd(r.targetProfit)}` : ""}
+                          </span>
+                        )}
+                        {r.notes ? <div className="hint">{r.notes}</div> : null}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
             </section>
 
             <section>

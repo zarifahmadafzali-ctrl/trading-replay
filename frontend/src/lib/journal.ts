@@ -87,6 +87,14 @@ export type JournalTrade = {
   rewardAmount?: number | null;
   rewardPercent?: number | null;
   targetRiskPercent?: number | null;
+  /** C8 optional excursion (cached when computed). */
+  mfePoints?: number | null;
+  maePoints?: number | null;
+  mfeR?: number | null;
+  maeR?: number | null;
+  postExitMfePoints?: number | null;
+  postExitMfeR?: number | null;
+  excursionDataSource?: string;
   marginUsed?: number | null;
   pointValue?: number | null;
   fillStatus?: "filled" | "closed";
@@ -180,6 +188,13 @@ export function normalizeJournalTrade(raw: Partial<JournalTrade> & Record<string
     rewardAmount: numOrNull(raw.rewardAmount),
     rewardPercent: numOrNull(raw.rewardPercent),
     targetRiskPercent: numOrNull(raw.targetRiskPercent),
+    mfePoints: numOrNull(raw.mfePoints),
+    maePoints: numOrNull(raw.maePoints),
+    mfeR: numOrNull(raw.mfeR),
+    maeR: numOrNull(raw.maeR),
+    postExitMfePoints: numOrNull(raw.postExitMfePoints),
+    postExitMfeR: numOrNull(raw.postExitMfeR),
+    excursionDataSource: raw.excursionDataSource as string | undefined,
     marginUsed: numOrNull(raw.marginUsed),
     pointValue: numOrNull(raw.pointValue),
     fillStatus: raw.fillStatus === "filled" || raw.fillStatus === "closed" ? raw.fillStatus : "closed",
