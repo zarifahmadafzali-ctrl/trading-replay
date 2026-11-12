@@ -41,6 +41,7 @@ import {
   aggregateRiskGap,
   durationStatsByExit,
   durationStatsByProfitability,
+  stopDistanceStatsByExit,
   analyzeDailyTwoTradeBehavior,
   whatIfFixedRiskPercent,
   whatIfFixedProfitPercent,
@@ -631,6 +632,7 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
   );
   const durationByExit = useMemo(() => durationStatsByExit(filtered), [filtered]);
   const durationByProfit = useMemo(() => durationStatsByProfitability(filtered), [filtered]);
+  const stopDistanceByExit = useMemo(() => stopDistanceStatsByExit(filtered), [filtered]);
   const dailyTwo = useMemo(
     () => analyzeDailyTwoTradeBehavior(filtered, "America/New_York"),
     [filtered]
@@ -986,6 +988,60 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
               formatDuration(r.maxSec),
               formatDuration(r.avgSec),
               formatDuration(r.medianSec),
+            ])}
+          />
+
+          <h3>Stop distance (price points)</h3>
+          <p className="hint">
+            Initial |entry − stop| in price points (index points / FX pips when quoted that way). Min =
+            tightest stop, Max = widest. Split by exit type; respects filters.
+            {stopDistanceByExit[0]?.excludedMissing
+              ? ` ${stopDistanceByExit[0].excludedMissing} trades missing stop distance.`
+              : ""}
+          </p>
+          <div className="stat-grid">
+            <Card
+              label="Tightest stop"
+              value={
+                stopDistanceByExit[0]?.minPts != null
+                  ? stopDistanceByExit[0].minPts.toFixed(2)
+                  : "—"
+              }
+            />
+            <Card
+              label="Widest stop"
+              value={
+                stopDistanceByExit[0]?.maxPts != null
+                  ? stopDistanceByExit[0].maxPts.toFixed(2)
+                  : "—"
+              }
+            />
+            <Card
+              label="Avg stop"
+              value={
+                stopDistanceByExit[0]?.avgPts != null
+                  ? stopDistanceByExit[0].avgPts.toFixed(2)
+                  : "—"
+              }
+            />
+            <Card
+              label="Median stop"
+              value={
+                stopDistanceByExit[0]?.medianPts != null
+                  ? stopDistanceByExit[0].medianPts.toFixed(2)
+                  : "—"
+              }
+            />
+          </div>
+          <Table
+            headers={["Exit", "Count", "Min pts", "Max pts", "Avg pts", "Median pts"]}
+            rows={stopDistanceByExit.map((r) => [
+              r.reason.toUpperCase(),
+              r.count,
+              r.minPts != null ? r.minPts.toFixed(2) : "—",
+              r.maxPts != null ? r.maxPts.toFixed(2) : "—",
+              r.avgPts != null ? r.avgPts.toFixed(2) : "—",
+              r.medianPts != null ? r.medianPts.toFixed(2) : "—",
             ])}
           />
 

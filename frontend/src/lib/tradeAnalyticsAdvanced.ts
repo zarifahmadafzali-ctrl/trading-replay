@@ -556,6 +556,83 @@ export function durationStatsByExit(trades: JournalTrade[]): DurationBucketStats
   ];
 }
 
+
+/** Absolute initial stop distance in price points (|entry − stop|). */
+export function stopDistancePoints(t: JournalTrade): number | null {
+  if (t.slDistance != null && Number.isFinite(t.slDistance) && t.slDistance > 0) {
+    return Math.abs(t.slDistance);
+  }
+  if (
+    t.entryPrice != null &&
+    t.stopPrice != null &&
+    Number.isFinite(t.entryPrice) &&
+    Number.isFinite(t.stopPrice)
+  ) {
+    const d = Math.abs(t.entryPrice - t.stopPrice);
+    return d > 0 ? d : null;
+  }
+  return null;
+}
+
+export type StopDistanceBucketStats = {
+  reason: "all" | "tp" | "sl" | "manual" | "breakeven";
+  count: number;
+  minPts: number | null;
+  maxPts: number | null;
+  avgPts: number | null;
+  medianPts: number | null;
+  excludedMissing: number;
+};
+
+/**
+ * Min/max/avg/median initial stop distance (price points) by exit type.
+ * For index CFDs these are points; for FX they match pip-scale when stop is in price.
+ */
+export function stopDistanceStatsByExit(trades: JournalTrade[]): StopDistanceBucketStats[] {
+  const buckets: Record<string, number[]> = {
+    tp: [],
+    sl: [],
+    manual: [],
+    breakeven: [],
+    all: [],
+  };
+  let excluded = 0;
+  for (const t of trades) {
+    const d = stopDistancePoints(t);
+    if (d == null) {
+      excluded++;
+      continue;
+    }
+    buckets.all!.push(d);
+    if (isBreakeven(t)) {
+      buckets.breakeven!.push(d);
+      continue;
+    }
+    if (t.reason === "tp") buckets.tp!.push(d);
+    else if (t.reason === "sl") buckets.sl!.push(d);
+    else buckets.manual!.push(d);
+  }
+  const pack = (
+    reason: StopDistanceBucketStats["reason"],
+    xs: number[]
+  ): StopDistanceBucketStats => ({
+    reason,
+    count: xs.length,
+    minPts: xs.length ? Math.min(...xs) : null,
+    maxPts: xs.length ? Math.max(...xs) : null,
+    avgPts: xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null,
+    medianPts: median(xs),
+    excludedMissing: excluded,
+  });
+  return [
+    pack("all", buckets.all!),
+    pack("tp", buckets.tp!),
+    pack("sl", buckets.sl!),
+    pack("breakeven", buckets.breakeven!),
+    pack("manual", buckets.manual!),
+  ];
+}
+
 export function aggregateRiskGap(trades: JournalTrade[]): {
   samples: number;
   avgTargetPct: number | null;
