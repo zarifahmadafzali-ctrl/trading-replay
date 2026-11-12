@@ -1,11 +1,15 @@
 /**
- * Legacy icon-based drawing toolbar (TradingView-style).
- * v3.17.2: rendered as floating/movable overlay; icons driven by shared Favorites.
+ * Floating drawing toolbar — favorites icons, drag-to-reposition, H/V layout,
+ * and finger/mouse slide along the tool strip without accidental selection.
  */
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DrawTool } from "./Chart";
 
 type ToolDef = { id: DrawTool; label: string; icon: JSX.Element };
+type ToolbarOrientation = "vertical" | "horizontal";
+
+const ORIENT_KEY = "tr-float-toolbar-orient";
+const SLIDE_THRESHOLD_PX = 10;
 
 const iconProps = {
   width: 18,
@@ -121,6 +125,16 @@ const ICONS: Record<string, JSX.Element> = {
       <circle cx="14" cy="18" r="1.2" fill="currentColor" stroke="none" />
     </svg>
   ),
+  orientH: (
+    <svg {...iconProps}>
+      <rect x="3" y="9" width="18" height="6" rx="1" />
+    </svg>
+  ),
+  orientV: (
+    <svg {...iconProps}>
+      <rect x="9" y="3" width="6" height="18" rx="1" />
+    </svg>
+  ),
 };
 
 /** Canonical tool defs with icons — same set as drawing engine supports. */
@@ -152,6 +166,16 @@ function resolveTools(favorites: DrawTool[] | undefined): ToolDef[] {
   return out.length ? out : TOOLBAR_TOOLS.filter((t) => DEFAULT_FAVORITES.includes(t.id));
 }
 
+function loadOrient(): ToolbarOrientation {
+  try {
+    const v = localStorage.getItem(ORIENT_KEY);
+    if (v === "horizontal" || v === "vertical") return v;
+  } catch {
+    /* */
+  }
+  return "vertical";
+}
+
 export function Toolbar({
   activeTool,
   onToolChange,
@@ -165,76 +189,180 @@ export function Toolbar({
   onToolChange: (tool: DrawTool) => void;
   onDeleteSelected?: () => void;
   hasSelection?: boolean;
-  /** Shared Favorites from ReplayView — same source as Drawing Tools menu. */
   favorites?: DrawTool[];
   position?: { x: number; y: number };
   onPositionChange?: (pos: { x: number; y: number }) => void;
 }) {
   const tools = resolveTools(favorites);
   const pos = position || { x: 8, y: 8 };
-  const dragRef = useRef<{ dx: number; dy: number } | null>(null);
+  const [orient, setOrient] = useState<ToolbarOrientation>(() => loadOrient());
+  const shellDragRef = useRef<{ dx: number; dy: number } | null>(null);
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  const slideRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    scrollLeft: number;
+    scrollTop: number;
+    moved: boolean;
+    toolId: DrawTool | null;
+    action: "tool" | "delete" | null;
+  } | null>(null);
+  const lastStripGestureRef = useRef<{ moved: boolean }>({ moved: false });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ORIENT_KEY, orient);
+    } catch {
+      /* */
+    }
+  }, [orient]);
+
+  const toggleOrient = () => {
+    setOrient((o) => (o === "vertical" ? "horizontal" : "vertical"));
+  };
+
+  const onStripPointerDown = (
+    e: React.PointerEvent,
+    toolId: DrawTool | null,
+    action: "tool" | "delete" | null = "tool"
+  ) => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    // Only primary button / touch
+    if (e.button != null && e.button !== 0) return;
+    slideRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: strip.scrollLeft,
+      scrollTop: strip.scrollTop,
+      moved: false,
+      toolId,
+      action: toolId ? "tool" : action,
+    };
+    try {
+      strip.setPointerCapture(e.pointerId);
+    } catch {
+      /* */
+    }
+  };
+
+  const onStripPointerMove = (e: React.PointerEvent) => {
+    const s = slideRef.current;
+    const strip = stripRef.current;
+    if (!s || !strip || s.pointerId !== e.pointerId) return;
+    const dx = e.clientX - s.startX;
+    const dy = e.clientY - s.startY;
+    if (!s.moved && Math.hypot(dx, dy) >= SLIDE_THRESHOLD_PX) {
+      s.moved = true;
+    }
+    if (s.moved) {
+      if (orient === "horizontal") {
+        strip.scrollLeft = s.scrollLeft - dx;
+      } else {
+        strip.scrollTop = s.scrollTop - dy;
+      }
+      e.preventDefault();
+    }
+  };
+
+  const onStripPointerUp = (e: React.PointerEvent) => {
+    const s = slideRef.current;
+    if (!s || s.pointerId !== e.pointerId) return;
+    const wasSlide = s.moved;
+    const toolId = s.toolId;
+    slideRef.current = null;
+    try {
+      stripRef.current?.releasePointerCapture(e.pointerId);
+    } catch {
+      /* */
+    }
+    lastStripGestureRef.current = { moved: wasSlide };
+    // Tap without meaningful movement → select tool or delete
+    if (!wasSlide) {
+      if (toolId) onToolChange(toolId);
+      else if (s.action === "delete") onDeleteSelected?.();
+    }
+  };
 
   return (
     <div
-      className="tv-toolbar tv-toolbar-float"
+      className={`tv-toolbar tv-toolbar-float tv-toolbar-${orient}`}
       style={{ left: pos.x, top: pos.y }}
       onPointerDown={(e) => {
         const t = e.target as HTMLElement;
-        if (t.closest("button.tv-tool")) return;
+        if (t.closest(".tv-toolbar-strip") || t.closest("button.tv-tool")) return;
+        if (t.closest("button.tv-orient")) return;
         const el = e.currentTarget;
         el.setPointerCapture(e.pointerId);
-        dragRef.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y };
+        shellDragRef.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y };
         el.classList.add("dragging");
       }}
       onPointerMove={(e) => {
-        if (!dragRef.current || !onPositionChange) return;
-        const x = Math.max(0, e.clientX - dragRef.current.dx);
-        const y = Math.max(0, e.clientY - dragRef.current.dy);
+        if (!shellDragRef.current || !onPositionChange) return;
+        const x = Math.max(0, e.clientX - shellDragRef.current.dx);
+        const y = Math.max(0, e.clientY - shellDragRef.current.dy);
         onPositionChange({ x, y });
       }}
       onPointerUp={(e) => {
-        dragRef.current = null;
+        shellDragRef.current = null;
         (e.currentTarget as HTMLElement).classList.remove("dragging");
       }}
       onPointerCancel={(e) => {
-        dragRef.current = null;
+        shellDragRef.current = null;
         (e.currentTarget as HTMLElement).classList.remove("dragging");
       }}
     >
       <span className="tv-toolbar-grip" title="Drag toolbar" aria-hidden>
         {ICONS.grip}
       </span>
-      {tools.map((t) => (
-        <ToolButton
-          key={t.id}
-          tool={t}
-          active={activeTool === t.id}
-          onClick={() => onToolChange(t.id)}
-        />
-      ))}
-      <div className="tv-sep" />
       <button
         type="button"
-        title="Delete selected shape"
-        className="tv-tool tv-tool-danger"
-        onClick={onDeleteSelected}
-        disabled={!hasSelection}
+        className="tv-tool tv-orient"
+        title={orient === "vertical" ? "Switch to horizontal" : "Switch to vertical"}
+        onClick={toggleOrient}
       >
-        {ICONS.trash}
+        {orient === "vertical" ? ICONS.orientH : ICONS.orientV}
       </button>
+      <div
+        className="tv-toolbar-strip"
+        ref={stripRef}
+        onPointerMove={onStripPointerMove}
+        onPointerUp={onStripPointerUp}
+        onPointerCancel={onStripPointerUp}
+      >
+        {tools.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            title={t.label}
+            className={`tv-tool${activeTool === t.id ? " active" : ""}`}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onStripPointerDown(e, t.id);
+            }}
+            // Click handled via pointer-up after slide detection (avoid double-fire)
+            onClick={(e) => e.preventDefault()}
+          >
+            {t.icon}
+          </button>
+        ))}
+        <div className="tv-sep" aria-hidden />
+        <button
+          type="button"
+          title="Delete selected shape"
+          className="tv-tool tv-tool-danger"
+          disabled={!hasSelection}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            onStripPointerDown(e, null, "delete");
+          }}
+          onClick={(e) => e.preventDefault()}
+        >
+          {ICONS.trash}
+        </button>
+      </div>
     </div>
-  );
-}
-
-function ToolButton({ tool, active, onClick }: { tool: ToolDef; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      title={tool.label}
-      className={`tv-tool${active ? " active" : ""}`}
-      onClick={onClick}
-    >
-      {tool.icon}
-    </button>
   );
 }

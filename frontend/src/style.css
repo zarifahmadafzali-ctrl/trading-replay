@@ -932,7 +932,7 @@ footer {
   }
 }
 
-/* --- Floating icon Drawing Toolbar (legacy TV-style, v3.17.2) --- */
+/* --- Floating icon Drawing Toolbar (H/V + slide strip) --- */
 .tv-toolbar,
 .tv-toolbar-float {
   position: absolute;
@@ -950,8 +950,15 @@ footer {
   backdrop-filter: blur(8px);
   touch-action: none;
   cursor: grab;
-  max-height: min(90vh, 520px);
-  overflow-y: auto;
+  max-height: min(90vh, 560px);
+  max-width: min(96vw, 560px);
+  overflow: hidden;
+}
+.tv-toolbar-float.tv-toolbar-horizontal {
+  flex-direction: row;
+  align-items: center;
+  max-height: none;
+  max-width: min(96vw, 720px);
 }
 .tv-toolbar-float.dragging {
   cursor: grabbing;
@@ -965,10 +972,41 @@ footer {
   color: #6b7280;
   cursor: grab;
   user-select: none;
+  flex-shrink: 0;
+}
+.tv-toolbar-horizontal .tv-toolbar-grip {
+  width: 18px;
+  height: 34px;
+}
+/* Tool strip: finger/mouse slide without a visible scrollbar chrome when possible */
+.tv-toolbar-strip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  max-height: min(70vh, 440px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none; /* Firefox */
+  touch-action: none; /* we drive scroll via pointer handlers */
+}
+.tv-toolbar-strip::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.tv-toolbar-horizontal .tv-toolbar-strip {
+  flex-direction: row;
+  max-height: none;
+  max-width: min(80vw, 640px);
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 .tv-tool {
   width: 34px;
   height: 34px;
+  flex-shrink: 0;
   display: grid;
   place-items: center;
   padding: 0;
@@ -977,7 +1015,7 @@ footer {
   background: transparent;
   color: #b7c1cf;
   cursor: pointer;
-  touch-action: manipulation;
+  touch-action: none;
   -webkit-tap-highlight-color: transparent;
   user-select: none;
 }
@@ -991,8 +1029,15 @@ footer {
 }
 .tv-sep {
   height: 1px;
+  width: 22px;
   background: rgba(148, 163, 184, 0.16);
   margin: 4px 2px;
+  flex-shrink: 0;
+}
+.tv-toolbar-horizontal .tv-sep {
+  width: 1px;
+  height: 22px;
+  margin: 2px 4px;
 }
 .tv-tool-danger { color: #ef5350; }
 .tv-tool-danger:disabled { color: #3a4552; cursor: not-allowed; }
