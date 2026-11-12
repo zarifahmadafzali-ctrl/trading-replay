@@ -67,11 +67,23 @@ function arrowHead(ctx: CanvasRenderingContext2D, tip: Px, from: Px, color: stri
   ctx.fill();
 }
 
+/**
+ * True when an anchor is near the visible chart (not far off-screen).
+ * Prevents labels from sliding/sticking to the left/right edge while panning.
+ */
+function anchorNearView(x: number, y: number, bounds: Bounds, margin = 48): boolean {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  return x >= -margin && x <= bounds.w + margin && y >= -margin && y <= bounds.h + margin;
+}
+
 /** Rounded label box. (x,y) is the anchor; `align` decides how the box sits relative to it. */
 function labelBox(
   ctx: CanvasRenderingContext2D, lines: string[], x: number, y: number,
   bg: string, fg: string, bounds: Bounds, align: "center" | "left" | "right" = "center"
 ) {
+  // Do not pin labels to the chart rim when the drawing has scrolled away.
+  if (!anchorNearView(x, y, bounds)) return;
+
   ctx.setLineDash([]);
   ctx.font = FONT;
   const padX = 8, lineH = 16, padY = 5;
@@ -79,6 +91,7 @@ function labelBox(
   const h = lines.length * lineH + padY * 2 - 4;
   let bx = align === "center" ? x - w / 2 : align === "left" ? x : x - w;
   let by = y;
+  // Soft clamp only while the anchor is still near the view (keeps box readable).
   bx = Math.min(Math.max(bx, 2), Math.max(2, bounds.w - w - 2));
   by = Math.min(Math.max(by, 2), Math.max(2, bounds.h - h - 2));
   ctx.fillStyle = bg;
@@ -158,11 +171,13 @@ export function drawShape(ctx: CanvasRenderingContext2D, shape: DrawingShape, en
       }
       if (s.text) {
         const ta = textAnchorInRect(s.textAlign, x0, y0, Math.max(A.x, B.x), y1);
-        ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
-        ctx.fillStyle = s.textColor || st.color;
-        ctx.textAlign = ta.textAlign;
-        ctx.textBaseline = ta.textBaseline;
-        ctx.fillText(s.text, ta.x, ta.y);
+        if (anchorNearView(ta.x, ta.y, bounds)) {
+          ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
+          ctx.fillStyle = s.textColor || st.color;
+          ctx.textAlign = ta.textAlign;
+          ctx.textBaseline = ta.textBaseline;
+          ctx.fillText(s.text, ta.x, ta.y);
+        }
       }
       if (s.showStats) {
         const hi = Math.max(s.a.price, s.b.price), lo = Math.min(s.a.price, s.b.price);
@@ -201,11 +216,13 @@ export function drawShape(ctx: CanvasRenderingContext2D, shape: DrawingShape, en
       labelBox(ctx, [l1, l2], mx, above ? y0 - 44 : y1 + 8, withAlpha(base, 0.95), "#ffffff", bounds);
       if (s.text) {
         const ta = textAnchorInRect(s.textAlign, x0, y0, x1, y1);
-        ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
-        ctx.fillStyle = s.textColor || base;
-        ctx.textAlign = ta.textAlign;
-        ctx.textBaseline = ta.textBaseline;
-        ctx.fillText(s.text, ta.x, ta.y);
+        if (anchorNearView(ta.x, ta.y, bounds)) {
+          ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
+          ctx.fillStyle = s.textColor || base;
+          ctx.textAlign = ta.textAlign;
+          ctx.textBaseline = ta.textBaseline;
+          ctx.fillText(s.text, ta.x, ta.y);
+        }
       }
       if (selected) { handle(ctx, A, base); handle(ctx, B, base); }
       return true;
@@ -235,10 +252,13 @@ export function drawShape(ctx: CanvasRenderingContext2D, shape: DrawingShape, en
         if (s.showPercents !== false) parts.push(String(r.value));
         if (s.showPrices !== false) parts.push(parts.length ? `(${fmt(r.price, dec)})` : fmt(r.price, dec));
         if (parts.length) {
-          ctx.fillStyle = r.color;
-          const inside = xl < 80;
-          ctx.textAlign = inside ? "left" : "right";
-          ctx.fillText(parts.join(" "), inside ? xl + 4 : xl - 6, r.y - 8);
+          // Keep fib labels with the level segment — not glued to the left chart rim.
+          const labelX = Math.min(Math.max((xl + xr) / 2, 8), Math.max(8, bounds.w - 8));
+          if (anchorNearView(labelX, r.y, bounds)) {
+            ctx.fillStyle = r.color;
+            ctx.textAlign = "center";
+            ctx.fillText(parts.join(" "), labelX, r.y - 8);
+          }
         }
       }
       if (s.trendLine !== false) {
@@ -247,51 +267,14 @@ export function drawShape(ctx: CanvasRenderingContext2D, shape: DrawingShape, en
       }
       if (s.text) {
         const mid = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 };
-        ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
-        ctx.fillStyle = s.textColor || st.color;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "bottom";
-        ctx.fillText(s.text, mid.x, mid.y - 6);
-      }
-      if (selected) { handle(ctx, A, "#787B86"); handle(ctx, B, "#787B86"); }
-      return true;
-    }
-    if (s.kind === "channel") {
-      const A = project(s.a), B = project(s.b), C = project(s.c);
-      const [a2, b2] = channelParallel(s);
-      const A2 = project(a2), B2 = project(b2);
-      if (!A || !B || !C || !A2 || !B2) return true;
-      const st = resolveStyle(s);
-      const eL = !!s.extendLeft, eR = !!s.extendRight;
-      const base = clipLineToRect(A, B, bounds, eL, eR);
-      const par = clipLineToRect(A2, B2, bounds, eL, eR);
-      if (st.fillOpacity > 0 && base && par) {
-        const xs = [base[0].x, base[1].x, par[0].x, par[1].x];
-        const xa = Math.min(...xs), xb = Math.max(...xs);
-        const y1a = yAtX(A, B, xa), y1b = yAtX(A, B, xb), y2a = yAtX(A2, B2, xa), y2b = yAtX(A2, B2, xb);
-        if (y1a != null && y1b != null && y2a != null && y2b != null) {
-          ctx.fillStyle = withAlpha(st.fillColor, st.fillOpacity);
-          ctx.beginPath();
-          ctx.moveTo(xa, y1a); ctx.lineTo(xb, y1b); ctx.lineTo(xb, y2b); ctx.lineTo(xa, y2a);
-          ctx.closePath(); ctx.fill();
-        }
-      }
-      applyLine(ctx, withAlpha(st.color, st.strokeOpacity ?? 1), st.lineWidth, st.lineStyle);
-      if (base) seg(ctx, base[0], base[1]);
-      if (par) seg(ctx, par[0], par[1]);
-      if (s.showMiddle) {
-        const M1 = { x: (A.x + A2.x) / 2, y: (A.y + A2.y) / 2 }, M2 = { x: (B.x + B2.x) / 2, y: (B.y + B2.y) / 2 };
-        const mid = clipLineToRect(M1, M2, bounds, eL, eR);
-        applyLine(ctx, st.color, 1, "dashed");
-        if (mid) seg(ctx, mid[0], mid[1]);
-      }
-      if (s.text) {
-        const mid = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 };
+        if (anchorNearView(mid.x, mid.y, bounds)) {
         ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
         ctx.fillStyle = s.textColor || st.color;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText(s.text, mid.x, mid.y - 8);
+        }
+
       }
       if (selected) { handle(ctx, A, st.color); handle(ctx, B, st.color); handle(ctx, C, st.color); }
       return true;
@@ -332,16 +315,18 @@ function drawTrend(ctx: CanvasRenderingContext2D, s: TrendlineShape, env: Render
   const mid = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 };
   if (s.text) {
     const align = s.textAlign || "center";
-    ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
-    ctx.fillStyle = s.textColor || st.color;
     let tx = mid.x, ty = mid.y - 6, ta: CanvasTextAlign = "center", tb: CanvasTextBaseline = "bottom";
     if (align === "left" || align === "top-left" || align === "bottom-left") { tx = Math.min(A.x, B.x); ta = "left"; }
     else if (align === "right" || align === "top-right" || align === "bottom-right") { tx = Math.max(A.x, B.x); ta = "right"; }
     if (align === "top" || align === "top-left" || align === "top-right") { ty = Math.min(A.y, B.y) - 4; tb = "bottom"; }
     else if (align === "bottom" || align === "bottom-left" || align === "bottom-right") { ty = Math.max(A.y, B.y) + 4; tb = "top"; }
     else if (align === "center") { ty = mid.y - 6; tb = "bottom"; }
-    ctx.textAlign = ta; ctx.textBaseline = tb;
-    ctx.fillText(s.text, tx, ty);
+    if (anchorNearView(tx, ty, env.bounds)) {
+      ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
+      ctx.fillStyle = s.textColor || st.color;
+      ctx.textAlign = ta; ctx.textBaseline = tb;
+      ctx.fillText(s.text, tx, ty);
+    }
   }
   if (s.showStats || s.showAngle) {
     const ms = measureStats(s.a, s.b, { barSec: env.barSec });
