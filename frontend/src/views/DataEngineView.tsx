@@ -1359,7 +1359,7 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
                         <p className="hint">No days match this filter.</p>
                       ) : (
                         groups.map((g) => {
-                          const expanded = expandedMonths[g.key] ?? (monthFilter !== "all" || groups.length <= 3);
+                          const expanded = expandedMonths[g.key] ?? (monthFilter !== "all" && monthFilter === g.key);
                           const allSelected = g.days.every((d) => selectedMarketDays[d.id]);
                           const someSelected = g.days.some((d) => selectedMarketDays[d.id]);
                           return (
@@ -1404,8 +1404,9 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
                                   {g.failed ? ` · ${g.failed} failed` : ""}
                                 </span>
                               </div>
-                              {expanded &&
-                                g.days.map((d) => (
+                              {expanded && (
+                                <div className="market-month-days">
+                                {g.days.map((d) => (
                                   <div key={d.id} className="market-day-row">
                                     <label className="market-day-check">
                                       <input
@@ -1465,6 +1466,8 @@ export function DataEngineView({ backendOnline }: { backendOnline: boolean | nul
                                     </button>
                                   </div>
                                 ))}
+                                </div>
+                              )}
                             </div>
                           );
                         })
