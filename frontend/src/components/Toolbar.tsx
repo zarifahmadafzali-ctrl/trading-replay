@@ -80,6 +80,20 @@ const ICONS: Record<string, JSX.Element> = {
       <line x1="19" y1="9" x2="19" y2="12" />
     </svg>
   ),
+  channel: (
+    <svg {...iconProps}>
+      <line x1="4" y1="18" x2="18" y2="6" />
+      <line x1="6" y1="22" x2="20" y2="10" />
+      <circle cx="4" cy="18" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="18" cy="6" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="20" cy="10" r="1.5" fill="currentColor" stroke="none" />
+    </svg>
+  ),
+  text: (
+    <svg {...iconProps}>
+      <path d="M5 6h14M12 6v14M8 20h8" />
+    </svg>
+  ),
   long: (
     <svg {...iconProps}>
       <circle cx="12" cy="12" r="9" />
@@ -120,6 +134,8 @@ export const TOOLBAR_TOOLS: ToolDef[] = [
   { id: "rectangle", label: "Rectangle", icon: ICONS.rectangle },
   { id: "fib", label: "Fibonacci Retracement", icon: ICONS.fib },
   { id: "measure", label: "Measure (Price + Time)", icon: ICONS.measure },
+  { id: "channel", label: "Parallel Channel", icon: ICONS.channel },
+  { id: "text", label: "Text / Note", icon: ICONS.text },
   { id: "long", label: "Long Position", icon: ICONS.long },
   { id: "short", label: "Short Position", icon: ICONS.short },
 ];

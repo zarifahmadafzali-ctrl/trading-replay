@@ -1294,66 +1294,48 @@ export function Chart({
         });
       }
     }
-    // Live placement preview: same visual language as finished shapes (8 rect handles, etc.)
+    // Live placement preview: same engine as finished drawings (TradingView-style).
     if (stepsRef.current.length === 1 && crosshairRef.current) {
       const tool = drawToolRef.current;
-      const a = stepsRef.current[0];
+      const a = stepsRef.current[0]!;
       const b = crosshairRef.current;
-      const A = toXY(a);
-      const B = toXY(b);
-      const drawHandle = (px: number, py: number, stroke = "#2962FF") => {
-        ctx.setLineDash([]);
-        ctx.fillStyle = "#ffffff";
-        ctx.strokeStyle = stroke;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(px, py, 5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
+      const barSec =
+        barsRef.current.length >= 2
+          ? Math.max(1, (barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0))
+          : 60;
+      const previewEnv = {
+        project: toXY,
+        bounds: { w, h },
+        selected: true,
+        priceDecimals: instRef.current.decimals,
+        barSec,
       };
-      if (A && B) {
-        if (tool === "rectangle" || tool === "measure") {
-          const x0 = Math.min(A.x, B.x), y0 = Math.min(A.y, B.y);
-          const x1 = Math.max(A.x, B.x), y1 = Math.max(A.y, B.y);
-          const col = tool === "measure" ? "#c084fc" : "#2962FF";
-          ctx.fillStyle = tool === "measure" ? "rgba(192, 132, 252, 0.12)" : "rgba(41, 98, 255, 0.12)";
-          ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
-          ctx.strokeStyle = col;
-          ctx.lineWidth = 1.5;
-          ctx.setLineDash([]);
-          ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
-          // 8 handles while dragging (corners + edge midpoints) — no legacy 2-dot mode
-          const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
-          for (const p of [
-            { x: x0, y: y0 }, { x: x1, y: y0 }, { x: x0, y: y1 }, { x: x1, y: y1 },
-            { x: mx, y: y0 }, { x: mx, y: y1 }, { x: x0, y: my }, { x: x1, y: my },
-          ]) drawHandle(p.x, p.y, col);
-          if (tool === "measure") drawMeasureLabel(ctx, a, b, A, B, col);
-        } else if (tool === "trendline" || tool === "ray" || tool === "extended") {
-          ctx.strokeStyle = "#2962FF";
-          ctx.lineWidth = 1.75;
-          ctx.setLineDash([]);
-          ctx.beginPath();
-          ctx.moveTo(A.x, A.y);
-          ctx.lineTo(B.x, B.y);
-          ctx.stroke();
-          drawHandle(A.x, A.y);
-          drawHandle(B.x, B.y);
-        } else if (tool === "fib") {
-          ctx.strokeStyle = "#FF9800";
-          ctx.lineWidth = 1.5;
-          ctx.setLineDash([]);
-          ctx.beginPath();
-          ctx.moveTo(A.x, A.y);
-          ctx.lineTo(B.x, B.y);
-          ctx.stroke();
-          drawHandle(A.x, A.y, "#FF9800");
-          drawHandle(B.x, B.y, "#FF9800");
-        }
+      if (tool === "measure") {
+        drawShape(ctx, { id: "__preview__", kind: "measure", a, b } as DrawingShape, previewEnv);
+      } else if (tool === "rectangle") {
+        drawShape(ctx, { id: "__preview__", kind: "rectangle", a, b } as DrawingShape, previewEnv);
+      } else if (tool === "trendline" || tool === "ray" || tool === "extended") {
+        drawShape(
+          ctx,
+          {
+            id: "__preview__",
+            kind: tool,
+            a,
+            b,
+            extendRight: tool === "ray" || tool === "extended",
+            extendLeft: tool === "extended",
+          } as DrawingShape,
+          previewEnv
+        );
+      } else if (tool === "fib") {
+        drawShape(ctx, { id: "__preview__", kind: "fib", a, b } as DrawingShape, previewEnv);
+      } else if (tool === "channel") {
+        // 2-point preview: third point offset until final click
+        const c = { time: a.time, price: a.price + (b.price - a.price) * 0.25 };
+        drawShape(ctx, { id: "__preview__", kind: "channel", a, b, c } as DrawingShape, previewEnv);
       }
     } else if (stepsRef.current.length >= 1) {
-      // First corner only (before mouse moves): single handle, not legacy dual dots
-      const P = toXY(stepsRef.current[0]);
+      const P = toXY(stepsRef.current[0]!);
       if (P) {
         ctx.setLineDash([]);
         ctx.fillStyle = "#ffffff";
@@ -1489,7 +1471,32 @@ export function Chart({
     setHint("Done · select to move · Delete key or settings bar to remove");
   }
 
-  function hitTestDrag(x: number, y: number, touch: boolean): DragTarget | null {
+  function resizeCursorForPart(part: string | undefined): string {
+    switch (part) {
+      case "tl":
+      case "br":
+        return "nwse-resize";
+      case "tr":
+      case "bl":
+        return "nesw-resize";
+      case "top":
+      case "bottom":
+        return "ns-resize";
+      case "left":
+      case "right":
+        return "ew-resize";
+      case "a":
+      case "b":
+      case "c":
+        return "move";
+      case "body":
+        return "move";
+      default:
+        return "";
+    }
+  }
+
+    function hitTestDrag(x: number, y: number, touch: boolean): DragTarget | null {
     const handles = handlesRef.current;
     if (!handles) return null;
     const series = handles.candles;
@@ -1978,6 +1985,8 @@ export function Chart({
       const y = ev.clientY - rect.top;
       if (dragRef.current) {
         applyDragAt(x, y);
+        const cur = resizeCursorForPart(dragRef.current.field);
+        if (cur) el.style.cursor = cur;
         scheduleRedraw();
         ev.preventDefault();
         return;
@@ -1992,10 +2001,12 @@ export function Chart({
           tool === "extended" ||
           tool === "rectangle" ||
           tool === "measure" ||
-          tool === "fib");
+          tool === "fib" ||
+          tool === "channel");
       if (placing) {
         const pt = fromXY(x, y);
         if (pt) crosshairRef.current = applyMagnet(pt, magnetModeRef.current);
+        el.style.cursor = "crosshair";
         // Block page scroll while rubber-band preview is active on touch.
         if (ev.pointerType === "touch") ev.preventDefault();
       } else if (
@@ -2006,6 +2017,8 @@ export function Chart({
           tool === "rectangle" ||
           tool === "measure" ||
           tool === "fib" ||
+          tool === "channel" ||
+          tool === "text" ||
           tool === "hline" ||
           tool === "vline" ||
           tool === "long" ||
@@ -2013,6 +2026,11 @@ export function Chart({
       ) {
         // Drawing tool selected: finger move must not scroll the document.
         ev.preventDefault();
+      } else if (tool === "crosshair" || tool === "none") {
+        // Desktop: show resize direction when hovering a selected shape handle.
+        const hit = hitTestDrag(x, y, false);
+        const cur = hit ? resizeCursorForPart(hit.field) : "";
+        el.style.cursor = cur || "default";
       }
       scheduleRedraw();
     };
@@ -2322,11 +2340,11 @@ export function Chart({
       drawTool === "rectangle" ||
       drawTool === "measure" ||
       drawTool === "fib" ||
+      drawTool === "channel" ||
+      drawTool === "text" ||
       drawTool === "hline" ||
-      drawTool === "vline" ||
-      drawTool === "long" ||
-      drawTool === "short";
-    // Disable chart pan/zoom while Long/Short tool is active so handles receive pointer events.
+      drawTool === "vline";
+    // Geometry tools disable pan while placing; Long/Short keep pan so SL/TP stays usable.
     setChartInteraction(!geometryDrawing);
     if (drawTool === "trendline" || drawTool === "ray" || drawTool === "extended") {
       setHint("Click Point A · move for live preview · click Point B");
@@ -2337,6 +2355,8 @@ export function Chart({
     } else if (drawTool === "hline") setHint("Click a price level to draw the line");
     else if (drawTool === "vline") setHint("Click a moment in time to draw the line");
     else if (drawTool === "measure") setHint("Click a point, move for live preview, then click again");
+    else if (drawTool === "channel") setHint("Click A · move · click B (channel width follows third control after place)");
+    else if (drawTool === "text") setHint("Click to place a text note");
     else if (drawTool === "long" || drawTool === "short") {
       setHint(
         drawTool === "long"

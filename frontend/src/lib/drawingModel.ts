@@ -513,7 +513,7 @@ export function shapeBoundsPx(s: DrawingShape, project: Project, bounds: Bounds)
 
 /* ───────────── creation + per-tool defaults ───────────── */
 
-const GEOMETRY_KEYS = new Set(["id", "kind", "a", "b", "c", "time", "price"]); // geometry only — text/style ARE part of appearance templates
+const GEOMETRY_KEYS = new Set(["id", "kind", "a", "b", "c", "time", "price", "locked"]); // geometry + lock state — never bake lock into templates
 const DEFAULTS_KEY = "tr-draw-defaults-v2";
 
 export function loadToolDefaults(kind: DrawingKind): Partial<DrawingShape> {
@@ -608,7 +608,9 @@ export function createShape(
   id: string,
   defaults: Partial<DrawingShape> = {}
 ): DrawingShape {
-  const base = { ...defaults, id, kind } as Record<string, unknown>;
+  // Never inherit locked from tool defaults / templates — new drawings must be editable.
+  const { locked: _ignoredLock, ...safeDefaults } = defaults as Partial<DrawingShape> & { locked?: boolean };
+  const base = { ...safeDefaults, id, kind, locked: false } as Record<string, unknown>;
   if (points.a) base.a = points.a;
   if (points.b) base.b = points.b;
   if (points.c) base.c = points.c;
