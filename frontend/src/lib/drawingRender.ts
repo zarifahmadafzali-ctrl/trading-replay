@@ -268,13 +268,54 @@ export function drawShape(ctx: CanvasRenderingContext2D, shape: DrawingShape, en
       if (s.text) {
         const mid = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 };
         if (anchorNearView(mid.x, mid.y, bounds)) {
-        ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
-        ctx.fillStyle = s.textColor || st.color;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "bottom";
-        ctx.fillText(s.text, mid.x, mid.y - 8);
+          ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
+          ctx.fillStyle = s.textColor || st.color;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "bottom";
+          ctx.fillText(s.text, mid.x, mid.y - 8);
         }
-
+      }
+      if (selected) { handle(ctx, A, st.color); handle(ctx, B, st.color); }
+      return true;
+    }
+    if (s.kind === "channel") {
+      const A = project(s.a), B = project(s.b), C = project(s.c);
+      const [a2, b2] = channelParallel(s);
+      const A2 = project(a2), B2 = project(b2);
+      if (!A || !B || !C || !A2 || !B2) return true;
+      const st = resolveStyle(s);
+      const eL = !!s.extendLeft, eR = !!s.extendRight;
+      const base = clipLineToRect(A, B, bounds, eL, eR);
+      const par = clipLineToRect(A2, B2, bounds, eL, eR);
+      if (st.fillOpacity > 0 && base && par) {
+        const xs = [base[0].x, base[1].x, par[0].x, par[1].x];
+        const xa = Math.min(...xs), xb = Math.max(...xs);
+        const y1a = yAtX(A, B, xa), y1b = yAtX(A, B, xb), y2a = yAtX(A2, B2, xa), y2b = yAtX(A2, B2, xb);
+        if (y1a != null && y1b != null && y2a != null && y2b != null) {
+          ctx.fillStyle = withAlpha(st.fillColor, st.fillOpacity);
+          ctx.beginPath();
+          ctx.moveTo(xa, y1a); ctx.lineTo(xb, y1b); ctx.lineTo(xb, y2b); ctx.lineTo(xa, y2a);
+          ctx.closePath(); ctx.fill();
+        }
+      }
+      applyLine(ctx, withAlpha(st.color, st.strokeOpacity ?? 1), st.lineWidth, st.lineStyle);
+      if (base) seg(ctx, base[0], base[1]);
+      if (par) seg(ctx, par[0], par[1]);
+      if (s.showMiddle) {
+        const M1 = { x: (A.x + A2.x) / 2, y: (A.y + A2.y) / 2 }, M2 = { x: (B.x + B2.x) / 2, y: (B.y + B2.y) / 2 };
+        const mid = clipLineToRect(M1, M2, bounds, eL, eR);
+        applyLine(ctx, st.color, 1, "dashed");
+        if (mid) seg(ctx, mid[0], mid[1]);
+      }
+      if (s.text) {
+        const mid = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 };
+        if (anchorNearView(mid.x, mid.y, bounds)) {
+          ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;
+          ctx.fillStyle = s.textColor || st.color;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "bottom";
+          ctx.fillText(s.text, mid.x, mid.y - 8);
+        }
       }
       if (selected) { handle(ctx, A, st.color); handle(ctx, B, st.color); handle(ctx, C, st.color); }
       return true;

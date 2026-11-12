@@ -163,7 +163,7 @@ type LiveSnap = {
  */
 export function sizingInfo(
   p: {
-    status: "draft" | "pending" | "open";
+    status: "draft" | "pending" | "open" | "closed";
     side: Side;
     entry: { price: number };
     stop: { price: number };
