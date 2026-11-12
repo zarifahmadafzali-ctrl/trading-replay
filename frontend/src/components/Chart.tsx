@@ -2372,10 +2372,15 @@ export function Chart({
     if (!handles) return;
     // ReplayView already passes windowed/aggregated bars; cursor is typically bars.length.
     const end = Math.min(bars.length, Math.max(0, cursor));
-    const visible = bars.slice(0, end);
-    const firstTime = visible[0]?.time ?? 0;
-    const last = visible[visible.length - 1];
-    const lastTime = last?.time ?? 0;
+    const played = bars.slice(0, end);
+    // Unplayed bars stay on the time scale as whitespace (no OHLC) so the axis
+    // spans the full loaded session — same idea as a full-range timeline — without
+    // revealing future prices. Fixes drawings that mapped off a truncated scale.
+    const unplayed = bars.slice(end);
+    const firstTime = bars[0]?.time ?? played[0]?.time ?? 0;
+    const lastPlayed = played[played.length - 1];
+    const lastSession = bars[bars.length - 1];
+    const lastTime = lastPlayed?.time ?? 0;
 
     // C1.4-A: display-only WhitespaceData after last real bar (time only, no OHLC/volume).
     // Never fed to execution, journal, or caches — Chart series only.
@@ -2386,15 +2391,19 @@ export function Chart({
     const viewWidth =
       cur0 && Number.isFinite(cur0.to - cur0.from)
         ? Math.max(10, cur0.to - cur0.from)
-        : Math.min(160, Math.max(CHART_FUTURE_MIN_BARS, visible.length * 0.3));
+        : Math.min(160, Math.max(CHART_FUTURE_MIN_BARS, Math.max(played.length, 1) * 0.3));
     const futureCount = futureWhitespaceCount(viewWidth);
+    // Synthetic padding after the *session* end (not only the playhead).
+    const padAnchor = lastSession?.time ?? lastPlayed?.time;
     const futureTimes =
-      last != null ? buildFutureWhitespaceTimes(last.time, stepSec, futureCount) : [];
-    const whitespacePts = futureTimes.map((t) => ({ time: t as UTCTimestamp }));
+      padAnchor != null ? buildFutureWhitespaceTimes(padAnchor, stepSec, futureCount) : [];
+    const unplayedPts = unplayed.map((b) => ({ time: b.time as UTCTimestamp }));
+    const padPts = futureTimes.map((t) => ({ time: t as UTCTimestamp }));
+    const whitespacePts = [...unplayedPts, ...padPts];
 
-    // Full setData keeps candle + whitespace times aligned. Real OHLC unchanged.
+    // Full setData keeps candle + whitespace times aligned. Real OHLC only for played bars.
     handles.candles.setData([
-      ...visible.map((b) => ({
+      ...played.map((b) => ({
         time: b.time as UTCTimestamp,
         open: b.open,
         high: b.high,
@@ -2404,7 +2413,7 @@ export function Chart({
       ...whitespacePts,
     ]);
     handles.volume.setData([
-      ...visible.map((b) => ({
+      ...played.map((b) => ({
         time: b.time as UTCTimestamp,
         value: b.volume ?? 0,
         color: b.close >= b.open ? "rgba(38,166,154,0.45)" : "rgba(239,83,80,0.45)",
@@ -2413,12 +2422,12 @@ export function Chart({
       ...whitespacePts,
     ]);
     chartDataMetaRef.current = {
-      len: visible.length,
+      len: played.length,
       firstTime,
       lastTime,
     };
-    // Follow: keep last real candle in view; future whitespace fills to the right edge.
-    if (shouldAutoFollowScroll(followRef.current, visible.length)) {
+    // Follow: keep last *played* candle in view; unplayed + pad whitespace fill to the right.
+    if (shouldAutoFollowScroll(followRef.current, played.length)) {
       const ts = handles.chart.timeScale();
       ts.applyOptions({ rightOffset: 2 });
       const cur = ts.getVisibleLogicalRange();
@@ -2426,7 +2435,8 @@ export function Chart({
         cur && Number.isFinite(cur.to - cur.from)
           ? Math.max(10, cur.to - cur.from)
           : viewWidth;
-      const next = followVisibleLogicalRange(visible.length, width, futureCount);
+      const tail = unplayed.length + futureCount;
+      const next = followVisibleLogicalRange(played.length, width, tail);
       if (next) {
         try {
           ts.setVisibleLogicalRange(next);
