@@ -75,6 +75,8 @@ export type RectangleShape = DrawingBase & {
   b: Pt;
   extendRight?: boolean;
   showStats?: boolean;
+  /** Horizontal + vertical center guides (saved with appearance templates). */
+  showMiddle?: boolean;
 };
 export type MeasureShape = DrawingBase & { kind: "measure"; a: Pt; b: Pt };
 export type FibShape = DrawingBase & {

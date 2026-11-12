@@ -149,6 +149,13 @@ export function drawShape(ctx: CanvasRenderingContext2D, shape: DrawingShape, en
       }
       applyLine(ctx, withAlpha(st.color, st.strokeOpacity), st.lineWidth, st.lineStyle);
       ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+      if (s.showMiddle) {
+        const mx = (x0 + x1) / 2;
+        const my = (y0 + y1) / 2;
+        applyLine(ctx, withAlpha(st.color, (st.strokeOpacity ?? 1) * 0.85), Math.max(1, st.lineWidth - 0.5), "dashed");
+        seg(ctx, { x: x0, y: my }, { x: x1, y: my });
+        seg(ctx, { x: mx, y: y0 }, { x: mx, y: y1 });
+      }
       if (s.text) {
         const ta = textAnchorInRect(s.textAlign, x0, y0, Math.max(A.x, B.x), y1);
         ctx.font = `${s.fontSize || 12}px -apple-system, Segoe UI, Roboto, sans-serif`;

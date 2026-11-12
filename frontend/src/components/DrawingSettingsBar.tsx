@@ -246,9 +246,14 @@ export function DrawingSettingsBar(props: DrawingSettingsBarProps) {
                 </>
               )}
               {k === "rectangle" && (
-                <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer" }}>
-                  <input type="checkbox" checked={flag("showStats")} onChange={() => toggle("showStats")} /> Show range
-                </label>
+                <>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer" }}>
+                    <input type="checkbox" checked={flag("showStats")} onChange={() => toggle("showStats")} /> Show range
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer" }}>
+                    <input type="checkbox" checked={flag("showMiddle")} onChange={() => toggle("showMiddle")} /> Middle lines
+                  </label>
+                </>
               )}
               {k === "channel" && (
                 <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer" }}>
