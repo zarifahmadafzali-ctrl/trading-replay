@@ -481,7 +481,8 @@ export function hitTestShape(s: DrawingShape, project: Project, x: number, y: nu
     const A = project(s.a);
     if (!A) return null;
     const fs = s.fontSize || o.fontSizeFallback || 13;
-    const w = Math.max(24, (s.text || "").length * fs * 0.6) + 12;
+    const display = (s.text && s.text.trim()) ? s.text : "Text";
+    const w = Math.max(48, display.length * fs * 0.55) + 12;
     const h = fs + 10;
     return x >= A.x && x <= A.x + w && y >= A.y - h && y <= A.y ? { part: "body" } : null;
   }
