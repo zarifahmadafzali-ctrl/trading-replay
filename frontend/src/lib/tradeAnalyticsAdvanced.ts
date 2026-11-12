@@ -650,10 +650,22 @@ export type DailyTwoTradeCategory =
 export type DailyTwoTradeAnalysis = {
   exactlyTwoDays: number;
   moreThanTwoDays: number;
+  /** Days with exactly one closed trade. */
+  singleTradeDays: number;
+  /** Single-trade day and that trade was a win (often: TP first → stop trading). */
+  singleWinDays: number;
+  /** Single-trade day and that trade was a loss. */
+  singleLossDays: number;
+  /** Exactly-two days where the first trade lost (typical path into a second trade). */
+  firstLossTwoTradeDays: number;
+  /** Exactly-two days where the first trade won (unusual if strategy skips 2nd after TP). */
+  firstWinTwoTradeDays: number;
   categories: Record<DailyTwoTradeCategory, number>;
   pctSecondProfitable: number | null;
   pctBothLosing: number | null;
   pctBothProfitable: number | null;
+  /** Among days with first loss + second trade: share where second was profitable. */
+  pctSecondWinAfterFirstLoss: number | null;
   timezone: string;
 };
 
@@ -692,10 +704,23 @@ export function analyzeDailyTwoTradeBehavior(
   let exactlyTwo = 0;
   let moreThanTwo = 0;
   let secondProfitable = 0;
+  let singleTradeDays = 0;
+  let singleWinDays = 0;
+  let singleLossDays = 0;
+  let firstLossTwoTradeDays = 0;
+  let firstWinTwoTradeDays = 0;
+  let secondWinAfterFirstLoss = 0;
 
   for (const [, list] of byDay) {
     if (list.length > 2) {
       moreThanTwo++;
+      continue;
+    }
+    if (list.length === 1) {
+      singleTradeDays++;
+      const o = pnlOutcome(list[0]!);
+      if (o === "win") singleWinDays++;
+      else if (o === "loss") singleLossDays++;
       continue;
     }
     if (list.length !== 2) continue;
@@ -703,6 +728,11 @@ export function analyzeDailyTwoTradeBehavior(
     const ordered = list.slice().sort((a, b) => a.entryTime - b.entryTime);
     const a = pnlOutcome(ordered[0]!);
     const b = pnlOutcome(ordered[1]!);
+    if (a === "win") firstWinTwoTradeDays++;
+    if (a === "loss") {
+      firstLossTwoTradeDays++;
+      if (b === "win") secondWinAfterFirstLoss++;
+    }
     if (a === "unknown" || b === "unknown") {
       categories.unclassified++;
       continue;
@@ -721,13 +751,22 @@ export function analyzeDailyTwoTradeBehavior(
   }
 
   const den = exactlyTwo > 0 ? exactlyTwo : null;
+  const denFirstLoss = firstLossTwoTradeDays > 0 ? firstLossTwoTradeDays : null;
   return {
     exactlyTwoDays: exactlyTwo,
     moreThanTwoDays: moreThanTwo,
+    singleTradeDays,
+    singleWinDays,
+    singleLossDays,
+    firstLossTwoTradeDays,
+    firstWinTwoTradeDays,
     categories,
     pctSecondProfitable: den ? (secondProfitable / den) * 100 : null,
     pctBothLosing: den ? (categories.both_loss / den) * 100 : null,
     pctBothProfitable: den ? (categories.both_profit / den) * 100 : null,
+    pctSecondWinAfterFirstLoss: denFirstLoss
+      ? (secondWinAfterFirstLoss / denFirstLoss) * 100
+      : null,
     timezone: timeZone,
   };
 }

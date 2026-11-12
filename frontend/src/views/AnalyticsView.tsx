@@ -992,15 +992,27 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
           <h3>Daily Trade Behavior</h3>
           <p className="hint">
             Days with exactly two completed trades (entry order). Trading day ={" "}
-            {dailyTwo.timezone} calendar day via tradingDayKey (DST-aware). Days with 3+ trades counted
+            {dailyTwo.timezone} calendar day via tradingDayKey (DST-aware). Single-trade wins model “TP first → no second trade”. Days with 3+ trades counted
             separately and excluded from percentages.
           </p>
           <div className="stat-grid">
             <Card label="Exactly 2-trade days" value={String(dailyTwo.exactlyTwoDays)} />
             <Card label="Days with 3+ trades" value={String(dailyTwo.moreThanTwoDays)} />
+            <Card label="Single-trade days" value={String(dailyTwo.singleTradeDays)} />
+            <Card
+              label="Only 1 trade · win (stop after TP)"
+              value={String(dailyTwo.singleWinDays)}
+            />
+            <Card label="Only 1 trade · loss" value={String(dailyTwo.singleLossDays)} />
+            <Card label="2-trade · 1st was loss" value={String(dailyTwo.firstLossTwoTradeDays)} />
+            <Card label="2-trade · 1st was win" value={String(dailyTwo.firstWinTwoTradeDays)} />
             <Card label="Both profitable %" value={formatNum(dailyTwo.pctBothProfitable)} />
             <Card label="Both losing %" value={formatNum(dailyTwo.pctBothLosing)} />
             <Card label="2nd trade profitable %" value={formatNum(dailyTwo.pctSecondProfitable)} />
+            <Card
+              label="2nd win after 1st loss %"
+              value={formatNum(dailyTwo.pctSecondWinAfterFirstLoss)}
+            />
           </div>
           <Table
             headers={["Category", "Days"]}
