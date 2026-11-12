@@ -159,7 +159,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const prevTickIndexRef = useRef(-1);
   const lastTickExecKeyRef = useRef("");
   const tickDayRef = useRef<string | null>(null);
-  const stepTickRef = useRef<(dir: number) => void>(() => {});
+  const stepTickRef = useRef<(dir: number, batch?: number) => void>(() => {});
   const navigateReplayToUnixTimeRef = useRef<(t: number, opts?: { cursor?: number }) => void>(() => {});
   const tickTransitionLockRef = useRef(false);
   const prevCursorRef = useRef(saved ? Math.max(1, saved.cursor) : 800);
@@ -708,6 +708,10 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           return;
         }
         delayMs = wallClockDelayMs(info.deltaSec, speedRef.current);
+        // At high speed, batches already compress many ticks; keep a small
+        // floor so Pause / crosshair stay responsive.
+        if (speedRef.current >= 5) delayMs = Math.max(delayMs, 16);
+        else if (speedRef.current >= 2) delayMs = Math.max(delayMs, 8);
       } else {
         const bars = baseBarsRef.current;
         const len = playLenRef.current;
@@ -729,7 +733,14 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         if (replayResolutionRef.current === "tick") {
           const beforeDay = tickDayRef.current;
           const beforeIdx = tickIndexRef.current;
-          stepTickRef.current(1);
+          const sp = speedRef.current > 0 ? speedRef.current : 1;
+          // Cap UI updates ~30–60fps: one state write can cover many ticks.
+          let batch = 1;
+          if (sp >= 10) batch = 120;
+          else if (sp >= 5) batch = 48;
+          else if (sp >= 3) batch = 16;
+          else if (sp >= 2) batch = 4;
+          stepTickRef.current(1, batch);
           // If step could not advance (still same day/index, no lock), stop.
           if (
             !tickTransitionLockRef.current &&
@@ -1835,7 +1846,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   navigateReplayToUnixTimeRef.current = navigateReplayToUnixTime;
 
   const stepTick = useCallback(
-    (dir: number) => {
+    (dir: number, batch = 1) => {
       // Ignore further steps while a day transition / navigation load is in flight.
       if (tickTransitionLockRef.current) return;
 
@@ -1846,12 +1857,24 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         setPlaying(false);
         return;
       }
+      // High-speed play: advance several ticks in one React update (same day only).
+      // execTicks still covers [prev+1 .. cur] so Bid/Ask fills stay correct.
+      if (dir > 0 && batch > 1) {
+        const target = Math.min(win.length - 1, idx + Math.max(1, Math.floor(batch)));
+        if (target > idx) {
+          setTickIndex(target);
+          tickIndexRef.current = target;
+          const tk = win[target];
+          if (tk) syncBarsCursorFromTickTime(tk.time);
+          return;
+        }
+      }
       const next = idx + dir;
       if (next >= 0 && next < win.length) {
         setTickIndex(next);
         tickIndexRef.current = next;
-        const t = win[next];
-        if (t) syncBarsCursorFromTickTime(t.time);
+        const tk = win[next];
+        if (tk) syncBarsCursorFromTickTime(tk.time);
         return;
       }
       // Day boundary — exclusive lock until load completes
