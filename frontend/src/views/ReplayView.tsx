@@ -280,6 +280,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     tradeId?: string;
   }>(null);
   const [memoDraft, setMemoDraft] = useState("");
+  const [memoTitleDraft, setMemoTitleDraft] = useState("");
   /** C5: latest-wins serial for async putRuntime. */
   const runtimeSaveGenRef = useRef(0);
   const runtimeWriteChainRef = useRef(Promise.resolve());
@@ -343,6 +344,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       const d = (ev as CustomEvent).detail as { positionId?: string } | undefined;
       if (!d?.positionId) return;
       setMemoDraft("");
+      setMemoTitleDraft("");
       setMemoPrompt({ kind: "entry", positionId: d.positionId });
     };
     window.addEventListener("tr-entry-memo-request", onEntry);
@@ -1433,6 +1435,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
 
     // C8.2: optional exit memo (non-blocking; trade already journaled)
     setMemoDraft("");
+    setMemoTitleDraft("");
     setMemoPrompt({ kind: "exit", positionId: closed.id, tradeId: localTrade.tradeId || localTrade.id });
 
     // Realized currency PnL → owning account.balance (initialBalance stays immutable)
@@ -2728,14 +2731,14 @@ const exitTickMode = useCallback(() => {
 
       {memoPrompt && (
         <div
-          className="card"
+          className="card memo-float-window"
           style={{
             position: "fixed",
             right: 12,
             bottom: 12,
             zIndex: 40,
             width: "min(320px, calc(100vw - 24px))",
-            maxHeight: "40vh",
+            maxHeight: "45vh",
             display: "flex",
             flexDirection: "column",
             gap: 8,
@@ -2744,11 +2747,29 @@ const exitTickMode = useCallback(() => {
           }}
         >
           <strong>{memoPrompt.kind === "entry" ? "ENTRY MEMO" : "EXIT MEMO"}</strong>
+          <input
+            type="text"
+            value={memoTitleDraft}
+            onChange={(e) => setMemoTitleDraft(e.target.value)}
+            placeholder="Title / tag (optional)"
+            maxLength={80}
+            style={{
+              width: "100%",
+              padding: "6px 8px",
+              borderRadius: 6,
+              border: "1px solid #334155",
+              background: "#0b1220",
+              color: "#e2e8f0",
+              fontWeight: 600,
+              fontSize: 13,
+            }}
+            aria-label="Memo title or tag"
+          />
           <textarea
             value={memoDraft}
             onChange={(e) => setMemoDraft(e.target.value)}
             rows={4}
-            placeholder="Optional notes…"
+            placeholder="Notes…"
             style={{ width: "100%", resize: "vertical", minHeight: 72 }}
           />
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
@@ -2758,6 +2779,7 @@ const exitTickMode = useCallback(() => {
               onClick={() => {
                 setMemoPrompt(null);
                 setMemoDraft("");
+                setMemoTitleDraft("");
               }}
             >
               Cancel
@@ -2766,12 +2788,14 @@ const exitTickMode = useCallback(() => {
               type="button"
               onClick={() => {
                 const text = memoDraft;
+                const title = memoTitleDraft;
                 const prompt = memoPrompt;
                 setMemoPrompt(null);
                 setMemoDraft("");
+                setMemoTitleDraft("");
                 if (!prompt) return;
                 const tid = prompt.tradeId || prompt.positionId;
-                const memo = createMemo(tid, prompt.kind, text);
+                const memo = createMemo(tid, prompt.kind, text, title);
                 if (!memo) return;
                 if (prompt.kind === "entry") {
                   pendingEntryMemosRef.current.set(prompt.positionId, memo);
@@ -2780,7 +2804,7 @@ const exitTickMode = useCallback(() => {
                 }
                 void (async () => {
                   const { addMemoToTrade } = await import("../lib/tradeMemos");
-                  await addMemoToTrade(sessionIdRef.current, tid, "exit", text);
+                  await addMemoToTrade(sessionIdRef.current, tid, "exit", text, title);
                   setMessage("Exit memo saved");
                 })();
               }}

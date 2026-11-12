@@ -14,6 +14,8 @@ export type TradeMemo = {
   id: string;
   tradeId: string;
   type: TradeMemoType;
+  /** Optional short title / tag shown above the body. */
+  title?: string;
   text: string;
   createdAt: string;
   updatedAt?: string;
@@ -27,7 +29,9 @@ export function normalizeTradeMemo(raw: unknown, fallbackTradeId?: string): Trad
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
   const text = typeof o.text === "string" ? o.text.trim() : "";
-  if (!text) return null;
+  const titleRaw = typeof o.title === "string" ? o.title.trim() : "";
+  // Need at least a title tag or body text
+  if (!text && !titleRaw) return null;
   const type = o.type;
   const t: TradeMemoType =
     type === "entry" || type === "exit" || type === "post_analysis" || type === "general"
@@ -43,7 +47,8 @@ export function normalizeTradeMemo(raw: unknown, fallbackTradeId?: string): Trad
     id: String(o.id || newMemoId()),
     tradeId,
     type: t,
-    text,
+    ...(titleRaw ? { title: titleRaw } : {}),
+    text: text || titleRaw,
     createdAt,
     updatedAt: typeof o.updatedAt === "string" ? o.updatedAt : undefined,
   };
@@ -71,15 +76,18 @@ export function memosOfType(memos: TradeMemo[] | undefined, type: TradeMemoType)
 export function createMemo(
   tradeId: string,
   type: TradeMemoType,
-  text: string
+  text: string,
+  title?: string
 ): TradeMemo | null {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
+  const trimmed = (text || "").trim();
+  const titleTrim = (title || "").trim();
+  if (!trimmed && !titleTrim) return null;
   return {
     id: newMemoId(),
     tradeId,
     type,
-    text: trimmed,
+    ...(titleTrim ? { title: titleTrim } : {}),
+    text: trimmed || titleTrim,
     createdAt: new Date().toISOString(),
   };
 }
@@ -134,9 +142,10 @@ export async function addMemoToTrade(
   sessionId: string | null,
   tradeIdOrId: string,
   type: TradeMemoType,
-  text: string
+  text: string,
+  title?: string
 ): Promise<JournalTrade | null> {
-  const memo = createMemo(tradeIdOrId, type, text);
+  const memo = createMemo(tradeIdOrId, type, text, title);
   if (!memo) return null;
   return patchTradeMemos(sessionId, tradeIdOrId, (prev) => mergeMemos(prev, [memo]));
 }
@@ -216,10 +225,10 @@ function buildNotesMarkdown(trades: JournalTrade[]): string {
     );
     lines.push("");
     lines.push("### Entry Memo");
-    lines.push(entry.length ? entry.map((m) => m.text).join("\n\n") : "_No entry memo_");
+    lines.push(entry.length ? entry.map((m) => (m.title ? `**${m.title}**\n${m.text}` : m.text)).join("\n\n") : "_No entry memo_");
     lines.push("");
     lines.push("### Exit Memo");
-    lines.push(exit.length ? exit.map((m) => m.text).join("\n\n") : "_No exit memo_");
+    lines.push(exit.length ? exit.map((m) => (m.title ? `**${m.title}**\n${m.text}` : m.text)).join("\n\n") : "_No exit memo_");
     lines.push("");
     lines.push("### Post Analysis");
     lines.push(post.length ? post.map((m) => m.text).join("\n\n") : "_None_");

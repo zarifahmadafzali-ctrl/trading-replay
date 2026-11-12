@@ -946,7 +946,7 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
                         {m.createdAt}
                         {m.updatedAt ? ` · edited ${m.updatedAt}` : ""}
                       </div>
-                      <pre style={{ whiteSpace: "pre-wrap", margin: "6px 0", fontFamily: "inherit" }}>{m.text}</pre>
+                      <pre style={{ whiteSpace: "pre-wrap", margin: "6px 0", fontFamily: "inherit" }}>{m.title ? (<><div style={{ fontWeight: 600, marginBottom: 4 }}>{m.title}</div>{m.text}</>) : m.text}</pre>
                       <div style={{ display: "flex", gap: 8 }}>
                         <button
                           type="button"
@@ -1007,7 +1007,7 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
                         {m.createdAt}
                         {m.updatedAt ? ` · edited ${m.updatedAt}` : ""}
                       </div>
-                      <pre style={{ whiteSpace: "pre-wrap", margin: "6px 0", fontFamily: "inherit" }}>{m.text}</pre>
+                      <pre style={{ whiteSpace: "pre-wrap", margin: "6px 0", fontFamily: "inherit" }}>{m.title ? (<><div style={{ fontWeight: 600, marginBottom: 4 }}>{m.title}</div>{m.text}</>) : m.text}</pre>
                       <div style={{ display: "flex", gap: 8 }}>
                         <button
                           type="button"
@@ -1050,7 +1050,7 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
                 return other.map((m) => (
                   <div key={m.id} style={{ marginBottom: 8 }}>
                     <b>{m.type}</b> · <span className="muted">{m.createdAt}</span>
-                    <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{m.text}</pre>
+                    <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{m.title ? (<><div style={{ fontWeight: 600, marginBottom: 4 }}>{m.title}</div>{m.text}</>) : m.text}</pre>
                   </div>
                 ));
               })()}
