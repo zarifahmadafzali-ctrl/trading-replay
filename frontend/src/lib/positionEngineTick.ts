@@ -325,6 +325,14 @@ export function runPositionTicks<S extends { kind: string }>(
         id: s.id,
         text: `${hit.reason.toUpperCase()} · ${sideTxt(s)} @ ${exitPrice.toFixed(2)} · ${pnlPoints >= 0 ? "+" : ""}${pnlPoints.toFixed(1)} pts`,
       });
+      next.push({
+        ...(raw as object),
+        status: "closed",
+        exitPrice,
+        exitTime: tick.time,
+        closeReason: hit.reason,
+        locked: true,
+      } as unknown as S);
     }
     working = next;
   }

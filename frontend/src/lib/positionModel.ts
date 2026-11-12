@@ -13,7 +13,7 @@ export type PosOrderType =
   | "sell_stop"
   | "buy_stop_limit"
   | "sell_stop_limit";
-export type PosStatus = "draft" | "pending" | "open";
+export type PosStatus = "draft" | "pending" | "open" | "closed";
 export type Pt = { time: number; price: number };
 export type RiskModeId = "percent_equity" | "percent_balance" | "fixed_money" | "fixed_lot";
 

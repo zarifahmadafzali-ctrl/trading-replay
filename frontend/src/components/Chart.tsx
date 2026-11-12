@@ -134,8 +134,13 @@ export type PositionShape = {
    * draft   = user still editing lines
    * pending = confirmed, waiting for entry (or stop-limit stages)
    * open    = filled / live position — only then SL/TP runs
+   * closed  = SL/TP/manual done — stays on chart until user deletes the shape
    */
-  status: "draft" | "pending" | "open";
+  status: "draft" | "pending" | "open" | "closed";
+  /** Set when status becomes closed (execution price). */
+  exitPrice?: number;
+  exitTime?: number;
+  closeReason?: "sl" | "tp" | "manual";
   /** Fill price once open; for simple pending = stop/limit trigger price */
   entry: ChartPoint;
   stop: ChartPoint;
@@ -842,7 +847,15 @@ export function Chart({
       ...(s.spreadAtEntry != null ? { spreadAtEntry: s.spreadAtEntry } : {}),
       ...(exitSpread != null ? { spreadAtExit: exitSpread, spreadUnit: "price_points" as const } : {}),
     };
-    const next = shapesRef.current.filter((x) => x.id !== id);
+    const kept: PositionShape = {
+      ...s,
+      status: "closed",
+      exitPrice,
+      exitTime,
+      closeReason: "manual",
+      locked: true,
+    };
+    const next = shapesRef.current.map((x) => (x.id === id ? kept : x));
     shapesRef.current = next;
     setShapes(next);
     onPositionClosedRef.current?.(closed);

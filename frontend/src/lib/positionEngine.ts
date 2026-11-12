@@ -270,6 +270,15 @@ export function runPositionBars<S extends { kind: string }>(
         id: s.id,
         text: `${reason.toUpperCase()} · ${sideTxt(s)} @ ${exitPrice.toFixed(2)} · ${pnlPoints >= 0 ? "+" : ""}${pnlPoints.toFixed(1)} pts`,
       });
+      // Keep geometry on chart until the user deletes the shape.
+      next.push({
+        ...(raw as object),
+        status: "closed",
+        exitPrice,
+        exitTime: bar.time,
+        closeReason: reason,
+        locked: true,
+      } as unknown as S);
     }
     working = next;
   }
