@@ -2666,7 +2666,7 @@ const exitTickMode = useCallback(() => {
               </div>
               <p className="tools-note">
                 {replayResolution === "tick"
-                  ? "Tick Replay is active. Trade execution and SL/TP still use 1-second OHLC. Tick-based execution comes later."
+                  ? "Tick Replay is active. Fills and SL/TP use tick Bid/Ask (Long entry Ask / exit Bid; Short entry Bid / exit Ask)."
                   : "Step moves the 1s cursor. SL/TP still checks every 1s bar inside the jump."}
               </p>
             </div>
@@ -2692,13 +2692,13 @@ const exitTickMode = useCallback(() => {
             : currentBase
               ? new Date(currentBase.time * 1000).toLocaleString()
               : "—"}
-          {activeTick ? ` · mid ${activeTick.mid}` : ""}
+          {activeTick ? ` · bid ${activeTick.bid} · ask ${activeTick.ask} · mid ${activeTick.mid}` : ""}
         </p>
         <p>
           TF {formatTf(timeframeSeconds)} · Step{" "}
           {replayResolution === "tick" ? "Tick" : formatTf(replayStepSeconds)} · {visibleBars.length} candles · Space
           play/pause · ←/→ step
-          {replayResolution === "tick" ? " · exec=1s OHLC" : ""}
+          {replayResolution === "tick" ? " · exec=tick Bid/Ask" : ""}
         </p>
       </aside>
 

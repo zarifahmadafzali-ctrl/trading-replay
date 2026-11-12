@@ -89,6 +89,9 @@ type ChartHandles = {
   chart: IChartApi;
   candles: ISeriesApi<"Candlestick">;
   volume: ISeriesApi<"Histogram">;
+  /** Tick-mode Bid/Ask guides (removed when values unavailable). */
+  bidLine: ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null;
+  askLine: ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null;
 };
 
 export type DrawTool =
@@ -1812,7 +1815,7 @@ export function Chart({
       priceScaleId: "vol",
     });
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.88, bottom: 0 }, visible: false });
-    handlesRef.current = { chart, candles, volume };
+    handlesRef.current = { chart, candles, volume, bidLine: null, askLine: null };
     // Do NOT force tiny heights on LWC internal table rows — that hides price/time axes.
 
 
@@ -2636,6 +2639,67 @@ export function Chart({
   useEffect(() => {
     scheduleRedraw();
   }, [shapes, marketPrice]);
+
+  // C2 UI: show Bid/Ask price lines when tick execution quotes are available.
+  useEffect(() => {
+    const handles = handlesRef.current;
+    if (!handles) return;
+    const { candles } = handles;
+    const b = marketBid;
+    const a = marketAsk;
+    const valid =
+      b != null &&
+      a != null &&
+      Number.isFinite(b) &&
+      Number.isFinite(a) &&
+      a >= b &&
+      b > 0;
+
+    if (!valid) {
+      if (handles.bidLine) {
+        try {
+          candles.removePriceLine(handles.bidLine);
+        } catch {
+          /* */
+        }
+        handles.bidLine = null;
+      }
+      if (handles.askLine) {
+        try {
+          candles.removePriceLine(handles.askLine);
+        } catch {
+          /* */
+        }
+        handles.askLine = null;
+      }
+      return;
+    }
+
+    if (!handles.bidLine) {
+      handles.bidLine = candles.createPriceLine({
+        price: b,
+        color: "#42a5f5",
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: "Bid",
+      });
+    } else {
+      handles.bidLine.applyOptions({ price: b });
+    }
+    if (!handles.askLine) {
+      handles.askLine = candles.createPriceLine({
+        price: a,
+        color: "#ff7043",
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: "Ask",
+      });
+    } else {
+      handles.askLine.applyOptions({ price: a });
+    }
+  }, [marketBid, marketAsk]);
 
   return (
     <div className="chart-wrap" style={{ position: "relative", width: "100%", height: "100%" }}>
