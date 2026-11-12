@@ -510,9 +510,24 @@ export function Chart({
     const time = at && Number.isFinite(at.time) ? Math.round(at.time) : mTime;
 
     const panelType = orderTypeRef.current;
-    const manualStopLimit = panelType === "buy_stop_limit" || panelType === "sell_stop_limit";
-    // Default new drafts to auto Market (entry tracks live market); user can switch type in the bar.
-    const ot: OrderType = manualStopLimit ? (side === "long" ? "buy_stop_limit" : "sell_stop_limit") : "market";
+    // Honor the order-type chip (limit/stop/stop-limit), not only market / stop-limit.
+    const ot: OrderType = (() => {
+      const p = panelType;
+      if (p === "market") return "market";
+      if (side === "long") {
+        if (p === "buy_limit" || p === "buy_stop" || p === "buy_stop_limit") return p;
+        if (p === "sell_limit") return "buy_limit";
+        if (p === "sell_stop") return "buy_stop";
+        if (p === "sell_stop_limit") return "buy_stop_limit";
+        return "buy_limit";
+      }
+      if (p === "sell_limit" || p === "sell_stop" || p === "sell_stop_limit") return p;
+      if (p === "buy_limit") return "sell_limit";
+      if (p === "buy_stop") return "sell_stop";
+      if (p === "buy_stop_limit") return "sell_stop_limit";
+      return "sell_limit";
+    })();
+    const manualStopLimit = ot === "buy_stop_limit" || ot === "sell_stop_limit";
 
     const kept = shapesRef.current.filter((s) => !(s.kind === "position" && s.status === "draft"));
     const levels = defaultsFor(side, ot, price, time);
@@ -578,11 +593,12 @@ export function Chart({
     };
     setShapes([...kept, draft]);
     onSelectedShapeIdRef.current?.(draft.id);
-    // Stay on long/short tool until user switches — allows replacing draft with another click.
+    // Return to crosshair so pan/zoom works while editing SL/TP on the draft.
+    onDrawToolChangeRef.current?.("crosshair");
     setHint(
       ot === "market"
         ? "Box placed · Market entry follows price · drag handles for SL/TP/width · Confirm in bar"
-        : "Box placed · drag handles · set type in bar · Confirm"
+        : `Box placed · ${ot.replace(/_/g, " ")} · drag handles for entry/SL/TP · Confirm in bar`
     );
   }
 

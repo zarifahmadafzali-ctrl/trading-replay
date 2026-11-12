@@ -735,10 +735,11 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
           const beforeIdx = tickIndexRef.current;
           const sp = speedRef.current > 0 ? speedRef.current : 1;
           // Cap UI updates ~30–60fps: one state write can cover many ticks.
+          // Keep batches modest so market fills + SL are not both applied in one invisible jump.
           let batch = 1;
-          if (sp >= 10) batch = 120;
-          else if (sp >= 5) batch = 48;
-          else if (sp >= 3) batch = 16;
+          if (sp >= 10) batch = 40;
+          else if (sp >= 5) batch = 20;
+          else if (sp >= 3) batch = 10;
           else if (sp >= 2) batch = 4;
           stepTickRef.current(1, batch);
           // If step could not advance (still same day/index, no lock), stop.
