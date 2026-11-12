@@ -1412,11 +1412,24 @@ export function Chart({
     // Text: single click
     if (tool === "text") {
       const defaults = loadToolDefaults("text");
-      const shape = createShape("text", { a: point }, uid(), { ...defaults, text: "Text" }) as Shape;
+      // Always place a visible box; empty saved defaults must not hide the shape.
+      const initialText =
+        typeof (defaults as { text?: string }).text === "string" &&
+        (defaults as { text?: string }).text!.trim()
+          ? (defaults as { text: string }).text.trim()
+          : "Text";
+      const shape = createShape("text", { a: point }, uid(), {
+        ...defaults,
+        text: initialText,
+        fillOpacity:
+          typeof (defaults as { fillOpacity?: number }).fillOpacity === "number"
+            ? Math.max(0.45, (defaults as { fillOpacity: number }).fillOpacity)
+            : 0.85,
+      }) as Shape;
       setShapes([...shapesRef.current, shape]);
       onSelectedShapeIdRef.current?.(shape.id);
       onDrawToolChangeRef.current?.("crosshair");
-      setHint("Text placed · edit from settings bar");
+      setHint("Text placed · edit text in the settings bar");
       return;
     }
 

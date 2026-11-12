@@ -244,6 +244,11 @@ export function drawShape(ctx: CanvasRenderingContext2D, shape: DrawingShape, en
         ctx.fillStyle = withAlpha(rows[i].color, st.fillOpacity);
         ctx.fillRect(xl, Math.min(rows[i].y, rows[i + 1].y), xr - xl, Math.abs(rows[i + 1].y - rows[i].y));
       }
+      // Labels follow the A–B time span only — never the extended full-width lines.
+      const coreL = Math.min(A.x, B.x);
+      const coreR = Math.max(A.x, B.x);
+      const coreOffScreen = coreR < -12 || coreL > bounds.w + 12;
+
       ctx.font = FONT; ctx.textBaseline = "middle";
       for (const r of rows) {
         applyLine(ctx, r.color, st.lineWidth, st.lineStyle === "dotted" ? "dotted" : st.lineStyle);
@@ -251,10 +256,11 @@ export function drawShape(ctx: CanvasRenderingContext2D, shape: DrawingShape, en
         const parts: string[] = [];
         if (s.showPercents !== false) parts.push(String(r.value));
         if (s.showPrices !== false) parts.push(parts.length ? `(${fmt(r.price, dec)})` : fmt(r.price, dec));
-        if (parts.length) {
-          // Keep fib labels with the level segment — not glued to the left chart rim.
-          const labelX = Math.min(Math.max((xl + xr) / 2, 8), Math.max(8, bounds.w - 8));
-          if (anchorNearView(labelX, r.y, bounds)) {
+        if (parts.length && !coreOffScreen) {
+          const visL = Math.max(coreL, 0);
+          const visR = Math.min(coreR, bounds.w);
+          const labelX = visL <= visR ? (visL + visR) / 2 : (coreL + coreR) / 2;
+          if (anchorNearView(labelX, r.y, bounds, 24)) {
             ctx.fillStyle = r.color;
             ctx.textAlign = "center";
             ctx.fillText(parts.join(" "), labelX, r.y - 8);
@@ -324,17 +330,26 @@ export function drawShape(ctx: CanvasRenderingContext2D, shape: DrawingShape, en
       const A = project(s.a);
       if (!A) return true;
       const st = resolveStyle(s);
+      if (!anchorNearView(A.x, A.y, bounds, 80)) {
+        if (selected) handle(ctx, A, st.color);
+        return true;
+      }
       const fs = s.fontSize || 13;
+      const display = (s.text && s.text.trim()) ? s.text : "Text";
+      const isPlaceholder = !(s.text && s.text.trim());
       ctx.font = `${fs}px -apple-system, Segoe UI, Roboto, sans-serif`;
-      const w = ctx.measureText(s.text || "").width + 12;
+      const w = Math.max(48, ctx.measureText(display).width + 12);
       const h = fs + 10;
-      ctx.fillStyle = withAlpha(s.fillColor || "#131722", st.fillOpacity);
+      const fillOp = Math.max(typeof st.fillOpacity === "number" ? st.fillOpacity : 0.85, 0.45);
+      ctx.fillStyle = withAlpha(s.fillColor || "#131722", fillOp);
       ctx.fillRect(A.x, A.y - h, w, h);
-      applyLine(ctx, st.color, 1, "solid");
+      applyLine(ctx, st.color, selected ? 1.5 : 1, "solid");
       ctx.strokeRect(A.x, A.y - h, w, h);
-      ctx.fillStyle = s.textColor || st.color;
+      ctx.fillStyle = isPlaceholder
+        ? withAlpha(s.textColor || st.color, 0.55)
+        : (s.textColor || st.color);
       ctx.textAlign = "left"; ctx.textBaseline = "middle";
-      ctx.fillText(s.text || "", A.x + 6, A.y - h / 2);
+      ctx.fillText(display, A.x + 6, A.y - h / 2);
       if (selected) handle(ctx, A, st.color);
       return true;
     }
