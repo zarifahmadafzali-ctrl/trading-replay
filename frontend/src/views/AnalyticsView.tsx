@@ -20,7 +20,6 @@ import {
   loadJournalForSession,
   JOURNAL_CHANGED_EVENT,
   downloadJournalCsv,
-  resolveCurrencyPnL,
   type JournalTrade,
 } from "../lib/journal";
 import {
@@ -36,6 +35,8 @@ import {
   type SessionMeta,
 } from "../lib/sessionStore";
 import { getSessionStorageAdapter } from "../lib/storageAdapter";
+import { tradingDayKey } from "../lib/propRules";
+import { EquityCurveChart } from "../components/EquityCurveChart";
 import type { AccountProfile } from "../lib/riskModel";
 import {
   aggregateRiskGap,
@@ -47,368 +48,6 @@ import {
   whatIfFixedProfitPercent,
 } from "../lib/tradeAnalyticsAdvanced";
 
-
-function smoothPath(points: { x: number; y: number }[]): string {
-  if (points.length < 2) return "";
-  if (points.length === 2) {
-    return `M${points[0]!.x},${points[0]!.y} L${points[1]!.x},${points[1]!.y}`;
-  }
-  // Catmull-Rom → cubic Bezier for visual smoothness; control points only (data unchanged)
-  let d = `M${points[0]!.x.toFixed(1)},${points[0]!.y.toFixed(1)}`;
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[Math.max(0, i - 1)]!;
-    const p1 = points[i]!;
-    const p2 = points[i + 1]!;
-    const p3 = points[Math.min(points.length - 1, i + 2)]!;
-    const cp1x = p1.x + (p2.x - p0.x) / 6;
-    const cp1y = p1.y + (p2.y - p0.y) / 6;
-    const cp2x = p2.x - (p3.x - p1.x) / 6;
-    const cp2y = p2.y - (p3.y - p1.y) / 6;
-    d += ` C${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
-  }
-  return d;
-}
-
-type MarkerGroup = {
-  x: number;
-  time: number;
-  trades: JournalTrade[];
-};
-
-function UnifiedEquityPanel({
-  points,
-  trades,
-  startingBalance,
-  allowedDailyDdPct,
-  allowedMaxDdPct,
-  height = 280,
-}: {
-  points: { time: number; equity: number; balance: number; tradeId: string; pnl: number }[];
-  trades: JournalTrade[];
-  startingBalance: number;
-  allowedDailyDdPct: number | null;
-  allowedMaxDdPct: number | null;
-  height?: number;
-}) {
-  const [hover, setHover] = useState<null | {
-    kind: "curve" | "marker";
-    time: number;
-    equity?: number;
-    balance?: number;
-    dd?: number;
-    trades?: JournalTrade[];
-  }>(null);
-
-  if (points.length < 2) {
-    return <div className="chart-empty">Not enough closed trades for equity curve</div>;
-  }
-
-  const w = 720;
-  const padL = 12;
-  const padR = 52;
-  const padT = 16;
-  const padB = 36;
-  const plotW = w - padL - padR;
-  const plotH = height - padT - padB;
-
-  const xs = points.map((p) => p.time);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs) || minX + 1;
-  const ys = points.map((p) => p.equity);
-  let minY = Math.min(...ys, startingBalance);
-  let maxY = Math.max(...ys, startingBalance);
-  // Include allowed drawdown floors for scale awareness
-  if (startingBalance > 0) {
-    if (allowedMaxDdPct != null) {
-      minY = Math.min(minY, startingBalance * (1 - allowedMaxDdPct / 100));
-    }
-    if (allowedDailyDdPct != null) {
-      minY = Math.min(minY, startingBalance * (1 - allowedDailyDdPct / 100));
-    }
-  }
-  const spanY = maxY - minY || 1;
-
-  const xOf = (time: number) => padL + ((time - minX) / (maxX - minX || 1)) * plotW;
-  const yOf = (v: number) => padT + (1 - (v - minY) / spanY) * plotH;
-
-  // Peak-to-trough drawdown amount series (actual), parallel to equity points
-  let peak = points[0]!.equity;
-  const ddAmounts: number[] = [];
-  for (const p of points) {
-    if (p.equity > peak) peak = p.equity;
-    ddAmounts.push(peak - p.equity); // >= 0
-  }
-  const maxDdAmt = Math.max(...ddAmounts, 1);
-
-  const balancePts = points.map((p) => ({ x: xOf(p.time), y: yOf(p.equity) }));
-  const balancePath = smoothPath(balancePts);
-
-  // Drawdown path on secondary visual band (bottom 28% of plot) — separate visual treatment
-  const ddBandTop = padT + plotH * 0.72;
-  const ddBandH = plotH * 0.28;
-  const ddPathPts = points.map((p, i) => ({
-    x: xOf(p.time),
-    y: ddBandTop + ddBandH - (ddAmounts[i]! / maxDdAmt) * ddBandH,
-  }));
-  const ddPath = smoothPath(ddPathPts);
-
-  // Allowed max account DD line (absolute level from starting balance)
-  const allowedMaxLevel =
-    allowedMaxDdPct != null && startingBalance > 0
-      ? startingBalance * (1 - allowedMaxDdPct / 100)
-      : null;
-  const allowedDailyLevel =
-    allowedDailyDdPct != null && startingBalance > 0
-      ? startingBalance * (1 - allowedDailyDdPct / 100)
-      : null;
-
-  // Trade markers: group entries within 2 minutes
-  const sortedTrades = trades
-    .slice()
-    .sort((a, b) => a.entryTime - b.entryTime);
-  const groups: MarkerGroup[] = [];
-  for (const tr of sortedTrades) {
-    const last = groups[groups.length - 1];
-    if (last && Math.abs(tr.entryTime - last.time) <= 120) {
-      last.trades.push(tr);
-    } else {
-      groups.push({ x: xOf(tr.entryTime), time: tr.entryTime, trades: [tr] });
-    }
-  }
-
-  const fmtT = (sec: number) => {
-    try {
-      return new Date(sec * 1000).toLocaleString(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    } catch {
-      return String(sec);
-    }
-  };
-
-  return (
-    <div className="unified-equity-panel" style={{ position: "relative" }}>
-      <svg
-        viewBox={`0 0 ${w} ${height}`}
-        className="analytics-svg"
-        role="img"
-        aria-label="Unified equity curve"
-        style={{ width: "100%", height: "auto", display: "block" }}
-        onMouseLeave={() => setHover(null)}
-      >
-        {/* grid */}
-        {[0, 0.25, 0.5, 0.75, 1].map((f) => {
-          const y = padT + f * plotH;
-          const val = maxY - f * spanY;
-          return (
-            <g key={f}>
-              <line
-                x1={padL}
-                x2={w - padR}
-                y1={y}
-                y2={y}
-                stroke="currentColor"
-                opacity={0.12}
-              />
-              <text
-                x={w - padR + 6}
-                y={y + 3}
-                fontSize={10}
-                fill="currentColor"
-                opacity={0.7}
-              >
-                {val.toFixed(0)}
-              </text>
-            </g>
-          );
-        })}
-        {/* Allowed drawdown reference levels (not actual performance) */}
-        {allowedMaxLevel != null && (
-          <line
-            x1={padL}
-            x2={w - padR}
-            y1={yOf(allowedMaxLevel)}
-            y2={yOf(allowedMaxLevel)}
-            stroke="#e05c5c"
-            strokeWidth={1.5}
-            strokeDasharray="6 4"
-            opacity={0.85}
-          />
-        )}
-        {allowedDailyLevel != null && (
-          <line
-            x1={padL}
-            x2={w - padR}
-            y1={yOf(allowedDailyLevel)}
-            y2={yOf(allowedDailyLevel)}
-            stroke="#e0a15c"
-            strokeWidth={1.25}
-            strokeDasharray="4 4"
-            opacity={0.8}
-          />
-        )}
-        {/* Actual drawdown magnitude (secondary band) */}
-        <path d={ddPath} fill="none" stroke="#e0895c" strokeWidth={1.5} opacity={0.85} />
-        {/* Balance / equity (realized closed-trade curve — same series when no open equity tracked) */}
-        <path d={balancePath} fill="none" stroke="#7c6cf0" strokeWidth={2.5} />
-        {/* Data point hits for tooltip (original values) */}
-        {points.map((p, i) => (
-          <circle
-            key={`pt-${i}`}
-            cx={xOf(p.time)}
-            cy={yOf(p.equity)}
-            r={4}
-            fill="transparent"
-            onMouseEnter={() =>
-              setHover({
-                kind: "curve",
-                time: p.time,
-                equity: p.equity,
-                balance: p.balance,
-                dd: ddAmounts[i],
-              })
-            }
-          />
-        ))}
-        {/* Trade activity markers */}
-        {groups.map((g, i) => {
-          const n = g.trades.length;
-          const cy = height - 14;
-          const winish = g.trades.every((tr) => (resolveCurrencyPnL(tr) ?? 0) > 0);
-          const lossish = g.trades.every((tr) => (resolveCurrencyPnL(tr) ?? 0) < 0);
-          const fill = winish ? "#3dbf7a" : lossish ? "#e05c5c" : "#9aa4b2";
-          return (
-            <g
-              key={`m-${i}`}
-              onMouseEnter={() => setHover({ kind: "marker", time: g.time, trades: g.trades })}
-              style={{ cursor: "pointer" }}
-            >
-              <line
-                x1={g.x}
-                x2={g.x}
-                y1={padT}
-                y2={height - padB}
-                stroke={fill}
-                strokeWidth={1}
-                opacity={0.25}
-              />
-              {n === 1 ? (
-                <circle cx={g.x} cy={cy} r={5} fill={fill} stroke="#0b0f14" strokeWidth={1} />
-              ) : (
-                <>
-                  <rect
-                    x={g.x - 10}
-                    y={cy - 8}
-                    width={20}
-                    height={16}
-                    rx={4}
-                    fill={fill}
-                    stroke="#0b0f14"
-                    strokeWidth={1}
-                  />
-                  <text
-                    x={g.x}
-                    y={cy + 3}
-                    textAnchor="middle"
-                    fontSize={9}
-                    fontWeight={700}
-                    fill="#0b0f14"
-                  >
-                    {n}
-                  </text>
-                </>
-              )}
-            </g>
-          );
-        })}
-        {/* Time labels */}
-        <text x={padL} y={height - 6} fontSize={10} fill="currentColor" opacity={0.65}>
-          {fmtT(minX)}
-        </text>
-        <text
-          x={w - padR}
-          y={height - 6}
-          fontSize={10}
-          fill="currentColor"
-          opacity={0.65}
-          textAnchor="end"
-        >
-          {fmtT(maxX)}
-        </text>
-      </svg>
-      <div
-        className="hint"
-        style={{ display: "flex", flexWrap: "wrap", gap: "10px 16px", marginTop: 6, fontSize: 11 }}
-      >
-        <span>
-          <span style={{ color: "#7c6cf0" }}>●</span> Balance (realized after each close)
-        </span>
-        <span>
-          <span style={{ color: "#e0895c" }}>●</span> Actual drawdown from peak
-        </span>
-        {allowedDailyLevel != null && (
-          <span>
-            <span style={{ color: "#e0a15c" }}>—</span> Allowed daily DD (
-            {allowedDailyDdPct}%)
-          </span>
-        )}
-        {allowedMaxLevel != null && (
-          <span>
-            <span style={{ color: "#e05c5c" }}>—</span> Allowed max account DD (
-            {allowedMaxDdPct}%)
-          </span>
-        )}
-        <span>Markers: trade entries (count badge if clustered ≤2 min)</span>
-      </div>
-      <p className="hint" style={{ marginTop: 4 }}>
-        Equity tracks the same realized closed-trade curve (no separate open-equity feed in journal).
-        Curve smoothing is visual only; tooltips use original point values.
-      </p>
-      {hover && (
-        <div
-          className="card"
-          style={{
-            position: "absolute",
-            left: 8,
-            top: 8,
-            padding: "8px 10px",
-            fontSize: 12,
-            maxWidth: 280,
-            pointerEvents: "none",
-            zIndex: 2,
-          }}
-        >
-          <div>{fmtT(hover.time)}</div>
-          {hover.kind === "curve" && (
-            <>
-              <div>Balance: {hover.balance?.toFixed(2)}</div>
-              <div>DD from peak: {hover.dd?.toFixed(2)}</div>
-            </>
-          )}
-          {hover.kind === "marker" && hover.trades && (
-            <>
-              <div>
-                <b>{hover.trades.length}</b> trade{hover.trades.length > 1 ? "s" : ""}
-              </div>
-              {hover.trades.slice(0, 4).map((tr) => (
-                <div key={tr.id} style={{ marginTop: 4 }}>
-                  {(tr.tradeId || tr.id).slice(0, 12)} · {tr.symbol} · {tr.side.toUpperCase()} ·{" "}
-                  {resolveCurrencyPnL(tr) != null
-                    ? resolveCurrencyPnL(tr)!.toFixed(2)
-                    : "—"}
-                </div>
-              ))}
-              {hover.trades.length > 4 && <div>…</div>}
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function RHist({ buckets }: { buckets: { bucket: string; count: number }[] }) {
   if (!buckets.length) return <div className="chart-empty">No R data</div>;
@@ -652,6 +291,23 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
     }
     return null;
   }, [sessionAccounts, sessions]);
+  // Trading-day function for the daily-drawdown line: SAME timezone/reset hour as the prop rules of the phase
+  // that supplies allowedDailyDdPct (legacy session.propFirm has no tz -> UTC).
+  const propDayKey = useMemo(() => {
+    let tz = "UTC";
+    let hour = 0;
+    outer: for (const a of sessionAccounts) {
+      for (const ph of a.propProgram?.phases || []) {
+        const r = ph.rules as { dailyLossLimitPct?: number; dayResetTz?: string; dayResetHour?: number } | undefined;
+        if (r && r.dailyLossLimitPct != null && Number.isFinite(r.dailyLossLimitPct)) {
+          tz = r.dayResetTz || "UTC";
+          hour = Number(r.dayResetHour) || 0;
+          break outer;
+        }
+      }
+    }
+    return (unixSec: number) => tradingDayKey(unixSec, tz, hour);
+  }, [sessionAccounts]);
   const allowedMaxDdPct = useMemo(() => {
     for (const a of sessionAccounts) {
       const phases = a.propProgram?.phases || [];
@@ -919,12 +575,13 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
 
           <h3>Equity curve</h3>
           <div className="card chart-card">
-            <UnifiedEquityPanel
+            <EquityCurveChart
               points={curve}
               trades={filtered}
               startingBalance={startingBalance ?? 0}
               allowedDailyDdPct={allowedDailyDdPct}
               allowedMaxDdPct={allowedMaxDdPct}
+              dayKeyOf={propDayKey}
             />
             <p className="hint">
               Peak ≈ {formatNum(ddInfo.peak)} · Max actual DD {formatNum(ddInfo.maxDrawdown)} (
