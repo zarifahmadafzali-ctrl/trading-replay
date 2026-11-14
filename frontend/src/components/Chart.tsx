@@ -518,6 +518,59 @@ export function Chart({
   followRef.current = followPrice;
   selectedShapeIdRef.current = selectedShapeId;
 
+  /**
+   * P2: overlay invalidation — coalesce to one rAF and skip the full clear/draw
+   * when the visual paint key is unchanged (spurious schedules from stacked effects).
+   * Single canvas still full-repaints when the key changes (safe; no dual-layer rewrite).
+   */
+  const overlayPaintKeyRef = useRef<string>("");
+
+  function overlayPaintKey(): string {
+    const arr = shapesRef.current;
+    let fp = String(arr.length);
+    for (let i = 0; i < arr.length; i++) {
+      const sh = arr[i]!;
+      fp += `|${sh.id}:${sh.kind}`;
+      if (sh.kind === "position") {
+        const p = sh as PositionShape;
+        fp += `:${p.status}:${p.entry?.price}:${p.stop?.price}:${p.takeProfit?.price}:${p.rightTime ?? ""}:${p.locked ? 1 : 0}`;
+      } else {
+        const d = sh as DrawingShape;
+        if ("a" in d && d.a) fp += `:${d.a.time}:${d.a.price}`;
+        if ("b" in d && d.b) fp += `:${d.b.time}:${d.b.price}`;
+        if ("c" in d && d.c) fp += `:${d.c.time}:${d.c.price}`;
+        if ("price" in d && typeof (d as { price?: number }).price === "number") {
+          fp += `:p${(d as { price: number }).price}`;
+        }
+        if ("time" in d && typeof (d as { time?: number }).time === "number") {
+          fp += `:t${(d as { time: number }).time}`;
+        }
+        if ("visible" in d && d.visible === false) fp += ":h";
+        if ("locked" in d && d.locked) fp += ":L";
+      }
+    }
+    let range = "";
+    try {
+      const r = handlesRef.current?.chart.timeScale().getVisibleLogicalRange();
+      if (r && Number.isFinite(r.from) && Number.isFinite(r.to)) {
+        range = `${r.from.toFixed(3)}:${r.to.toFixed(3)}`;
+      }
+    } catch {
+      /* chart not ready */
+    }
+    const steps = stepsRef.current;
+    let preview = String(steps.length);
+    if (steps.length >= 1 && crosshairRef.current) {
+      const ch = crosshairRef.current;
+      preview += `:${ch.time.toFixed(3)}:${ch.price.toFixed(4)}`;
+    }
+    const drag = dragRef.current;
+    const dragKey = drag ? `${drag.id}:${drag.field}` : "";
+    const canvas = overlayRef.current;
+    const size = canvas ? `${canvas.clientWidth}x${canvas.clientHeight}` : "0x0";
+    return `${fp}|${range}|${preview}|${dragKey}|${selectedShapeIdRef.current ?? ""}|${size}`;
+  }
+
   function scheduleRedraw() {
     if (rafRef.current != null) return;
     rafRef.current = requestAnimationFrame(() => {
@@ -1123,12 +1176,19 @@ export function Chart({
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
     if (w < 2 || h < 2) return;
+
+    // P2: skip full clear + shape loop when nothing visual changed.
+    const paintKey = overlayPaintKey();
+    if (paintKey === overlayPaintKeyRef.current) return;
+    overlayPaintKeyRef.current = paintKey;
     const dpr = window.devicePixelRatio || 1;
     const needW = Math.floor(w * dpr);
     const needH = Math.floor(h * dpr);
     if (canvas.width !== needW || canvas.height !== needH) {
       canvas.width = needW;
       canvas.height = needH;
+      // Buffer resize clears pixels — force this frame to paint even if key matched earlier.
+      overlayPaintKeyRef.current = "";
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
