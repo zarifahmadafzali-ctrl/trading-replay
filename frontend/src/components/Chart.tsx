@@ -459,13 +459,51 @@ export function Chart({
   const downRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const doubleTapRef = useRef<{ x: number; y: number; time: number } | null>(null);
 
-  const [ohlc, setOhlc] = useState<{
-    time: string;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-  } | null>(null);
+  /** P0: OHLC UI via ref + rAF DOM update — avoid React re-render on every crosshair move. */
+  type OhlcUi = { time: string; open: number; high: number; low: number; close: number };
+  const ohlcLatestRef = useRef<OhlcUi | null>(null);
+  const ohlcBoxRef = useRef<HTMLDivElement | null>(null);
+  const ohlcTimeRef = useRef<HTMLDivElement | null>(null);
+  const ohlcOpenRef = useRef<HTMLSpanElement | null>(null);
+  const ohlcHighRef = useRef<HTMLSpanElement | null>(null);
+  const ohlcLowRef = useRef<HTMLSpanElement | null>(null);
+  const ohlcCloseRef = useRef<HTMLSpanElement | null>(null);
+  const ohlcRafRef = useRef<number | null>(null);
+  const ohlcPaintKeyRef = useRef<string>("");
+
+  function paintOhlcBox(data: OhlcUi | null) {
+    const box = ohlcBoxRef.current;
+    if (!box) return;
+    if (!data) {
+      box.style.display = "none";
+      return;
+    }
+    box.style.display = "";
+    if (ohlcTimeRef.current) ohlcTimeRef.current.textContent = data.time;
+    if (ohlcOpenRef.current) ohlcOpenRef.current.textContent = data.open.toFixed(2);
+    if (ohlcHighRef.current) ohlcHighRef.current.textContent = data.high.toFixed(2);
+    if (ohlcLowRef.current) ohlcLowRef.current.textContent = data.low.toFixed(2);
+    if (ohlcCloseRef.current) {
+      ohlcCloseRef.current.textContent = data.close.toFixed(2);
+      ohlcCloseRef.current.className = data.close >= data.open ? "up" : "down";
+    }
+  }
+
+  function scheduleOhlcUi(data: OhlcUi | null) {
+    ohlcLatestRef.current = data;
+    if (ohlcRafRef.current != null) return;
+    ohlcRafRef.current = requestAnimationFrame(() => {
+      ohlcRafRef.current = null;
+      const v = ohlcLatestRef.current;
+      const key = v
+        ? `${v.time}|${v.open}|${v.high}|${v.low}|${v.close}`
+        : "";
+      if (key === ohlcPaintKeyRef.current) return;
+      ohlcPaintKeyRef.current = key;
+      paintOhlcBox(v);
+    });
+  }
+
   const [hint, setHint] = useState("");
 
   shapesRef.current = shapes.map((s) =>
@@ -641,6 +679,7 @@ export function Chart({
       try {
         if (rafRef.current != null) {
           cancelAnimationFrame(rafRef.current);
+      if (ohlcRafRef.current != null) cancelAnimationFrame(ohlcRafRef.current);
           rafRef.current = null;
         }
         redrawOverlay();
@@ -1869,7 +1908,6 @@ export function Chart({
 
 
     const onMove = (param: MouseEventParams) => {
-      scheduleRedraw();
       if (param.point && param.time != null) {
         const price = candles.coordinateToPrice(param.point.y);
         if (price != null) {
@@ -1884,20 +1922,26 @@ export function Chart({
       // Drag updates are handled in pointermove (setPointerCapture). Crosshair
       // alone is not reliable while the pointer is captured on desktop.
 
+      // P0-2: overlay only needs a frame while placing a tool or dragging handles.
+      // Native LWC crosshair paints independently — do not full-redraw drawings on hover.
+      if (stepsRef.current.length >= 1 || dragRef.current) {
+        scheduleRedraw();
+      }
+
       if (!param.time || !param.seriesData) {
-        setOhlc(null);
+        scheduleOhlcUi(null);
         return;
       }
       const raw = param.seriesData.get(candles) as
         | { open: number; high: number; low: number; close: number }
         | undefined;
       if (!raw) {
-        setOhlc(null);
+        scheduleOhlcUi(null);
         return;
       }
-      const t = typeof param.time === "number" ? param.time : 0;
-      setOhlc({
-        time: new Date(t * 1000).toLocaleString(),
+      const tt = typeof param.time === "number" ? param.time : 0;
+      scheduleOhlcUi({
+        time: new Date(tt * 1000).toLocaleString(),
         open: raw.open,
         high: raw.high,
         low: raw.low,
@@ -2057,8 +2101,13 @@ export function Chart({
         const hit = hitTestDrag(x, y, false);
         const cur = hit ? resizeCursorForPart(hit.field) : "";
         el.style.cursor = cur || "default";
+        // Hover-only: no overlay visual change (LWC owns crosshair).
+        return;
       }
-      scheduleRedraw();
+      // Placement preview, drawing tools, or other active overlay interactions.
+      if (placing || stepsRef.current.length >= 1 || dragRef.current) {
+        scheduleRedraw();
+      }
     };
 
     const endDrag = () => {
@@ -2934,27 +2983,29 @@ export function Chart({
           />
         );
       })()}
-      {ohlc && (
-        <div
-          className="ohlc-box"
-          style={{ fontSize: "clamp(10px, 2.6vw, 12px)", padding: "clamp(4px, 1.2vw, 8px) clamp(6px, 1.6vw, 10px)" }}
-        >
-          <div className="ohlc-time">{ohlc.time}</div>
-          <div>
-            <span className="k">O</span> {ohlc.open.toFixed(2)}
-          </div>
-          <div>
-            <span className="k">H</span> {ohlc.high.toFixed(2)}
-          </div>
-          <div>
-            <span className="k">L</span> {ohlc.low.toFixed(2)}
-          </div>
-          <div>
-            <span className="k">C</span>{" "}
-            <span className={ohlc.close >= ohlc.open ? "up" : "down"}>{ohlc.close.toFixed(2)}</span>
-          </div>
+      <div
+        ref={ohlcBoxRef}
+        className="ohlc-box"
+        style={{
+          display: "none",
+          fontSize: "clamp(10px, 2.6vw, 12px)",
+          padding: "clamp(4px, 1.2vw, 8px) clamp(6px, 1.6vw, 10px)",
+        }}
+      >
+        <div className="ohlc-time" ref={ohlcTimeRef} />
+        <div>
+          <span className="k">O</span> <span ref={ohlcOpenRef} />
         </div>
-      )}
+        <div>
+          <span className="k">H</span> <span ref={ohlcHighRef} />
+        </div>
+        <div>
+          <span className="k">L</span> <span ref={ohlcLowRef} />
+        </div>
+        <div>
+          <span className="k">C</span> <span ref={ohlcCloseRef} />
+        </div>
+      </div>
       {hint && (
         <div className="draw-hint" style={{ fontSize: "clamp(10px, 2.8vw, 13px)", textAlign: "center" }}>
           {hint}
