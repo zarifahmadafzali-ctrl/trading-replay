@@ -526,6 +526,11 @@ export function Chart({
     });
   }
 
+  /** P1: coalesce hover hit-testing to one evaluation per animation frame. */
+  const hoverHitRafRef = useRef<number | null>(null);
+  const hoverPtrRef = useRef<{ x: number; y: number } | null>(null);
+  const lastHoverCursorRef = useRef<string>("");
+
   function setShapes(next: Shape[]) {
     onShapesChangeRef.current(next);
   }
@@ -680,6 +685,7 @@ export function Chart({
         if (rafRef.current != null) {
           cancelAnimationFrame(rafRef.current);
       if (ohlcRafRef.current != null) cancelAnimationFrame(ohlcRafRef.current);
+      if (hoverHitRafRef.current != null) cancelAnimationFrame(hoverHitRafRef.current);
           rafRef.current = null;
         }
         redrawOverlay();
@@ -2097,10 +2103,37 @@ export function Chart({
         // Drawing tool selected: finger move must not scroll the document.
         ev.preventDefault();
       } else if (tool === "crosshair" || tool === "none") {
-        // Desktop: show resize direction when hovering a selected shape handle.
-        const hit = hitTestDrag(x, y, false);
-        const cur = hit ? resizeCursorForPart(hit.field) : "";
-        el.style.cursor = cur || "default";
+        // P1: hover hit-test at most once per frame; skip when no editable shapes.
+        hoverPtrRef.current = { x, y };
+        if (hoverHitRafRef.current == null) {
+          hoverHitRafRef.current = requestAnimationFrame(() => {
+            hoverHitRafRef.current = null;
+            const pt = hoverPtrRef.current;
+            if (!pt) return;
+            let interactive = !!selectedShapeIdRef.current;
+            if (!interactive) {
+              for (const s of shapesRef.current) {
+                if ("visible" in s && s.visible === false) continue;
+                if ("locked" in s && s.locked) continue;
+                interactive = true;
+                break;
+              }
+            }
+            if (!interactive) {
+              if (lastHoverCursorRef.current !== "default") {
+                el.style.cursor = "default";
+                lastHoverCursorRef.current = "default";
+              }
+              return;
+            }
+            const hit = hitTestDrag(pt.x, pt.y, false);
+            const next = (hit ? resizeCursorForPart(hit.field) : "") || "default";
+            if (next !== lastHoverCursorRef.current) {
+              el.style.cursor = next;
+              lastHoverCursorRef.current = next;
+            }
+          });
+        }
         // Hover-only: no overlay visual change (LWC owns crosshair).
         return;
       }
