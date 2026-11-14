@@ -413,11 +413,19 @@ export function Chart({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
   const handlesRef = useRef<ChartHandles | null>(null);
-  /** Track last setData fingerprint for incremental candle updates (v3.23.0). */
-  const chartDataMetaRef = useRef<{ len: number; firstTime: number; lastTime: number }>({
+  /** Track last series paint for incremental candle updates (P3). */
+  const chartDataMetaRef = useRef<{
+    len: number;
+    firstTime: number;
+    lastTime: number;
+    barsLen: number;
+    stepSec: number;
+  }>({
     len: 0,
     firstTime: 0,
     lastTime: 0,
+    barsLen: 0,
+    stepSec: 0,
   });
   const indicatorSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
   const shapesRef = useRef(shapes);
@@ -2569,31 +2577,76 @@ export function Chart({
     const padPts = futureTimes.map((t) => ({ time: t as UTCTimestamp }));
     const whitespacePts = [...unplayedPts, ...padPts];
 
-    // Full setData keeps candle + whitespace times aligned. Real OHLC only for played bars.
-    handles.candles.setData([
-      ...played.map((b) => ({
-        time: b.time as UTCTimestamp,
-        open: b.open,
-        high: b.high,
-        low: b.low,
-        close: b.close,
-      })),
-      ...whitespacePts,
-    ]);
-    handles.volume.setData([
-      ...played.map((b) => ({
-        time: b.time as UTCTimestamp,
-        value: b.volume ?? 0,
-        color: b.close >= b.open ? "rgba(38,166,154,0.45)" : "rgba(239,83,80,0.45)",
-      })),
-      // Matching times only — no value → LWC treats as whitespace (no histogram bar).
-      ...whitespacePts,
-    ]);
-    chartDataMetaRef.current = {
-      len: played.length,
-      firstTime,
-      lastTime,
-    };
+    const meta = chartDataMetaRef.current;
+    const sameSeries =
+      meta.barsLen === bars.length &&
+      meta.firstTime === firstTime &&
+      meta.stepSec === stepSec &&
+      meta.len > 0 &&
+      played.length >= meta.len;
+
+    // P3: when the playhead only advances on an unchanged series, replace former
+    // whitespace points via series.update instead of rebuilding the entire setData.
+    // Seek-back / bars reload / TF change still use full setData.
+    const canIncremental =
+      sameSeries &&
+      played.length > meta.len &&
+      played.length - meta.len <= 64 &&
+      (meta.len === 0 || played[meta.len - 1]?.time === meta.lastTime);
+
+    if (canIncremental) {
+      for (let i = meta.len; i < played.length; i++) {
+        const b = played[i]!;
+        handles.candles.update({
+          time: b.time as UTCTimestamp,
+          open: b.open,
+          high: b.high,
+          low: b.low,
+          close: b.close,
+        });
+        handles.volume.update({
+          time: b.time as UTCTimestamp,
+          value: b.volume ?? 0,
+          color: b.close >= b.open ? "rgba(38,166,154,0.45)" : "rgba(239,83,80,0.45)",
+        });
+      }
+      chartDataMetaRef.current = {
+        len: played.length,
+        firstTime,
+        lastTime,
+        barsLen: bars.length,
+        stepSec,
+      };
+    } else {
+      // Full setData keeps candle + whitespace times aligned. Real OHLC only for played bars.
+      handles.candles.setData([
+        ...played.map((b) => ({
+          time: b.time as UTCTimestamp,
+          open: b.open,
+          high: b.high,
+          low: b.low,
+          close: b.close,
+        })),
+        ...whitespacePts,
+      ]);
+      handles.volume.setData([
+        ...played.map((b) => ({
+          time: b.time as UTCTimestamp,
+          value: b.volume ?? 0,
+          color: b.close >= b.open ? "rgba(38,166,154,0.45)" : "rgba(239,83,80,0.45)",
+        })),
+        // Matching times only — no value → LWC treats as whitespace (no histogram bar).
+        ...whitespacePts,
+      ]);
+      chartDataMetaRef.current = {
+        len: played.length,
+        firstTime,
+        lastTime,
+        barsLen: bars.length,
+        stepSec,
+      };
+    }
+
     // Follow: keep last *played* candle in view; unplayed + pad whitespace fill to the right.
     if (shouldAutoFollowScroll(followRef.current, played.length)) {
       const ts = handles.chart.timeScale();

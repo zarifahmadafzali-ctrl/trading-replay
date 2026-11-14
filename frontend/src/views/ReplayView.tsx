@@ -787,9 +787,12 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
 
   useEffect(() => {
     if (goToEditing) return; // preserve user datetime edits on desktop
+    // P3: while playing, skip React updates to the Jump-To input every step.
+    // On pause / seek the next run refreshes the field.
+    if (playing) return;
     const b = baseBars[Math.max(0, cursor - 1)];
     if (b) setGoToValue(toLocalInputValue(b.time));
-  }, [cursor, baseBars, goToEditing]);
+  }, [cursor, baseBars, goToEditing, playing]);
 
 
   // close panels on outside tap
