@@ -422,7 +422,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       tickWindowRef.current = [];
       journaledPositionIdsRef.current = new Set();
       const wantTick = rt.replayResolution === "tick";
-      setReplayResolution(wantTick ? "tick" : "seconds");
+      if (wantTick) setReplayResolution("tick");
+      else switchToSecondsReplay();
       if (wantTick && rt.tickDay) {
         pendingTickRestoreRef.current = {
           day: rt.tickDay,
@@ -430,7 +431,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         };
       } else {
         pendingTickRestoreRef.current = null;
-        setReplayResolution("seconds");
+        switchToSecondsReplay();
       }
       setPlaying(false);
       setMessage(rt.message || (meta ? meta.name : "Session loaded"));
@@ -1277,7 +1278,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     setReplayStepSeconds(sec);
     setCustomStepInput("");
     setStepOpen(false);
-    if (replayResolution === "tick") setReplayResolution("seconds");
+    if (replayResolution === "tick") switchToSecondsReplay();
     setMessage(`Replay step ${formatTf(sec)}`);
   }
 
@@ -1285,6 +1286,27 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   function pushWorkspaceEvent(text: string, timeSec?: number) {
     const tsec = timeSec ?? baseBars[Math.max(0, cursor - 1)]?.time ?? Math.floor(Date.now() / 1000);
     setWorkspaceLog((prev) => [{ t: tsec, text }, ...prev].slice(0, 40));
+  }
+
+  /**
+   * Maturity: release day-scale tick arrays when leaving Tick mode so long sessions
+   * do not retain millions of TickRecord objects after switching back to 1s OHLC.
+   * Does not touch IndexedDB or baseBars.
+   */
+  function clearTickReplayMemory() {
+    setTickWindow([]);
+    setTickDay(null);
+    setTickIndex(0);
+    tickWindowRef.current = [];
+    tickDayRef.current = null;
+    tickIndexRef.current = 0;
+    tickTransitionLockRef.current = false;
+    prevTickIndexRef.current = -1;
+  }
+
+  function switchToSecondsReplay() {
+    setReplayResolution("seconds");
+    clearTickReplayMemory();
   }
 
   async function handlePositionClosed(closed: ClosedPosition) {
@@ -1752,10 +1774,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         if (hit) setTickSymbolUsed(hit.symbol);
       }
       if (!ok && replayResolution === "tick") {
-        setReplayResolution("seconds");
-        setTickWindow([]);
-        setTickDay(null);
-        tickTransitionLockRef.current = false;
+        switchToSecondsReplay();
         setMessage("Tick data unavailable for this range · switched to 1s step");
       }
     })();
@@ -1979,7 +1998,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       if (cancelled) return;
       if (!loaded) {
         pendingTickRestoreRef.current = null;
-        setReplayResolution("seconds");
+        switchToSecondsReplay();
         setMessage("Tick state could not be restored · using 1s step");
         return;
       }
@@ -2001,7 +2020,7 @@ const exitTickMode = useCallback(() => {
     setPlaying(false);
     const t = tickWindowRef.current[tickIndexRef.current]?.time;
     if (t != null) syncBarsCursorFromTickTime(t);
-    setReplayResolution("seconds");
+    switchToSecondsReplay();
     setMessage("Replay step: 1s bars (Tick mode off)");
   }, [syncBarsCursorFromTickTime]);
 
