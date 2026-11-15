@@ -61,7 +61,7 @@ import {
   type PositionStyle,
   type PositionPart,
 } from "../lib/positionModel";
-import { runPositionBars, manualClose as engineManualClose } from "../lib/positionEngine";
+import { runPositionBars, manualClose as engineManualClose, hasActivePositionShape } from "../lib/positionEngine";
 import { runPositionTicks, type TickLike } from "../lib/positionEngineTick";
 import { drawPosition } from "../lib/positionRender";
 import {
@@ -2852,11 +2852,8 @@ export function Chart({
   // Order: (1) pending entry / stop-limit stages → (2) SL/TP on open only.
   // Engine: 1s OHLC (positionEngine) or C2 tick Bid/Ask (positionEngineTick).
   useEffect(() => {
-    const hasWork = shapesRef.current.some(
-      (s) =>
-        s.kind === "position" && (s.status === "open" || s.status === "pending")
-    );
-    if (!hasWork) return;
+    // P7: shared active check (same predicate as engines).
+    if (!hasActivePositionShape(shapesRef.current as { kind: string; status?: string }[])) return;
 
     const tickSeq =
       execTicks && execTicks.length

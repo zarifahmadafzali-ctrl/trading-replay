@@ -4,6 +4,7 @@
  */
 import type { PositionLike } from "./positionModel";
 import type { ClosedInfo, EngineEvent, EngineHooks, EngineResult } from "./positionEngine";
+import { hasActivePositionShape } from "./positionEngine";
 
 export type TickLike = {
   time: number;
@@ -143,6 +144,9 @@ export function runPositionTicks<S extends { kind: string }>(
   hooks: EngineHooks<any> = {},
   _opts: TickEngineOpts = {}
 ): EngineResult<S> {
+  if (!ticks.length || !hasActivePositionShape(shapes as { kind: string; status?: string }[])) {
+    return { shapes, closed: [], events: [], mutated: false };
+  }
   const ordered = sortTicksStable(ticks);
   let working: S[] = shapes.slice();
   const closed: ClosedInfo[] = [];
@@ -150,6 +154,8 @@ export function runPositionTicks<S extends { kind: string }>(
   let mutated = false;
 
   for (const tick of ordered) {
+    // P7: stop scanning remaining ticks once no open/pending positions remain.
+    if (!hasActivePositionShape(working as { kind: string; status?: string }[])) break;
     if (!Number.isFinite(tick.time) || !Number.isFinite(tick.bid) || !Number.isFinite(tick.ask)) {
       continue;
     }

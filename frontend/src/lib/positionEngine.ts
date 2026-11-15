@@ -117,6 +117,14 @@ function fillGate(hooks: EngineHooks<any>, s: PositionLike, bar: BarLike): { ok:
 const sideTxt = (s: PositionLike) => s.side.toUpperCase();
 const typeTxt = (s: PositionLike) => String(s.orderType || "").replace(/_/g, " ");
 
+export function hasActivePositionShape(shapes: { kind: string; status?: string }[]): boolean {
+  for (let i = 0; i < shapes.length; i++) {
+    const s = shapes[i]!;
+    if (s.kind === "position" && (s.status === "open" || s.status === "pending")) return true;
+  }
+  return false;
+}
+
 export function runPositionBars<S extends { kind: string }>(
   shapes: S[],
   bars: BarLike[],
@@ -124,12 +132,17 @@ export function runPositionBars<S extends { kind: string }>(
   opts: EngineOpts = {}
 ): EngineResult<S> {
   const gap = !!opts.gapFill;
+  if (!bars.length || !hasActivePositionShape(shapes as { kind: string; status?: string }[])) {
+    return { shapes, closed: [], events: [], mutated: false };
+  }
   let working: S[] = shapes.slice();
   const closed: ClosedInfo[] = [];
   const events: EngineEvent[] = [];
   let mutated = false;
 
   for (const bar of bars) {
+    // P7: once every open/pending position is gone, later bars cannot affect execution.
+    if (!hasActivePositionShape(working as { kind: string; status?: string }[])) break;
     const next: S[] = [];
     for (const raw of working) {
       if (raw.kind !== "position") {
