@@ -1715,6 +1715,8 @@ export function Chart({
     // Positions: box-local hit test (TradingView-style finite width).
     for (const s of shapesRef.current) {
       if (s.kind !== "position") continue;
+      // P5: locked (incl. auto-lock on close) is select-only — never start a drag.
+      if (s.locked) continue;
       const barSec =
         barsRef.current.length >= 2
           ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
@@ -1765,8 +1767,12 @@ export function Chart({
         originShape,
       });
       // Map 9-handle parts directly into drag fields
+      // P5: closed+unlocked is archive geometry only (execution ignores status==="closed").
+      const live =
+        s.status === "draft" || s.status === "open" || s.status === "pending";
+      const archiveEditable = s.status === "closed" && !s.locked;
       if (part === "stop" || part === "takeProfit" || part === "tl" || part === "tr" || part === "bl" || part === "br") {
-        if (s.status === "draft" || s.status === "open" || s.status === "pending") {
+        if (live || archiveEditable) {
           return drag(part);
         }
         continue;
@@ -1777,6 +1783,10 @@ export function Chart({
         }
         // Open: body still moves SL/TP vertically; right still resizes width.
         if (s.status === "open" && (part === "body" || part === "right" || part === "entry")) {
+          return drag(part === "entry" ? "body" : part);
+        }
+        // Closed unlocked: reposition/resize historical box without reactivating trade.
+        if (archiveEditable && (part === "body" || part === "right" || part === "left" || part === "entry")) {
           return drag(part === "entry" ? "body" : part);
         }
       }
@@ -1924,14 +1934,26 @@ export function Chart({
         const xx = handles.chart.timeScale().timeToCoordinate(s.time as UTCTimestamp);
         if (xx != null && Math.abs(xx - x) <= threshold) return s.id;
       } else if (s.kind === "position") {
-        // Select position by clicking entry/SL/TP band so PositionSettingsBar can open.
-        const sy = handles.candles.priceToCoordinate(s.stop.price);
-        const ty = handles.candles.priceToCoordinate(s.takeProfit.price);
-        const ey = handles.candles.priceToCoordinate(s.entry.price);
-        if (ey == null || sy == null || ty == null) continue;
-        const top = Math.min(ey, sy, ty) - threshold;
-        const bottom = Math.max(ey, sy, ty) + threshold;
-        if (y >= top && y <= bottom) return s.id;
+        // P5: select via finite position box (not a full-width price band that steals clicks).
+        const barSec =
+          barsRef.current.length >= 2
+            ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
+            : 60;
+        const pos = normalizePosition(s as PositionShape, { barSec });
+        const box = positionBox(pos as never, {
+          xOf: (tm: number) => timeToX(tm),
+          yOf: (pr: number) => {
+            const yy = handles.candles.priceToCoordinate(pr);
+            return yy == null || !Number.isFinite(yy) ? null : yy;
+          },
+          w: elWidth(),
+        });
+        if (!box) continue;
+        const yLo = Math.min(box.entryY, box.stopY, box.tpY) - threshold;
+        const yHi = Math.max(box.entryY, box.stopY, box.tpY) + threshold;
+        if (x >= box.x0 - threshold && x <= box.x1 + threshold && y >= yLo && y <= yHi) {
+          return s.id;
+        }
       }
     }
     return null;
@@ -2118,9 +2140,13 @@ export function Chart({
             shape.kind === "channel" ||
             shape.kind === "text");
         const alreadySelected = selectedShapeIdRef.current === hit.id;
-        if (isDrawing && shape && "locked" in shape && shape.locked) {
+        if (shape && "locked" in shape && shape.locked) {
           onSelectedShapeIdRef.current?.(hit.id);
-          setHint("Locked · unlock from settings bar to move");
+          setHint(
+            shape.kind === "position" && (shape as PositionShape).status === "closed"
+              ? "Closed position · unlock in settings to reposition (historical only)"
+              : "Locked · unlock from settings bar to move"
+          );
           ev.preventDefault();
           return;
         }
@@ -2334,21 +2360,42 @@ export function Chart({
           // Prefer selecting an existing drawing if the tap hits one.
           const existingId = hitTestSelect(x, y, threshold);
           if (existingId && stepsRef.current.length === 0) {
-            onSelectedShapeIdRef.current?.(existingId);
-            setHint("Selected · drag to move, Delete key or settings bar to remove");
+            const hitShape = shapesRef.current.find((s) => s.id === existingId);
+            // P5: closed/locked positions must not block starting a new geometry tool.
+            const blockPlace =
+              hitShape &&
+              hitShape.kind === "position" &&
+              ((hitShape as PositionShape).status === "closed" || hitShape.locked);
+            if (!blockPlace) {
+              onSelectedShapeIdRef.current?.(existingId);
+              setHint("Selected · drag to move, Delete key or settings bar to remove");
+            } else {
+              const pt = fromXY(x, y);
+              if (pt) placePoint(pt);
+            }
           } else {
             const pt = fromXY(x, y);
             if (pt) placePoint(pt);
           }
         } else if (tool === "long" || tool === "short") {
-          // Prefer selecting/dragging an existing position over placing a new box on top.
+          // Prefer selecting live/draft positions; closed archive must not block a new order.
           const existingId = hitTestSelect(x, y, threshold);
           if (existingId) {
-            onSelectedShapeIdRef.current?.(existingId);
-            setHint("Selected · drag handles · Confirm in bar");
+            const hitShape = shapesRef.current.find((s) => s.id === existingId);
+            const isClosedPos =
+              hitShape &&
+              hitShape.kind === "position" &&
+              (hitShape as PositionShape).status === "closed";
+            if (!isClosedPos) {
+              onSelectedShapeIdRef.current?.(existingId);
+              setHint("Selected · drag handles · Confirm in bar");
+            } else {
+              const pt = fromXY(x, y);
+              if (pt) spawnDraft(tool, pt);
+            }
           } else {
             const pt = fromXY(x, y);
-            if (pt) placePoint(pt);
+            if (pt) spawnDraft(tool, pt);
           }
         } else {
           const hitId = hitTestSelect(x, y, threshold);

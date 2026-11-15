@@ -1576,6 +1576,15 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
         return;
       }
     }
+    // P5: leaving long/short (or switching tools) drops unfinished position drafts only.
+    // Confirmed open/pending positions are never removed by tr-cancel-draft.
+    if (t !== "long" && t !== "short") {
+      try {
+        window.dispatchEvent(new Event("tr-cancel-draft"));
+      } catch {
+        /* */
+      }
+    }
     setDrawTool(t);
   }
 
