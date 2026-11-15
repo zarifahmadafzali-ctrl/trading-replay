@@ -443,6 +443,7 @@ export function Chart({
     >
   >(new Map());
   const shapesRef = useRef(shapes);
+  const shapesPropRef = useRef<Shape[] | null>(null);
   const barsRef = useRef(bars);
   barsRef.current = bars;
   const barSecondsRef = useRef(barSeconds);
@@ -530,11 +531,21 @@ export function Chart({
 
   const [hint, setHint] = useState("");
 
-  shapesRef.current = shapes.map((s) =>
-    s.kind === "position"
-      ? (normalizePosition(s as PositionShape, { barSec: Math.max(1, barsRef.current.length >= 2 ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60 : 60) }) as Shape)
-      : (normalizeShape(s as DrawingShape) as Shape)
-  );
+  // P8: normalize only when the shapes prop identity changes (avoid per-render map alloc).
+  if (shapesPropRef.current !== shapes) {
+    shapesPropRef.current = shapes;
+    const barSec = Math.max(
+      1,
+      barsRef.current.length >= 2
+        ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
+        : 60
+    );
+    shapesRef.current = shapes.map((s) =>
+      s.kind === "position"
+        ? (normalizePosition(s as PositionShape, { barSec }) as Shape)
+        : (normalizeShape(s as DrawingShape) as Shape)
+    );
+  }
   drawToolRef.current = drawTool;
   orderTypeRef.current = orderType;
   marketRef.current = { price: marketPrice, time: marketTime, bid: marketBid, ask: marketAsk };
@@ -549,28 +560,47 @@ export function Chart({
    */
   const overlayPaintKeyRef = useRef<string>("");
 
+  const shapeFpCacheRef = useRef<{ prop: Shape[] | null; fp: string }>({ prop: null, fp: "" });
+
   function overlayPaintKey(): string {
     const arr = shapesRef.current;
-    let fp = String(arr.length);
-    for (let i = 0; i < arr.length; i++) {
-      const sh = arr[i]!;
-      fp += `|${sh.id}:${sh.kind}`;
-      if (sh.kind === "position") {
-        const p = sh as PositionShape;
-        fp += `:${p.status}:${p.entry?.price}:${p.stop?.price}:${p.takeProfit?.price}:${p.rightTime ?? ""}:${p.locked ? 1 : 0}`;
-      } else {
-        const d = sh as DrawingShape;
-        if ("a" in d && d.a) fp += `:${d.a.time}:${d.a.price}`;
-        if ("b" in d && d.b) fp += `:${d.b.time}:${d.b.price}`;
-        if ("c" in d && d.c) fp += `:${d.c.time}:${d.c.price}`;
-        if ("price" in d && typeof (d as { price?: number }).price === "number") {
-          fp += `:p${(d as { price: number }).price}`;
+    let fp: string;
+    if (shapeFpCacheRef.current.prop === shapesPropRef.current) {
+      fp = shapeFpCacheRef.current.fp;
+    } else {
+      fp = String(arr.length);
+      for (let i = 0; i < arr.length; i++) {
+        const sh = arr[i]!;
+        fp += `|${sh.id}:${sh.kind}`;
+        if (sh.kind === "position") {
+          const p = sh as PositionShape;
+          fp += `:${p.status}:${p.entry?.price}:${p.stop?.price}:${p.takeProfit?.price}:${p.rightTime ?? ""}:${p.locked ? 1 : 0}`;
+        } else {
+          const d = sh as DrawingShape;
+          if ("a" in d && d.a) fp += `:${d.a.time}:${d.a.price}`;
+          if ("b" in d && d.b) fp += `:${d.b.time}:${d.b.price}`;
+          if ("c" in d && d.c) fp += `:${d.c.time}:${d.c.price}`;
+          if ("price" in d && typeof (d as { price?: number }).price === "number") {
+            fp += `:p${(d as { price: number }).price}`;
+          }
+          if ("time" in d && typeof (d as { time?: number }).time === "number") {
+            fp += `:t${(d as { time: number }).time}`;
+          }
+          if ("visible" in d && d.visible === false) fp += ":h";
+          if ("locked" in d && d.locked) fp += ":L";
         }
-        if ("time" in d && typeof (d as { time?: number }).time === "number") {
-          fp += `:t${(d as { time: number }).time}`;
+      }
+      shapeFpCacheRef.current = { prop: shapesPropRef.current, fp };
+    }
+    // Live open PnL labels depend on market price (not stored on the shape).
+    const mpx = marketRef.current.price;
+    if (mpx != null && Number.isFinite(mpx)) {
+      for (let i = 0; i < arr.length; i++) {
+        const sh = arr[i]!;
+        if (sh.kind === "position" && (sh as PositionShape).status === "open") {
+          fp += `|m${mpx}`;
+          break;
         }
-        if ("visible" in d && d.visible === false) fp += ":h";
-        if ("locked" in d && d.locked) fp += ":L";
       }
     }
     let range = "";
@@ -1224,6 +1254,26 @@ export function Chart({
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
     if (w < 2 || h < 2) return;
+
+    // P8: nothing to paint (no shapes, placement, or drag) — clear once then idle.
+    const idleOverlay =
+      shapesRef.current.length === 0 &&
+      stepsRef.current.length === 0 &&
+      !dragRef.current;
+    if (idleOverlay) {
+      if (overlayPaintKeyRef.current === "__empty__") return;
+      const dpr0 = window.devicePixelRatio || 1;
+      const needW0 = Math.floor(w * dpr0);
+      const needH0 = Math.floor(h * dpr0);
+      if (canvas.width !== needW0 || canvas.height !== needH0) {
+        canvas.width = needW0;
+        canvas.height = needH0;
+      }
+      ctx.setTransform(dpr0, 0, 0, dpr0, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      overlayPaintKeyRef.current = "__empty__";
+      return;
+    }
 
     // P2: skip full clear + shape loop when nothing visual changed.
     const paintKey = overlayPaintKey();
@@ -2912,6 +2962,8 @@ export function Chart({
       );
       if (!res.mutated) return;
       shapesRef.current = res.shapes as Shape[];
+      shapesPropRef.current = null;
+      shapeFpCacheRef.current = { prop: null, fp: "" };
       onShapesChangeRef.current(res.shapes as Shape[]);
       for (const c of res.closed) {
         onPositionClosedRef.current?.(c as unknown as ClosedPosition);
@@ -3005,6 +3057,8 @@ export function Chart({
     if (!res.mutated) return;
     // v3.46.1: sync ref before parent re-render so fast ticks cannot ghost-draw closed positions
     shapesRef.current = res.shapes as Shape[];
+    shapesPropRef.current = null; // bust normalize + fingerprint cache
+    shapeFpCacheRef.current = { prop: null, fp: "" };
     onShapesChangeRef.current(res.shapes as Shape[]);
     for (const c of res.closed) {
       onPositionClosedRef.current?.(c as unknown as ClosedPosition);
