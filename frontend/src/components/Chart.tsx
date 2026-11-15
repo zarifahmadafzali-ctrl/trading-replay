@@ -428,6 +428,20 @@ export function Chart({
     stepSec: 0,
   });
   const indicatorSeriesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
+  /** P6: last painted indicator series fingerprint for incremental update(). */
+  const indicatorPaintRef = useRef<
+    Map<
+      string,
+      {
+        len: number;
+        lastTime: number;
+        lastValue: number;
+        firstTime: number;
+        barsLen: number;
+        key: string;
+      }
+    >
+  >(new Map());
   const shapesRef = useRef(shapes);
   const barsRef = useRef(bars);
   barsRef.current = bars;
@@ -2753,6 +2767,7 @@ export function Chart({
       if (!wantIds.has(id)) {
         handles.chart.removeSeries(series);
         existing.delete(id);
+        indicatorPaintRef.current.delete(id);
       }
     }
     for (const spec of indicators) {
@@ -2773,8 +2788,16 @@ export function Chart({
   }, [indicators]);
 
   // Recompute indicator values whenever the visible bars or indicator list change.
+  // P6: formulas unchanged; avoid full setData when the playhead only appends points.
   useEffect(() => {
-    const visible = bars.slice(0, cursor);
+    const end = Math.min(bars.length, Math.max(0, cursor));
+    const visible = bars.slice(0, end);
+    const firstTime = visible[0]?.time ?? 0;
+    const barsLen = bars.length;
+    const active = new Set(indicators.map((s) => s.id));
+    for (const id of [...indicatorPaintRef.current.keys()]) {
+      if (!active.has(id)) indicatorPaintRef.current.delete(id);
+    }
     for (const spec of indicators) {
       const series = indicatorSeriesRef.current.get(spec.id);
       if (!series) continue;
@@ -2784,7 +2807,44 @@ export function Chart({
           : spec.kind === "ema"
           ? ema(visible, spec.period ?? 20)
           : vwap(visible);
-      series.setData(points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+      const key = `${spec.kind}:${spec.period ?? 0}:${spec.color}`;
+      const last = points.length ? points[points.length - 1]! : null;
+      const meta = indicatorPaintRef.current.get(spec.id);
+      if (
+        meta &&
+        meta.key === key &&
+        meta.len === points.length &&
+        meta.lastTime === (last?.time ?? 0) &&
+        meta.lastValue === (last?.value ?? 0)
+      ) {
+        continue; // identical paint — skip
+      }
+      const canIncremental =
+        meta &&
+        meta.key === key &&
+        meta.barsLen === barsLen &&
+        meta.firstTime === firstTime &&
+        meta.len > 0 &&
+        points.length >= meta.len &&
+        points.length - meta.len <= 64 &&
+        points[meta.len - 1]?.time === meta.lastTime;
+
+      if (canIncremental) {
+        for (let i = meta.len; i < points.length; i++) {
+          const p = points[i]!;
+          series.update({ time: p.time as UTCTimestamp, value: p.value });
+        }
+      } else {
+        series.setData(points.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+      }
+      indicatorPaintRef.current.set(spec.id, {
+        len: points.length,
+        lastTime: last?.time ?? 0,
+        lastValue: last?.value ?? 0,
+        firstTime,
+        barsLen,
+        key,
+      });
     }
   }, [bars, cursor, indicators]);
 
