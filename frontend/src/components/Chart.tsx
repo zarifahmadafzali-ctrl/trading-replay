@@ -431,6 +431,8 @@ export function Chart({
   const shapesRef = useRef(shapes);
   const barsRef = useRef(bars);
   barsRef.current = bars;
+  const barSecondsRef = useRef(barSeconds);
+  barSecondsRef.current = barSeconds;
   const drawToolRef = useRef(drawTool);
   const magnetModeRef = useRef(magnetMode);
   magnetModeRef.current = magnetMode;
@@ -1033,47 +1035,67 @@ export function Chart({
    * Time is continuous via coordinateToLogical + interpolation between bars,
    * so drawings are NOT limited to candle OHLC times.
    */
+  /**
+   * P4: stable bar period for time↔logical mapping across TF changes / window slides.
+   * Prefer median spacing of the current series; fall back to display timeframe seconds.
+   */
+  function barPeriodSec(data: { time: number }[]): number {
+    const samples: number[] = [];
+    const n = Math.min(data.length, 32);
+    for (let i = 1; i < n; i++) {
+      const d = data[i]!.time - data[i - 1]!.time;
+      if (d > 0 && Number.isFinite(d)) samples.push(d);
+    }
+    if (samples.length) {
+      samples.sort((a, b) => a - b);
+      return Math.max(1, samples[Math.floor(samples.length / 2)]!);
+    }
+    return Math.max(1, Math.floor(barSecondsRef.current) || 60);
+  }
+
+  /**
+   * Map absolute market unix time → continuous logical index on the *current* series.
+   * Anchors stay unix+price; only the projection is recomputed when TF/window changes.
+   */
   function timeToLogicalIndex(time: number): number | null {
     const data = barsRef.current;
     if (!data.length) return null;
-    if (time <= data[0].time) {
-      const dt = data.length > 1 ? data[1].time - data[0].time : 1;
-      return (time - data[0].time) / Math.max(1, dt);
+    const period = barPeriodSec(data);
+    if (time <= data[0]!.time) {
+      return (time - data[0]!.time) / period;
     }
-    if (time >= data[data.length - 1].time) {
-      const n = data.length - 1;
-      const dt = n > 0 ? data[n].time - data[n - 1].time : 1;
-      return n + (time - data[n].time) / Math.max(1, dt);
+    const last = data.length - 1;
+    if (time >= data[last]!.time) {
+      return last + (time - data[last]!.time) / period;
     }
-    // binary search
-    let lo = 0, hi = data.length - 1;
+    // binary search: last bar with time <= target
+    let lo = 0, hi = last;
     while (lo + 1 < hi) {
       const mid = (lo + hi) >> 1;
-      if (data[mid].time <= time) lo = mid;
+      if (data[mid]!.time <= time) lo = mid;
       else hi = mid;
     }
-    const t0 = data[lo].time;
-    const t1 = data[hi].time;
-    const frac = t1 === t0 ? 0 : (time - t0) / (t1 - t0);
-    return lo + frac;
+    const t0 = data[lo]!.time;
+    const t1 = data[hi]!.time;
+    const span = Math.max(1, t1 - t0);
+    return lo + (time - t0) / span;
   }
 
   function logicalIndexToTime(logical: number): number | null {
     const data = barsRef.current;
     if (!data.length) return null;
+    const period = barPeriodSec(data);
     if (logical <= 0) {
-      const dt = data.length > 1 ? data[1].time - data[0].time : 1;
-      return data[0].time + logical * Math.max(1, dt);
+      return data[0]!.time + logical * period;
     }
-    if (logical >= data.length - 1) {
-      const n = data.length - 1;
-      const dt = n > 0 ? data[n].time - data[n - 1].time : 1;
-      return data[n].time + (logical - n) * Math.max(1, dt);
+    const last = data.length - 1;
+    if (logical >= last) {
+      return data[last]!.time + (logical - last) * period;
     }
     const i0 = Math.floor(logical);
-    const i1 = Math.min(data.length - 1, i0 + 1);
+    const i1 = Math.min(last, i0 + 1);
     const frac = logical - i0;
-    return data[i0].time + (data[i1].time - data[i0].time) * frac;
+    return data[i0]!.time + (data[i1]!.time - data[i0]!.time) * frac;
   }
 
   function toXY(p: ChartPoint): { x: number; y: number } | null {
@@ -1114,15 +1136,19 @@ export function Chart({
     const price = handles.candles.coordinateToPrice(y);
     if (price == null) return null;
 
-    // Continuous time via logical index (works for any visible X, not only bar centers)
-    const logical = handles.chart.timeScale().coordinateToLogical(x);
+    // Prefer LWC time-at-coordinate when it resolves to a series timestamp; otherwise
+    // continuous logical mapping so anchors stay absolute unix times (P4).
     let time: number | null = null;
-    if (logical != null && Number.isFinite(logical as number)) {
-      time = logicalIndexToTime(logical as number);
+    const tAt = handles.chart.timeScale().coordinateToTime(x);
+    if (tAt != null) {
+      const n = typeof tAt === "number" ? tAt : Number((tAt as { timestamp?: number }).timestamp);
+      if (Number.isFinite(n)) time = n;
     }
     if (time == null) {
-      const t = handles.chart.timeScale().coordinateToTime(x);
-      if (t != null) time = Number(t);
+      const logical = handles.chart.timeScale().coordinateToLogical(x);
+      if (logical != null && Number.isFinite(logical as number)) {
+        time = logicalIndexToTime(logical as number);
+      }
     }
     if (time == null) return null;
     return { time, price: Number(price) };
