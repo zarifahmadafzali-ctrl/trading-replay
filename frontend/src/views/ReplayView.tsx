@@ -16,6 +16,17 @@ import {
   normalizeJournalSnapshotConfig,
 } from "../lib/journalSnapshots";
 import { cacheGetRange, cachePutBars } from "../lib/barCache";
+import {
+  shouldFullLoad,
+  trailingSessionDays,
+  dayRangeForTimes,
+  mergeBarsChronological,
+  windowCoversRange,
+  trimBarsAroundTime,
+  loadBarsForDayRange,
+  MAX_RESIDENT_DAYS,
+  INITIAL_WINDOW_DAYS,
+} from "../lib/barWindow";
 import { tickCacheGetDayWithAlias, tickCacheListCompleteDaysWithAlias } from "../lib/tickCache";
 import type { TickRecord } from "../lib/tickTypes";
 import {
@@ -151,6 +162,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [tickEligible, setTickEligible] = useState(false);
   const [tickSymbolUsed, setTickSymbolUsed] = useState<string | null>(null);
   const tickLoadGenRef = useRef(0);
+  const barWinGenRef = useRef(0);
+  const barWinBusyRef = useRef(false);
   /** Bumped on every Jump/session navigation so stale async tick loads cannot apply. */
   const tickNavGenRef = useRef(0);
   const replayResolutionRef = useRef<ReplayResolution>("seconds");
@@ -856,13 +869,72 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     return () => window.removeEventListener("tr-workspace-event", onEv);
   }, []);
 
+
+  /**
+   * P10: expand the in-memory bar window from IndexedDB without wiping drawings or cursor time.
+   * Session calendar (start/end) still bounds what can load. IDB is never deleted.
+   */
+  const ensureBarsForTimeRange = useCallback(
+    async (fromSec: number, toSec: number, reason: string) => {
+      if (!Number.isFinite(fromSec) || !Number.isFinite(toSec)) return;
+      if (!start || !end) return;
+      const gen = ++barWinGenRef.current;
+      const curBars = baseBarsRef.current;
+      if (windowCoversRange(curBars, fromSec, toSec)) return;
+
+      const span = dayRangeForTimes(fromSec, toSec, start, end);
+      barWinBusyRef.current = true;
+      try {
+        const local = await loadBarsForDayRange(symbol, span.start, span.end);
+        if (gen !== barWinGenRef.current) return;
+        if (!local.bars.length) return;
+
+        const { bars: merged, prepended } = mergeBarsChronological(curBars, local.bars);
+        const anchor =
+          curBars[Math.max(0, Math.min(cursorRef.current, curBars.length) - 1)]?.time ??
+          merged[Math.floor(merged.length / 2)]?.time ??
+          fromSec;
+        const trimmed = trimBarsAroundTime(merged, anchor, MAX_RESIDENT_DAYS);
+        let nextBars = trimmed.bars;
+        let cursorAdj = prepended - trimmed.removedFromStart;
+
+        setBaseBars(nextBars);
+        if (cursorAdj !== 0) {
+          setCursor((c) => {
+            const n = Math.max(1, Math.min(nextBars.length, c + cursorAdj));
+            return n;
+          });
+        }
+        baseBarsRef.current = nextBars;
+        if (reason && local.bars.length) {
+          // soft status only when we actually grew the window left/right
+          if (prepended > 0 || (curBars.length && nextBars[nextBars.length - 1]!.time > curBars[curBars.length - 1]!.time)) {
+            setMessage(
+              (m) =>
+                m && m.startsWith("Window")
+                  ? m
+                  : `Window · ${span.start}→${span.end} · ${nextBars.length.toLocaleString()} bars in RAM`
+            );
+          }
+        }
+      } finally {
+        if (gen === barWinGenRef.current) barWinBusyRef.current = false;
+      }
+    },
+    [start, end, symbol]
+  );
+
   async function loadRange() {
     const gen = ++loadGenRef.current;
     setLoading(true);
     setPlaying(false);
     let localBarsApplied = 0;
     try {
-      const local = await cacheGetRange(symbol, start, end);
+      const fullLoad = shouldFullLoad(start, end);
+      const windowSpan = fullLoad
+        ? { start, end }
+        : trailingSessionDays(start, end, INITIAL_WINDOW_DAYS);
+      const local = await cacheGetRange(symbol, windowSpan.start, windowSpan.end);
       if (gen !== loadGenRef.current) return;
       const plan = decideCacheFirstLoad({
         localBarCount: local.bars.length,
@@ -876,6 +948,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       if (plan.paintLocal && local.bars.length) {
         setBaseBars(local.bars);
         setCursor(Math.min(800, Math.max(1, local.bars.length)));
+        barWinGenRef.current += 1;
         setDataSource("loaded");
         localBarsApplied = local.bars.length;
         const d = local.diagnostics;
@@ -913,7 +986,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
 
       // Online: only fill gaps. On failure keep already-painted local bars.
       try {
-        const res = await fetchBars(symbol, 1, start, end);
+        const res = await fetchBars(symbol, 1, windowSpan.start, windowSpan.end);
         if (gen !== loadGenRef.current) return;
         if (!res.bars.length && !local.bars.length) {
           setMessage(`No data · Sync in Data Engine first`);
@@ -1294,6 +1367,9 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
    * Does not touch IndexedDB or baseBars.
    */
   function clearTickReplayMemory() {
+    // Invalidate in-flight day loads / navigations so they cannot rehydrate tick RAM.
+    tickLoadGenRef.current += 1;
+    tickNavGenRef.current += 1;
     setTickWindow([]);
     setTickDay(null);
     setTickIndex(0);
@@ -1698,6 +1774,24 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     prevCursorRef.current = cursor;
   }, [cursor]);
 
+
+
+  // P10: keep future bars available for execution near the right edge of the RAM window.
+  useEffect(() => {
+    if (!baseBars.length) return;
+    const last = baseBars[baseBars.length - 1];
+    const cur = baseBars[Math.max(0, cursor - 1)];
+    if (!last || !cur) return;
+    const remain = last.time - cur.time;
+    if (remain < 3600 * 6) {
+      void ensureBarsForTimeRange(cur.time, last.time + 86400 * 2, "prefetch-forward");
+    }
+    // Warm history for indicators / pan left
+    const first = baseBars[0];
+    if (first && cur.time - first.time < 3600 * 12) {
+      void ensureBarsForTimeRange(first.time - 86400 * 2, cur.time, "prefetch-back");
+    }
+  }, [cursor, baseBars, ensureBarsForTimeRange]);
 
   // —— Phase C1 Tick Replay (same engine; execution still 1s) ——
   const activeTick: TickRecord | null =
@@ -2580,6 +2674,9 @@ const exitTickMode = useCallback(() => {
         />
         <Chart
           bars={visibleBars}
+          onNeedHistoricalBars={(fromSec, toSec) => {
+            void ensureBarsForTimeRange(fromSec, toSec, "visible");
+          }}
           cursor={visibleBars.length}
           drawTool={drawTool}
           orderType={orderType}

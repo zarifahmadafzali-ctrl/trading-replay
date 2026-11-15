@@ -339,6 +339,7 @@ function pendingEntryTouched(orderType: OrderType, entryPrice: number, hi: numbe
 export function Chart({
   bars,
   cursor,
+  onNeedHistoricalBars,
   drawTool = "crosshair",
   orderType = "market",
   marketPrice = null,
@@ -398,6 +399,8 @@ export function Chart({
   onRequestConfirm?: () => void;
   /** Display timeframe seconds — used for default box width. */
   barSeconds?: number;
+  /** P10: request day-sharded history for a visible/prefetch time span (unix sec). */
+  onNeedHistoricalBars?: (fromSec: number, toSec: number) => void;
   /** Instrument tick size (price step). Drives drag snapping, decimals and tick counts. */
   tickSize?: number;
   /** Build immutable risk snapshot at fill time (v3.16.1). */
@@ -455,6 +458,9 @@ export function Chart({
   const marketRef = useRef({ price: marketPrice, time: marketTime, bid: marketBid, ask: marketAsk });
   const replayBarRef = useRef<Bar | null>(replayBar);
   const followRef = useRef(followPrice);
+  const onNeedHistoricalBarsRef = useRef(onNeedHistoricalBars);
+  onNeedHistoricalBarsRef.current = onNeedHistoricalBars;
+  const needBarsLastRef = useRef(0);
   const selectedShapeIdRef = useRef(selectedShapeId);
   const crosshairRef = useRef<ChartPoint | null>(null);
   const stepsRef = useRef<ChartPoint[]>([]);
@@ -2136,7 +2142,34 @@ export function Chart({
     };
     chart.subscribeCrosshairMove(onMove);
 
-    const onRange = () => scheduleRedraw();
+    const onRange = () => {
+      scheduleRedraw();
+      // P10: when the user pans/zooms into history outside the resident window, ask parent to load days.
+      const fn = onNeedHistoricalBarsRef.current;
+      if (!fn) return;
+      const now = performance.now();
+      if (now - needBarsLastRef.current < 200) return;
+      needBarsLastRef.current = now;
+      try {
+        const tr = chart.timeScale().getVisibleRange();
+        if (tr && typeof (tr as any).from === "number" && typeof (tr as any).to === "number") {
+          fn((tr as any).from as number, (tr as any).to as number);
+          return;
+        }
+        const lr = chart.timeScale().getVisibleLogicalRange();
+        if (!lr) return;
+        // Fallback: map logical ends through series times when time range is unavailable
+        const data = barsRef.current;
+        if (!data.length) return;
+        const i0 = Math.max(0, Math.floor(lr.from));
+        const i1 = Math.min(data.length - 1, Math.ceil(lr.to));
+        const t0 = data[i0]?.time;
+        const t1 = data[i1]?.time;
+        if (t0 != null && t1 != null) fn(t0, t1);
+      } catch {
+        /* */
+      }
+    };
     chart.timeScale().subscribeVisibleLogicalRangeChange(onRange);
     chart.timeScale().subscribeVisibleTimeRangeChange(onRange);
 
