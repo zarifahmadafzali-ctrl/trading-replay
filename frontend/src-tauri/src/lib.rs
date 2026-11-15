@@ -222,6 +222,8 @@ pub fn run() {
         // v3.42.0 — official Tauri 2 updater + process (relaunch after install)
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             let path = app_db_path(app.handle());
             let conn = open_db(&path).map_err(|e| {

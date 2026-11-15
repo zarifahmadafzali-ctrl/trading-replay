@@ -11,6 +11,10 @@ import type { SessionMeta, SessionRuntime } from "./sessionStore";
 import { getSessionStorageAdapter } from "./storageAdapter";
 import { APP_VERSION, BACKUP_FORMAT_VERSION } from "./storageVersions";
 import {
+  exportTextFile,
+  type ExportOutcome,
+} from "./platformFile";
+import {
   loadJournalForSession,
   saveJournalForSession,
   normalizeJournalTrade,
@@ -316,14 +320,13 @@ export async function importBackup(
   return { imported, skipped, errors, sessionIds, tradesRestored };
 }
 
-export function downloadBackupJson(backup: TradingReplayBackup, filename?: string): void {
-  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename || `trading-replay-backup-${backup.exportedAt.slice(0, 10)}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+export async function downloadBackupJson(
+  backup: TradingReplayBackup,
+  filename?: string
+): Promise<ExportOutcome> {
+  const name =
+    filename || `trading-replay-backup-${backup.exportedAt.slice(0, 10)}.json`;
+  return exportTextFile(JSON.stringify(backup, null, 2), name, "application/json");
 }
 
 /** Diagnose whether a backup object contains journal trades. */

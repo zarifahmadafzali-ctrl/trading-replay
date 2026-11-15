@@ -6,6 +6,11 @@
 import type { JournalTrade } from "./journal";
 import { loadJournalForSession, normalizeJournalTrade, saveJournalForSession } from "./journal";
 import { APP_VERSION } from "./storageVersions";
+import {
+  emptyExportOutcome,
+  exportBinaryFile,
+  type ExportOutcome,
+} from "./platformFile";
 import { writeZipStored, readZipEntries } from "./zipStore";
 
 export type TradeMemoType = "entry" | "exit" | "post_analysis" | "general";
@@ -300,15 +305,13 @@ export function buildAiReviewPackageZip(trades: JournalTrade[]): Uint8Array {
   return writeZipStored(files);
 }
 
-export function downloadAiReviewPackage(trades: JournalTrade[], filename?: string): void {
+export async function downloadAiReviewPackage(
+  trades: JournalTrade[],
+  filename?: string
+): Promise<ExportOutcome> {
+  if (!trades.length) return emptyExportOutcome("journal trades");
   const bytes = buildAiReviewPackageZip(trades);
   const name =
     filename || `AI-Review-Package_${new Date().toISOString().slice(0, 10)}.zip`;
-  const blob = new Blob([bytes], { type: "application/zip" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  a.click();
-  URL.revokeObjectURL(url);
+  return exportBinaryFile(bytes, name, "application/zip");
 }

@@ -8,6 +8,12 @@ import type { JournalTrade } from "./journal";
 import { normalizeJournalTrade, loadJournalForSession, saveJournalForSession } from "./journal";
 import { APP_VERSION } from "./storageVersions";
 import { readZipEntries, writeZipStored } from "./zipStore";
+import {
+  emptyExportOutcome,
+  exportBinaryFile,
+  exportTextFile,
+  type ExportOutcome,
+} from "./platformFile";
 
 export const JOURNAL_BACKUP_FORMAT_VERSION = 1;
 export const JOURNAL_BACKUP_KIND = "trading-replay-journal-backup";
@@ -196,18 +202,16 @@ export function buildJournalBackupZip(trades: JournalTrade[]): {
   return { bytes, manifest, screenshotCount };
 }
 
-export function downloadJournalBackupZip(trades: JournalTrade[], filename?: string): void {
+export async function downloadJournalBackupZip(
+  trades: JournalTrade[],
+  filename?: string
+): Promise<ExportOutcome> {
+  if (!trades.length) return emptyExportOutcome("journal trades");
   const { bytes } = buildJournalBackupZip(trades);
   const name =
     filename ||
     `TradingReplay_Journal_Backup_${new Date().toISOString().slice(0, 10)}.zip`;
-  const blob = new Blob([bytes], { type: "application/zip" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  a.click();
-  URL.revokeObjectURL(url);
+  return exportBinaryFile(bytes, name, "application/zip");
 }
 
 function mimeFromPath(path: string): string {
@@ -550,12 +554,10 @@ export function exportAnalyticsJson(trades: JournalTrade[]): string {
   );
 }
 
-export function downloadAnalyticsJson(trades: JournalTrade[], filename = "analytics-report.json"): void {
-  const blob = new Blob([exportAnalyticsJson(trades)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
+export async function downloadAnalyticsJson(
+  trades: JournalTrade[],
+  filename = "analytics-report.json"
+): Promise<ExportOutcome> {
+  if (!trades.length) return emptyExportOutcome("analytics trades");
+  return exportTextFile(exportAnalyticsJson(trades), filename, "application/json");
 }

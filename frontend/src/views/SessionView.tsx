@@ -35,6 +35,7 @@ import {
 import { normalizePayoutSchedule, type PayoutSchedule, type PayoutScheduleMode } from "../lib/payoutSchedule";
 import { PropAccountStatus } from "../components/PropAccountStatus";
 import { exportBackup, importBackup, downloadBackupJson, validateBackup } from "../lib/backup";
+import { notifyExportOutcome } from "../lib/platformFile";
 import { APP_VERSION, BACKUP_FORMAT_VERSION, STORAGE_SCHEMA_VERSION } from "../lib/storageVersions";
 
 function isoDaysAgo(days: number) {
@@ -478,7 +479,16 @@ export function SessionView({ backendOnline }: { backendOnline: boolean | null }
     try {
       setError(null);
       const backup = await exportBackup();
-      downloadBackupJson(backup);
+      const outcome = await downloadBackupJson(backup);
+      if (outcome.status === "error") {
+        setError(outcome.message);
+        return;
+      }
+      if (outcome.status === "empty") {
+        setError(outcome.message);
+        return;
+      }
+      // cancelled / saved — no error
     } catch (e) {
       setError(e instanceof Error ? e.message : "Export failed");
     }

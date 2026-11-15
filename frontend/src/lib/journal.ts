@@ -1,4 +1,9 @@
 import { getSessionStorageAdapter } from "./storageAdapter";
+import {
+  emptyExportOutcome,
+  exportTextFile,
+  type ExportOutcome,
+} from "./platformFile";
 
 import type { TradeRiskSnapshot } from "./riskModel";
 import {
@@ -462,15 +467,13 @@ export function exportJournalCsv(trades: JournalTrade[]): string {
   return lines.join("\n");
 }
 
-export function downloadJournalCsv(trades: JournalTrade[], filename = "journal-export.csv"): void {
+export async function downloadJournalCsv(
+  trades: JournalTrade[],
+  filename = "journal-export.csv"
+): Promise<ExportOutcome> {
+  if (!trades.length) return emptyExportOutcome("journal trades");
   const csv = exportJournalCsv(trades);
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
+  return exportTextFile(csv, filename, "text/csv;charset=utf-8");
 }
 
 /** Parse a CSV previously produced by exportJournalCsv (or compatible headers). */

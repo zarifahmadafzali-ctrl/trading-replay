@@ -23,6 +23,7 @@ import {
   downloadAiReviewPackage,
   type TradeMemo,
 } from "../lib/tradeMemos";
+import { notifyExportOutcome } from "../lib/platformFile";
 import {
   renderHtfSnapshotToCanvas,
   normalizeJournalSnapshotConfig,
@@ -432,18 +433,23 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
             ))}
           </select>
         </label>
-        <button type="button" onClick={() => downloadJournalCsv(filtered, "journal-export.csv")}>
+        <button
+          type="button"
+          onClick={() => {
+            void downloadJournalCsv(filtered, "journal-export.csv").then(notifyExportOutcome);
+          }}
+        >
           Export CSV
         </button>
 
         <button
           type="button"
           onClick={() => {
-            try {
-              downloadJournalBackupZip(filtered);
-            } catch (err) {
-              alert(`Backup failed: ${err instanceof Error ? err.message : String(err)}`);
-            }
+            void downloadJournalBackupZip(filtered)
+              .then(notifyExportOutcome)
+              .catch((err) =>
+                alert(`Backup failed: ${err instanceof Error ? err.message : String(err)}`)
+              );
           }}
         >
           Export ZIP backup
@@ -451,11 +457,11 @@ export function JournalView(_props: { backendOnline?: boolean | null }) {
         <button
           type="button"
           onClick={() => {
-            try {
-              downloadAiReviewPackage(filtered);
-            } catch (err) {
-              alert(`AI export failed: ${err instanceof Error ? err.message : String(err)}`);
-            }
+            void downloadAiReviewPackage(filtered)
+              .then(notifyExportOutcome)
+              .catch((err) =>
+                alert(`AI export failed: ${err instanceof Error ? err.message : String(err)}`)
+              );
           }}
         >
           Export AI Review Package

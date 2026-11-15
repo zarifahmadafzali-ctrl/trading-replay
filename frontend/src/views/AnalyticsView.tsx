@@ -28,6 +28,7 @@ import {
   parseJournalBackupZip,
   importJournalBackup,
 } from "../lib/journalBackup";
+import { notifyExportOutcome } from "../lib/platformFile";
 import {
   ensureSessionAccounts,
   getActiveSessionId,
@@ -448,17 +449,22 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
             <option value="manual">Manual</option>
           </select>
         </label>
-        <button type="button" onClick={() => downloadJournalCsv(filtered, "analytics-trades.csv")}>
+        <button
+          type="button"
+          onClick={() => {
+            void downloadJournalCsv(filtered, "analytics-trades.csv").then(notifyExportOutcome);
+          }}
+        >
           Export CSV
         </button>
         <button
           type="button"
           onClick={() => {
-            try {
-              downloadAnalyticsJson(filtered, "analytics-report.json");
-            } catch (err) {
-              alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
-            }
+            void downloadAnalyticsJson(filtered, "analytics-report.json")
+              .then(notifyExportOutcome)
+              .catch((err) =>
+                alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
+              );
           }}
         >
           Export JSON report
@@ -466,11 +472,11 @@ export function AnalyticsView({ backendOnline: _bo }: { backendOnline: boolean |
         <button
           type="button"
           onClick={() => {
-            try {
-              downloadJournalBackupZip(filtered);
-            } catch (err) {
-              alert(`Backup failed: ${err instanceof Error ? err.message : String(err)}`);
-            }
+            void downloadJournalBackupZip(filtered)
+              .then(notifyExportOutcome)
+              .catch((err) =>
+                alert(`Backup failed: ${err instanceof Error ? err.message : String(err)}`)
+              );
           }}
         >
           Export ZIP backup

@@ -1,9 +1,8 @@
 /**
- * v3.32.0 — Platform file capability boundary.
+ * Platform file I/O boundary.
  *
- * Web: HTML download + file input (existing behavior).
- * Desktop (future): same API surface; implementation can switch to
- * Tauri dialog/fs plugins without changing backup/market-data formats.
+ * Web/PWA: Blob + temporary <a download>.
+ * Desktop (Tauri): native Save dialog + filesystem write.
  *
  * Does NOT change BACKUP_FORMAT_VERSION or MARKET_DATA_EXPORT_FORMAT_VERSION.
  */
@@ -11,15 +10,22 @@
 import { getAppPlatform } from "./platform";
 
 export type ExportFileArgs = {
-  content: string | Blob;
+  content: string | Blob | Uint8Array | ArrayBuffer;
   filename: string;
   mime?: string;
 };
 
+/** Result of an export/save attempt. */
+export type ExportOutcome =
+  | { status: "saved"; path?: string }
+  | { status: "cancelled" }
+  | { status: "error"; message: string }
+  | { status: "empty"; message: string };
+
 export type PlatformFileService = {
   readonly platform: "web" | "desktop";
   /** Trigger a download or native save. */
-  exportFile(args: ExportFileArgs): Promise<void>;
+  exportFile(args: ExportFileArgs): Promise<ExportOutcome>;
   /**
    * Open a single file via picker when available.
    * Web uses <input type="file">. Returns null if cancelled.
@@ -27,24 +33,54 @@ export type PlatformFileService = {
   pickTextFile(accept?: string): Promise<{ name: string; text: string } | null>;
 };
 
+export async function contentToUint8Array(
+  content: string | Blob | Uint8Array | ArrayBuffer
+): Promise<Uint8Array> {
+  if (content instanceof Uint8Array) return content;
+  if (content instanceof ArrayBuffer) return new Uint8Array(content);
+  if (typeof Blob !== "undefined" && content instanceof Blob) {
+    return new Uint8Array(await content.arrayBuffer());
+  }
+  return new TextEncoder().encode(String(content));
+}
+
+function extensionOf(filename: string): string {
+  const i = filename.lastIndexOf(".");
+  if (i < 0 || i === filename.length - 1) return "";
+  return filename.slice(i + 1).toLowerCase();
+}
+
 function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
   a.click();
+  a.remove();
   URL.revokeObjectURL(url);
 }
 
 const webFileService: PlatformFileService = {
   platform: "web",
 
-  async exportFile({ content, filename, mime }: ExportFileArgs): Promise<void> {
-    const blob =
-      content instanceof Blob
-        ? content
-        : new Blob([content], { type: mime || "application/octet-stream" });
-    downloadBlob(blob, filename);
+  async exportFile({ content, filename, mime }: ExportFileArgs): Promise<ExportOutcome> {
+    try {
+      const blob =
+        typeof Blob !== "undefined" && content instanceof Blob
+          ? content
+          : new Blob([await contentToUint8Array(content)], {
+              type: mime || "application/octet-stream",
+            });
+      downloadBlob(blob, filename);
+      return { status: "saved" };
+    } catch (e) {
+      return {
+        status: "error",
+        message: e instanceof Error ? e.message : String(e),
+      };
+    }
   },
 
   async pickTextFile(accept = ".json,.csv,.trdata,text/plain"): Promise<{ name: string; text: string } | null> {
@@ -65,19 +101,61 @@ const webFileService: PlatformFileService = {
           resolve(null);
         }
       };
-      // Cancel is not reliably detectable across browsers; resolve null on no selection via blur is fragile.
       input.click();
     });
   },
 };
 
-/**
- * Desktop stub: identical to web until Tauri fs/dialog plugins are wired.
- * Keeps API stable; callers must not assume native dialogs exist yet.
- */
 const desktopFileService: PlatformFileService = {
-  ...webFileService,
   platform: "desktop",
+
+  async exportFile({ content, filename, mime: _mime }: ExportFileArgs): Promise<ExportOutcome> {
+    try {
+      const bytes = await contentToUint8Array(content);
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const { writeFile } = await import("@tauri-apps/plugin-fs");
+      const ext = extensionOf(filename);
+      const path = await save({
+        defaultPath: filename,
+        filters: ext
+          ? [
+              {
+                name: ext.toUpperCase(),
+                extensions: [ext],
+              },
+            ]
+          : undefined,
+      });
+      if (path == null || path === "") {
+        return { status: "cancelled" };
+      }
+      await writeFile(path, bytes);
+      return { status: "saved", path };
+    } catch (e) {
+      return {
+        status: "error",
+        message: e instanceof Error ? e.message : String(e),
+      };
+    }
+  },
+
+  async pickTextFile(accept = ".json,.csv,.trdata,text/plain"): Promise<{ name: string; text: string } | null> {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const { readTextFile } = await import("@tauri-apps/plugin-fs");
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: "Text", extensions: ["json", "csv", "trdata", "txt", "md"] }],
+      });
+      if (selected == null || Array.isArray(selected)) return null;
+      const text = await readTextFile(selected);
+      const name = String(selected).split(/[/\\]/).pop() || "file";
+      return { name, text };
+    } catch {
+      // Fall back to web picker if plugins unavailable
+      return webFileService.pickTextFile(accept);
+    }
+  },
 };
 
 export function getPlatformFileService(): PlatformFileService {
@@ -89,6 +167,39 @@ export async function exportTextFile(
   content: string,
   filename: string,
   mime = "application/json"
-): Promise<void> {
-  await getPlatformFileService().exportFile({ content, filename, mime });
+): Promise<ExportOutcome> {
+  return getPlatformFileService().exportFile({ content, filename, mime });
+}
+
+/** Binary/ZIP export through the same platform boundary. */
+export async function exportBinaryFile(
+  content: Uint8Array | ArrayBuffer | Blob,
+  filename: string,
+  mime = "application/octet-stream"
+): Promise<ExportOutcome> {
+  return getPlatformFileService().exportFile({ content, filename, mime });
+}
+
+/** User-facing feedback helper for Journal / Analytics export buttons. */
+export function notifyExportOutcome(outcome: ExportOutcome): void {
+  if (outcome.status === "cancelled") return;
+  if (outcome.status === "empty") {
+    alert(outcome.message);
+    return;
+  }
+  if (outcome.status === "error") {
+    alert(`Export failed: ${outcome.message}`);
+    return;
+  }
+  // saved — optional path hint on desktop
+  if (outcome.path) {
+    // Quiet success; path available for future toast UI
+  }
+}
+
+export function emptyExportOutcome(what = "trades"): ExportOutcome {
+  return {
+    status: "empty",
+    message: `No ${what} to export. Close positions or clear filters so the list is not empty.`,
+  };
 }
