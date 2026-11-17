@@ -36,6 +36,7 @@ import {
   constrainAnglePx,
   constrainSquarePx,
 } from "../lib/drawingModel";
+import { mergeEngineShapeResult } from "../lib/chartShapesSync";
 import { drawShape } from "../lib/drawingRender";
 import { DrawingSettingsBar } from "./DrawingSettingsBar";
 import { PositionSettingsBar } from "./PositionSettingsBar";
@@ -447,6 +448,8 @@ export function Chart({
   >(new Map());
   const shapesRef = useRef(shapes);
   const shapesPropRef = useRef<Shape[] | null>(null);
+  /** Bumps on every authoritative setShapes; helps detect concurrent engine publishes. */
+  const shapesRevRef = useRef(0);
   const barsRef = useRef(bars);
   barsRef.current = bars;
   const barSecondsRef = useRef(barSeconds);
@@ -644,8 +647,40 @@ export function Chart({
   const hoverPtrRef = useRef<{ x: number; y: number } | null>(null);
   const lastHoverCursorRef = useRef<string>("");
 
+  function normalizeShapeList(next: Shape[]): Shape[] {
+    const barSec = Math.max(
+      1,
+      barsRef.current.length >= 2
+        ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
+        : 60
+    );
+    return next.map((s) =>
+      s.kind === "position"
+        ? (normalizePosition(s as PositionShape, { barSec }) as Shape)
+        : (normalizeShape(s as DrawingShape) as Shape)
+    );
+  }
+
+  /**
+   * Authoritative write path: update shapesRef synchronously before parent notify
+   * so placePoint + engine effects never race on a stale ref.
+   */
   function setShapes(next: Shape[]) {
-    onShapesChangeRef.current(next);
+    const normalized = normalizeShapeList(next);
+    shapesRef.current = normalized;
+    shapesPropRef.current = null;
+    shapeFpCacheRef.current = { prop: null, fp: "" };
+    shapesRevRef.current += 1;
+    onShapesChangeRef.current(normalized);
+  }
+
+  function publishEngineShapes(engineOut: Shape[], inputIds: Set<string>) {
+    const merged = mergeEngineShapeResult(shapesRef.current, engineOut, inputIds) as Shape[];
+    shapesRef.current = merged;
+    shapesPropRef.current = null;
+    shapeFpCacheRef.current = { prop: null, fp: "" };
+    shapesRevRef.current += 1;
+    onShapesChangeRef.current(merged);
   }
 
   function updatePosition(id: string, patch: Partial<PositionShape>) {
@@ -1639,6 +1674,7 @@ export function Chart({
       onSelectedShapeIdRef.current?.(shape.id);
       onDrawToolChangeRef.current?.("crosshair");
       setHint("Text placed · edit text in the settings bar");
+      scheduleRedraw();
       return;
     }
 
@@ -1664,6 +1700,7 @@ export function Chart({
       onSelectedShapeIdRef.current?.(shape.id);
       onDrawToolChangeRef.current?.("crosshair");
       setHint("Channel placed");
+      scheduleRedraw();
       return;
     }
 
@@ -1704,6 +1741,7 @@ export function Chart({
     onSelectedShapeIdRef.current?.(shape.id);
     onDrawToolChangeRef.current?.("crosshair");
     setHint("Done · select to move · Delete key or settings bar to remove");
+    scheduleRedraw();
   }
 
   function resizeCursorForPart(part: string | undefined): string {
@@ -2950,8 +2988,10 @@ export function Chart({
         : null;
 
     if (tickSeq && tickSeq.length) {
+      const inputShapes = shapesRef.current;
+      const inputIds = new Set(inputShapes.map((s) => s.id));
       const res = runPositionTicks(
-        shapesRef.current,
+        inputShapes,
         tickSeq,
         {
           onFill: (f) => {
@@ -2994,10 +3034,7 @@ export function Chart({
         { gapFill: true }
       );
       if (!res.mutated) return;
-      shapesRef.current = res.shapes as Shape[];
-      shapesPropRef.current = null;
-      shapeFpCacheRef.current = { prop: null, fp: "" };
-      onShapesChangeRef.current(res.shapes as Shape[]);
+      publishEngineShapes(res.shapes as Shape[], inputIds);
       for (const c of res.closed) {
         onPositionClosedRef.current?.(c as unknown as ClosedPosition);
       }
@@ -3026,8 +3063,10 @@ export function Chart({
           : [];
     if (!sequence.length) return;
 
+    const inputShapes = shapesRef.current;
+    const inputIds = new Set(inputShapes.map((s) => s.id));
     const res = runPositionBars(
-      shapesRef.current,
+      inputShapes,
       sequence,
       {
         onFill: (f) => {
@@ -3088,11 +3127,8 @@ export function Chart({
       { gapFill: false }
     );
     if (!res.mutated) return;
-    // v3.46.1: sync ref before parent re-render so fast ticks cannot ghost-draw closed positions
-    shapesRef.current = res.shapes as Shape[];
-    shapesPropRef.current = null; // bust normalize + fingerprint cache
-    shapeFpCacheRef.current = { prop: null, fp: "" };
-    onShapesChangeRef.current(res.shapes as Shape[]);
+    // Merge so non-position drawings placed after the engine snapshot are not dropped.
+    publishEngineShapes(res.shapes as Shape[], inputIds);
     for (const c of res.closed) {
       onPositionClosedRef.current?.(c as unknown as ClosedPosition);
     }
