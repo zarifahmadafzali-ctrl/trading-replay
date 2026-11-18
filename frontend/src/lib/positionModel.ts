@@ -367,15 +367,16 @@ export function buildPositionTexts(p: PositionLike, c: TextCtx): PositionTexts {
   const tpTicks = c.tick > 0 ? Math.round(tpDist / c.tick) : 0;
   const slTicks = c.tick > 0 ? Math.round(slDist / c.tick) : 0;
   const rr = riskReward(p);
-  const tpAmt = c.rewardAmount != null && Number.isFinite(c.rewardAmount) ? `, Amount: ${c.rewardAmount.toFixed(2)}` : "";
-  const slAmt = c.riskAmount != null && Number.isFinite(c.riskAmount) ? `, Amount: -${Math.abs(c.riskAmount).toFixed(2)}` : "";
-  const target = `Target: ${p.takeProfit.price.toFixed(d)} (${tpPct.toFixed(2)}%) ${tpTicks}${tpAmt}`;
-  const stop = `Stop: ${p.stop.price.toFixed(d)} (-${slPct.toFixed(2)}%) ${slTicks}${slAmt}`;
+  // TradingView-style compact level labels (appearance only).
+  const tpAmt = c.rewardAmount != null && Number.isFinite(c.rewardAmount) ? ` · ${c.rewardAmount.toFixed(2)}` : "";
+  const slAmt = c.riskAmount != null && Number.isFinite(c.riskAmount) ? ` · -${Math.abs(c.riskAmount).toFixed(2)}` : "";
+  const target = `Target ${p.takeProfit.price.toFixed(d)} (${tpPct.toFixed(2)}%)${tpAmt}`;
+  const stop = `Stop ${p.stop.price.toFixed(d)} (−${slPct.toFixed(2)}%)${slAmt}`;
   const parts: string[] = [];
-  if (p.status === "open" && c.openPnL != null && Number.isFinite(c.openPnL)) parts.push(`Open P&L: ${signed(c.openPnL)}`);
-  if (c.lot != null && Number.isFinite(c.lot)) parts.push(`Qty: ${c.lot}`);
-  if (rr != null) parts.push(`Risk/Reward Ratio: ${rr.toFixed(2)}`);
-  const center = parts.join(", ");
+  if (p.status === "open" && c.openPnL != null && Number.isFinite(c.openPnL)) parts.push(`P&L ${signed(c.openPnL)}`);
+  if (c.lot != null && Number.isFinite(c.lot)) parts.push(`Qty ${c.lot}`);
+  if (rr != null) parts.push(`R:R ${rr.toFixed(2)}`);
+  const center = parts.join(" · ");
   const entryTag = `${p.status.toUpperCase()} ${long ? "LONG" : "SHORT"} ${String(p.orderType).replace(/_/g, " ")}`;
   return { target, stop, center, rr, entryTag };
 }
