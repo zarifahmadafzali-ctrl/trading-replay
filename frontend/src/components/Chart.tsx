@@ -230,6 +230,7 @@ type DragTarget = {
   /** Logical anchor at drag start for body moves (time/price deltas). */
   originPoint?: ChartPoint;
   originShape?: Shape;
+  shiftKey?: boolean;
 };
 
 const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
@@ -541,19 +542,24 @@ export function Chart({
   const [hint, setHint] = useState("");
 
   // P8: normalize only when the shapes prop identity changes (avoid per-render map alloc).
+  // During general-drawing drag, shapesRef is authoritative — do not clobber with stale parent props.
   if (shapesPropRef.current !== shapes) {
-    shapesPropRef.current = shapes;
-    const barSec = Math.max(
-      1,
-      barsRef.current.length >= 2
-        ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
-        : 60
-    );
-    shapesRef.current = shapes.map((s) =>
-      s.kind === "position"
-        ? (normalizePosition(s as PositionShape, { barSec }) as Shape)
-        : (normalizeShape(s as DrawingShape) as Shape)
-    );
+    if (isGeneralDrawingDrag(dragRef.current)) {
+      // keep live drag geometry; parent will catch up on pointerup commit
+    } else {
+      shapesPropRef.current = shapes;
+      const barSec = Math.max(
+        1,
+        barsRef.current.length >= 2
+          ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
+          : 60
+      );
+      shapesRef.current = shapes.map((s) =>
+        s.kind === "position"
+          ? (normalizePosition(s as PositionShape, { barSec }) as Shape)
+          : (normalizeShape(s as DrawingShape) as Shape)
+      );
+    }
   }
   drawToolRef.current = drawTool;
   orderTypeRef.current = orderType;
@@ -672,6 +678,68 @@ export function Chart({
     shapeFpCacheRef.current = { prop: null, fp: "" };
     shapesRevRef.current += 1;
     onShapesChangeRef.current(normalized);
+  }
+
+  /**
+   * TV-style local drag for non-position drawings: update overlay immediately without
+   * React parent re-renders on every pointermove. Parent is notified on pointerup.
+   */
+  function setShapesLocal(next: Shape[]) {
+    const normalized = normalizeShapeList(next);
+    shapesRef.current = normalized;
+    shapeFpCacheRef.current = { prop: null, fp: "" };
+    scheduleRedraw();
+  }
+
+  function isGeneralDrawingDrag(d: DragTarget | null): boolean {
+    if (!d) return false;
+    if (d.originShape && d.originShape.kind === "position") return false;
+    // price/time fields are hline/vline; body/a/b/c/handles are geometry tools
+    const f = d.field;
+    return (
+      f === "price" ||
+      f === "time" ||
+      f === "body" ||
+      f === "a" ||
+      f === "b" ||
+      f === "c" ||
+      f === "tl" ||
+      f === "tr" ||
+      f === "bl" ||
+      f === "br" ||
+      f === "top" ||
+      f === "bottom" ||
+      f === "left" ||
+      f === "right"
+    );
+  }
+
+  /** TradingView-like shift constraint: lock horizontal, vertical, or 45° for line endpoints. */
+  function constrainPointTV(anchor: ChartPoint, cur: ChartPoint, shiftKey: boolean): ChartPoint {
+    if (!shiftKey) return cur;
+    const A = toXY(anchor);
+    const P = toXY(cur);
+    if (!A || !P) return cur;
+    const dx = P.x - A.x;
+    const dy = P.y - A.y;
+    const adx = Math.abs(dx);
+    const ady = Math.abs(dy);
+    let nx = P.x;
+    let ny = P.y;
+    if (adx < ady * 0.414) {
+      // ~ vertical
+      nx = A.x;
+    } else if (ady < adx * 0.414) {
+      // ~ horizontal
+      ny = A.y;
+    } else {
+      // 45°
+      const s = Math.sign(dx) * Math.sign(dy) || 1;
+      const m = Math.max(adx, ady);
+      nx = A.x + Math.sign(dx) * m;
+      ny = A.y + s * Math.sign(dx) * m;
+    }
+    return fromXY(nx, ny) || cur;
   }
 
   function publishEngineShapes(engineOut: Shape[], inputIds: Set<string>) {
@@ -1920,17 +1988,17 @@ export function Chart({
     if (drawingParts.has(d.field) && d.originShape && d.originShape.kind !== "position" && d.originShape.kind !== "hline" && d.originShape.kind !== "vline") {
       let cur = fromXY(x, y);
       if (!cur) return;
-      // Shift-constrain for lines/rects when originPoint exists
-      if (d.originPoint && (d.field === "b" || d.field === "a")) {
-        const A = toXY(
+      // Optional magnet while dragging geometry (TradingView weak/strong magnet).
+      if (magnetModeRef.current && magnetModeRef.current !== "off") {
+        cur = applyMagnet(cur, magnetModeRef.current);
+      }
+      // Shift-constrain endpoints (horizontal / vertical / 45°) like TradingView.
+      if (d.originPoint && (d.field === "b" || d.field === "a") && d.shiftKey) {
+        const anchor =
           d.field === "b"
             ? (d.originShape as { a: ChartPoint }).a
-            : (d.originShape as { b: ChartPoint }).b
-        );
-        const P = toXY(cur);
-        if (A && P && typeof window !== "undefined") {
-          // shift key tracked via drag - optional: skip if no shift state
-        }
+            : (d.originShape as { b: ChartPoint }).b;
+        cur = constrainPointTV(anchor, cur, true);
       }
       const origin = {
         point: d.originPoint || cur,
@@ -1942,13 +2010,14 @@ export function Chart({
         cur,
         origin
       );
-      setShapes(shapesRef.current.map((s) => (s.id === d.id ? (next as Shape) : s)));
+      // Local-only: avoid parent re-render every move (smooth drag).
+      setShapesLocal(shapesRef.current.map((s) => (s.id === d.id ? (next as Shape) : s)));
       return;
     }
     if (d.field === "price") {
       const price = candles.coordinateToPrice(y);
       if (price == null) return;
-      setShapes(
+      setShapesLocal(
         shapesRef.current.map((s) => (s.id === d.id && s.kind === "hline" ? { ...s, price } : s))
       );
       return;
@@ -1956,7 +2025,7 @@ export function Chart({
     if (d.field === "time") {
       const newPoint = fromXY(x, y);
       if (!newPoint) return;
-      setShapes(
+      setShapesLocal(
         shapesRef.current.map((s) =>
           s.id === d.id && s.kind === "vline" ? { ...s, time: newPoint.time } : s
         )
@@ -2297,7 +2366,7 @@ export function Chart({
         if (shape && shape.kind === "position") {
           onSelectedShapeIdRef.current?.(hit.id);
         }
-        dragRef.current = hit;
+        dragRef.current = { ...hit, shiftKey: !!ev.shiftKey };
         setChartInteraction(false);
         try {
           el.setPointerCapture(ev.pointerId);
@@ -2315,6 +2384,7 @@ export function Chart({
       const x = ev.clientX - rect.left;
       const y = ev.clientY - rect.top;
       if (dragRef.current) {
+        dragRef.current.shiftKey = !!ev.shiftKey;
         applyDragAt(x, y);
         const cur = resizeCursorForPart(dragRef.current.field);
         if (cur) el.style.cursor = cur;
@@ -2401,8 +2471,16 @@ export function Chart({
     const endDrag = () => {
       const d = dragRef.current;
       if (!d) return;
+      const wasGeneral = isGeneralDrawingDrag(d);
       dragRef.current = null;
       setChartInteraction(true);
+      // Commit local geometry drag to parent once (TV: update on release).
+      if (wasGeneral) {
+        shapesPropRef.current = null;
+        shapesRevRef.current += 1;
+        onShapesChangeRef.current(shapesRef.current);
+        scheduleRedraw();
+      }
       const shape = shapesRef.current.find((s) => s.id === d.id);
       if (shape && shape.kind === "position") {
         if (d.field === "stop") {
