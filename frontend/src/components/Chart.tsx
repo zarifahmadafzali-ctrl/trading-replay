@@ -1852,11 +1852,17 @@ export function Chart({
       return true;
     };
 
-    // Professional drawings: top-most first; unselected → body only; locked → select only (caller skips drag).
+    // Professional drawings: nearest distance wins (LWC / TradingView primitive hit ranking).
+    // Unselected → body only; handles only when selected. Locked → select only (caller skips drag).
     {
       const wBox = elWidth();
       const hBox = containerRef.current?.clientHeight ?? 0;
       const list = [...shapesRef.current].reverse();
+      let best: {
+        s: Shape;
+        part: string;
+        distance: number;
+      } | null = null;
       for (const s of list) {
         if (s.kind === "position" || s.kind === "hline" || s.kind === "vline") continue;
         if ("visible" in s && s.visible === false) continue;
@@ -1867,12 +1873,18 @@ export function Chart({
           selected: selectedShapeIdRef.current === s.id,
         });
         if (!hit) continue;
+        // Prefer closer hits; on equal distance, later (top) shapes already ordered by reverse list.
+        if (!best || hit.distance < best.distance - 0.25) {
+          best = { s, part: hit.part, distance: hit.distance };
+        }
+      }
+      if (best) {
         const originPoint = fromXY(x, y) || undefined;
         return {
-          id: s.id,
-          field: hit.part as DragTarget["field"],
+          id: best.s.id,
+          field: best.part as DragTarget["field"],
           originPoint,
-          originShape: JSON.parse(JSON.stringify(s)) as Shape,
+          originShape: JSON.parse(JSON.stringify(best.s)) as Shape,
         };
       }
     }
@@ -1999,6 +2011,29 @@ export function Chart({
             ? (d.originShape as { a: ChartPoint }).a
             : (d.originShape as { b: ChartPoint }).b;
         cur = constrainPointTV(anchor, cur, true);
+      }
+      // Shift + rectangle corner → square in screen space (TV rectangle tool).
+      if (
+        d.shiftKey &&
+        d.originShape &&
+        (d.originShape as { kind?: string }).kind === "rectangle" &&
+        (d.field === "tl" || d.field === "tr" || d.field === "bl" || d.field === "br")
+      ) {
+        const start = d.originShape as { a: ChartPoint; b: ChartPoint };
+        const fixed =
+          d.field === "tl"
+            ? { time: Math.max(start.a.time, start.b.time), price: Math.min(start.a.price, start.b.price) }
+            : d.field === "tr"
+              ? { time: Math.min(start.a.time, start.b.time), price: Math.min(start.a.price, start.b.price) }
+              : d.field === "bl"
+                ? { time: Math.max(start.a.time, start.b.time), price: Math.max(start.a.price, start.b.price) }
+                : { time: Math.min(start.a.time, start.b.time), price: Math.max(start.a.price, start.b.price) };
+        const A = toXY(fixed);
+        const P = toXY(cur);
+        if (A && P) {
+          const sq = constrainSquarePx(A, P);
+          cur = fromXY(sq.x, sq.y) || cur;
+        }
       }
       const origin = {
         point: d.originPoint || cur,
@@ -2653,6 +2688,29 @@ export function Chart({
     el.addEventListener("dblclick", onDblClick);
 
     const onKeyDown = (ev: KeyboardEvent) => {
+      // TradingView: Escape cancels in-progress multi-point placement (not positions).
+      if (ev.key === "Escape") {
+        if (stepsRef.current.length > 0) {
+          stepsRef.current = [];
+          setHint("Drawing cancelled");
+          scheduleRedraw();
+          ev.preventDefault();
+          return;
+        }
+        if (
+          drawToolRef.current &&
+          drawToolRef.current !== "crosshair" &&
+          drawToolRef.current !== "long" &&
+          drawToolRef.current !== "short"
+        ) {
+          onDrawToolChangeRef.current?.("crosshair");
+          setHint("");
+          scheduleRedraw();
+          ev.preventDefault();
+          return;
+        }
+      }
+
       if (ev.key === "Enter") {
         const t = ev.target as HTMLElement | null;
         if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.tagName === "BUTTON" || t.isContentEditable)) return;

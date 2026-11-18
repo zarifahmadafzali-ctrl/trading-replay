@@ -45,12 +45,15 @@ function seg(ctx: CanvasRenderingContext2D, a: Px, b: Px) {
 }
 
 function handle(ctx: CanvasRenderingContext2D, p: Px, color: string) {
+  // Pixel-perfect center (LWC toolkit style): land on whole CSS pixels for crisp edges.
+  const x = Math.round(p.x) + 0.5;
+  const y = Math.round(p.y) + 0.5;
   ctx.setLineDash([]);
   ctx.fillStyle = "#ffffff";
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+  ctx.arc(x, y, 5, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
 }

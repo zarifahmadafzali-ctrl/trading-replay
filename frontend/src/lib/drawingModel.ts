@@ -401,7 +401,23 @@ export function pointInPoly(x: number, y: number, poly: Px[]): boolean {
  * handles are grabbable only when `selected`. hline/vline keep their existing hit-tests in Chart.
  * Locked shapes can be selected; the caller must not start a drag when `shape.locked`.
  */
-export function hitTestShape(s: DrawingShape, project: Project, x: number, y: number, o: HitOpts): { part: HitPart } | null {
+/** Hit result with CSS-pixel distance (TradingView / LWC primitive style). */
+export type ShapeHit = { part: HitPart; distance: number };
+
+function lineDist(x: number, y: number, A: Px, B: Px, o: HitOpts, extL: boolean, extR: boolean): number | null {
+  const seg = clipLineToRect(A, B, o.bounds, extL, extR);
+  if (!seg) return null;
+  const d = distPointToSegment(x, y, seg[0].x, seg[0].y, seg[1].x, seg[1].y);
+  return d <= o.lineTol ? d : null;
+}
+
+/**
+ * Unselected shapes only report "body" (first tap selects, like TradingView);
+ * handles are grabbable only when `selected`. hline/vline keep their existing hit-tests in Chart.
+ * Locked shapes can be selected; the caller must not start a drag when `shape.locked`.
+ * Returns distance so the chart can pick the nearest winner across overlapping drawings.
+ */
+export function hitTestShape(s: DrawingShape, project: Project, x: number, y: number, o: HitOpts): ShapeHit | null {
   if (s.kind === "hline" || s.kind === "vline") return null;
 
   if (s.kind === "trendline" || s.kind === "ray" || s.kind === "extended") {
@@ -409,10 +425,13 @@ export function hitTestShape(s: DrawingShape, project: Project, x: number, y: nu
     const A = project(n.a), B = project(n.b);
     if (!A || !B) return null;
     if (o.selected && !s.locked) {
-      if (near(A, x, y, o.handleTol)) return { part: "a" };
-      if (near(B, x, y, o.handleTol)) return { part: "b" };
+      const da = Math.hypot(A.x - x, A.y - y);
+      if (da <= o.handleTol) return { part: "a", distance: da };
+      const db = Math.hypot(B.x - x, B.y - y);
+      if (db <= o.handleTol) return { part: "b", distance: db };
     }
-    return nearLine(x, y, A, B, o, !!n.extendLeft, !!n.extendRight) ? { part: "body" } : null;
+    const d = lineDist(x, y, A, B, o, !!n.extendLeft, !!n.extendRight);
+    return d != null ? { part: "body", distance: d } : null;
   }
 
   if (s.kind === "rectangle") {
@@ -425,27 +444,44 @@ export function hitTestShape(s: DrawingShape, project: Project, x: number, y: nu
         ["tl", x0, y0], ["tr", x1, y0], ["bl", x0, y1], ["br", x1, y1],
         ["top", mx, y0], ["bottom", mx, y1], ["left", x0, my], ["right", x1, my],
       ];
-      for (const [part, hx, hy] of hs) if (Math.hypot(hx - x, hy - y) <= o.handleTol) return { part };
+      let best: ShapeHit | null = null;
+      for (const [part, hx, hy] of hs) {
+        const d = Math.hypot(hx - x, hy - y);
+        if (d <= o.handleTol && (!best || d < best.distance)) best = { part, distance: d };
+      }
+      if (best) return best;
     }
-    return insideRect(x, y, A, B, o.lineTol) ? { part: "body" } : null;
+    if (!insideRect(x, y, A, B, o.lineTol)) return null;
+    // Distance to nearest edge for ranking among overlapping boxes
+    const dx = x < x0 ? x0 - x : x > x1 ? x - x1 : 0;
+    const dy = y < y0 ? y0 - y : y > y1 ? y - y1 : 0;
+    return { part: "body", distance: Math.hypot(dx, dy) };
   }
 
   if (s.kind === "measure") {
     const A = project(s.a), B = project(s.b);
     if (!A || !B) return null;
     if (o.selected && !s.locked) {
-      if (near(A, x, y, o.handleTol)) return { part: "a" };
-      if (near(B, x, y, o.handleTol)) return { part: "b" };
+      const da = Math.hypot(A.x - x, A.y - y);
+      if (da <= o.handleTol) return { part: "a", distance: da };
+      const db = Math.hypot(B.x - x, B.y - y);
+      if (db <= o.handleTol) return { part: "b", distance: db };
     }
-    return insideRect(x, y, A, B, o.lineTol) ? { part: "body" } : null;
+    if (!insideRect(x, y, A, B, o.lineTol)) return null;
+    const x0 = Math.min(A.x, B.x), x1 = Math.max(A.x, B.x), y0 = Math.min(A.y, B.y), y1 = Math.max(A.y, B.y);
+    const dx = x < x0 ? x0 - x : x > x1 ? x - x1 : 0;
+    const dy = y < y0 ? y0 - y : y > y1 ? y - y1 : 0;
+    return { part: "body", distance: Math.hypot(dx, dy) };
   }
 
   if (s.kind === "fib") {
     const A = project(s.a), B = project(s.b);
     if (!A || !B) return null;
     if (o.selected && !s.locked) {
-      if (near(A, x, y, o.handleTol)) return { part: "a" };
-      if (near(B, x, y, o.handleTol)) return { part: "b" };
+      const da = Math.hypot(A.x - x, A.y - y);
+      if (da <= o.handleTol) return { part: "a", distance: da };
+      const db = Math.hypot(B.x - x, B.y - y);
+      if (db <= o.handleTol) return { part: "b", distance: db };
     }
     const lv = enabledFibLevels(s);
     const ys: number[] = [];
@@ -456,25 +492,34 @@ export function hitTestShape(s: DrawingShape, project: Project, x: number, y: nu
     if (!ys.length) return null;
     const xl = s.extendLeft ? 0 : Math.min(A.x, B.x);
     const xr = s.extendRight ? o.bounds.w : Math.max(A.x, B.x);
+    const yLo = Math.min(...ys), yHi = Math.max(...ys);
     const inX = x >= xl - o.lineTol && x <= xr + o.lineTol;
-    const inY = y >= Math.min(...ys) - o.lineTol && y <= Math.max(...ys) + o.lineTol;
-    return inX && inY ? { part: "body" } : null;
+    const inY = y >= yLo - o.lineTol && y <= yHi + o.lineTol;
+    if (!inX || !inY) return null;
+    let best = Infinity;
+    for (const yy of ys) best = Math.min(best, Math.abs(yy - y));
+    return { part: "body", distance: best };
   }
 
   if (s.kind === "channel") {
     const A = project(s.a), B = project(s.b), C = project(s.c);
     if (!A || !B || !C) return null;
     if (o.selected && !s.locked) {
-      if (near(A, x, y, o.handleTol)) return { part: "a" };
-      if (near(B, x, y, o.handleTol)) return { part: "b" };
-      if (near(C, x, y, o.handleTol)) return { part: "c" };
+      for (const [part, P] of [["a", A], ["b", B], ["c", C]] as const) {
+        const d = Math.hypot(P.x - x, P.y - y);
+        if (d <= o.handleTol) return { part, distance: d };
+      }
     }
     const [a2, b2] = channelParallel(s);
     const A2 = project(a2), B2 = project(b2);
     if (!A2 || !B2) return null;
     const eL = !!s.extendLeft, eR = !!s.extendRight;
-    if (nearLine(x, y, A, B, o, eL, eR) || nearLine(x, y, A2, B2, o, eL, eR)) return { part: "body" };
-    return pointInPoly(x, y, [A, B, B2, A2]) ? { part: "body" } : null;
+    const d1 = lineDist(x, y, A, B, o, eL, eR);
+    const d2 = lineDist(x, y, A2, B2, o, eL, eR);
+    if (d1 != null || d2 != null) {
+      return { part: "body", distance: Math.min(d1 ?? Infinity, d2 ?? Infinity) };
+    }
+    return pointInPoly(x, y, [A, B, B2, A2]) ? { part: "body", distance: 0 } : null;
   }
 
   if (s.kind === "text") {
@@ -484,7 +529,11 @@ export function hitTestShape(s: DrawingShape, project: Project, x: number, y: nu
     const display = (s.text && s.text.trim()) ? s.text : "Text";
     const w = Math.max(48, display.length * fs * 0.55) + 12;
     const h = fs + 10;
-    return x >= A.x && x <= A.x + w && y >= A.y - h && y <= A.y ? { part: "body" } : null;
+    if (x >= A.x && x <= A.x + w && y >= A.y - h && y <= A.y) {
+      const cx = A.x + w / 2, cy = A.y - h / 2;
+      return { part: "body", distance: Math.hypot(x - cx, y - cy) };
+    }
+    return null;
   }
   return null;
 }
