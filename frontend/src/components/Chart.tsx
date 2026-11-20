@@ -82,6 +82,14 @@ import {
   buildFutureWhitespaceTimes,
   futureWhitespaceCount,
 } from "../lib/chartTimeScale";
+import {
+  continuousLogicalAt,
+  logicalToTime,
+  paneRect,
+  projectionPeriod,
+  timeToLogical,
+  type PaneInfo,
+} from "../lib/chartProjection";
 
 export type IndicatorKind = "sma" | "ema" | "vwap" | "rsi";
 export type IndicatorSpec = { id: string; kind: IndicatorKind; period?: number; color: string };
@@ -455,6 +463,11 @@ export function Chart({
   barsRef.current = bars;
   const barSecondsRef = useRef(barSeconds);
   barSecondsRef.current = barSeconds;
+  // Bars/step the chart ACTUALLY holds. Unlike barsRef (assigned during render) these change only after
+  // setData/update in the data effect, so overlay projection never mixes new bars with old chart coordinates.
+  const projBarsRef = useRef<{ time: number }[]>([]);
+  const projStepRef = useRef(0);
+  const dataVersionRef = useRef(0);
   const drawToolRef = useRef(drawTool);
   const magnetModeRef = useRef(magnetMode);
   magnetModeRef.current = magnetMode;
@@ -548,12 +561,7 @@ export function Chart({
       // keep live drag geometry; parent will catch up on pointerup commit
     } else {
       shapesPropRef.current = shapes;
-      const barSec = Math.max(
-        1,
-        barsRef.current.length >= 2
-          ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
-          : 60
-      );
+      const barSec = displayBarSec();
       shapesRef.current = shapes.map((s) =>
         s.kind === "position"
           ? (normalizePosition(s as PositionShape, { barSec }) as Shape)
@@ -637,7 +645,49 @@ export function Chart({
     const dragKey = drag ? `${drag.id}:${drag.field}` : "";
     const canvas = overlayRef.current;
     const size = canvas ? `${canvas.clientWidth}x${canvas.clientHeight}` : "0x0";
-    return `${fp}|${range}|${preview}|${dragKey}|${selectedShapeIdRef.current ?? ""}|${size}`;
+    // Y mapping: autoscale / price-scale drag / replay ticks change it WITHOUT changing the logical range.
+    let pm = "";
+    try {
+      const cv = handlesRef.current?.candles;
+      const hh = canvas?.clientHeight ?? 0;
+      if (cv && hh > 0) {
+        const p0 = cv.coordinateToPrice(0);
+        const p1 = cv.coordinateToPrice(hh);
+        pm = `${p0 == null ? "n" : Number(p0).toPrecision(9)}:${p1 == null ? "n" : Number(p1).toPrecision(9)}`;
+      }
+    } catch {
+      /* chart not ready */
+    }
+    const pi = readPaneInfo();
+    const paneKey = `${pi.leftScaleW ?? ""}:${pi.plotW ?? ""}:${pi.timeScaleH ?? ""}:${pi.paneH ?? ""}`;
+    return `${fp}|${range}|v${dataVersionRef.current}|${pm}|${paneKey}|${preview}|${dragKey}|${selectedShapeIdRef.current ?? ""}|${size}`;
+  }
+
+  /** Plot-area geometry reported by the chart (the overlay canvas also covers the price and time axes). */
+  function readPaneInfo(): PaneInfo {
+    const info: PaneInfo = {};
+    const hnd = handlesRef.current;
+    if (!hnd) return info;
+    try {
+      const chart = hnd.chart as unknown as {
+        paneSize?: (i?: number) => { width: number; height: number } | undefined;
+        priceScale: (id: string) => { width: () => number };
+        timeScale: () => { width: () => number; height: () => number };
+      };
+      try {
+        info.leftScaleW = chart.priceScale("left").width();
+      } catch {
+        /* no left scale */
+      }
+      const ts = chart.timeScale();
+      info.plotW = ts.width();
+      info.timeScaleH = ts.height();
+      const ps = chart.paneSize?.(0);
+      if (ps) info.paneH = ps.height;
+    } catch {
+      /* chart not ready */
+    }
+    return info;
   }
 
   function scheduleRedraw() {
@@ -648,18 +698,23 @@ export function Chart({
     });
   }
 
+  /**
+   * Pan/zoom/wheel: repaint at the END OF THIS TASK (microtask) so the overlay lands in the same frame as the
+   * candles instead of one frame later, then once more on the next frame in case the price scale autoscaled
+   * after the event. The paint key makes the second call a no-op when nothing changed.
+   */
+  function redrawSoon() {
+    queueMicrotask(() => redrawOverlay());
+    scheduleRedraw();
+  }
+
   /** P1: coalesce hover hit-testing to one evaluation per animation frame. */
   const hoverHitRafRef = useRef<number | null>(null);
   const hoverPtrRef = useRef<{ x: number; y: number } | null>(null);
   const lastHoverCursorRef = useRef<string>("");
 
   function normalizeShapeList(next: Shape[]): Shape[] {
-    const barSec = Math.max(
-      1,
-      barsRef.current.length >= 2
-        ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
-        : 60
-    );
+    const barSec = displayBarSec();
     return next.map((s) =>
       s.kind === "position"
         ? (normalizePosition(s as PositionShape, { barSec }) as Shape)
@@ -821,12 +876,7 @@ export function Chart({
       levels.entry = { time, price: limitPrice };
     }
 
-    const barSec = Math.max(
-      1,
-      barsRef.current.length >= 2
-        ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
-        : 60
-    );
+    const barSec = displayBarSec();
     // Visible finite box: a few bars left of click is not needed — entry at click, extend ~18 bars right.
     const widthBars = 18;
 
@@ -1192,63 +1242,26 @@ export function Chart({
    * P4: stable bar period for time↔logical mapping across TF changes / window slides.
    * Prefer median spacing of the current series; fall back to display timeframe seconds.
    */
-  function barPeriodSec(data: { time: number }[]): number {
-    const samples: number[] = [];
-    const n = Math.min(data.length, 32);
-    for (let i = 1; i < n; i++) {
-      const d = data[i]!.time - data[i - 1]!.time;
-      if (d > 0 && Number.isFinite(d)) samples.push(d);
-    }
-    if (samples.length) {
-      samples.sort((a, b) => a - b);
-      return Math.max(1, samples[Math.floor(samples.length / 2)]!);
-    }
-    return Math.max(1, Math.floor(barSecondsRef.current) || 60);
+  function barPeriodSec(): number {
+    // Display-timeframe step: the same spacing the chart's future whitespace points use.
+    return projectionPeriod(projStepRef.current, barSecondsRef.current);
+  }
+
+  /** Seconds per bar of the DISPLAYED timeframe (one source of truth; never inferred from the first two bars). */
+  function displayBarSec(): number {
+    return Math.max(1, Math.floor(barSecondsRef.current) || projStepRef.current || 60);
   }
 
   /**
-   * Map absolute market unix time → continuous logical index on the *current* series.
+   * Map absolute market unix time → continuous logical index on the series the chart currently holds.
    * Anchors stay unix+price; only the projection is recomputed when TF/window changes.
    */
   function timeToLogicalIndex(time: number): number | null {
-    const data = barsRef.current;
-    if (!data.length) return null;
-    const period = barPeriodSec(data);
-    if (time <= data[0]!.time) {
-      return (time - data[0]!.time) / period;
-    }
-    const last = data.length - 1;
-    if (time >= data[last]!.time) {
-      return last + (time - data[last]!.time) / period;
-    }
-    // binary search: last bar with time <= target
-    let lo = 0, hi = last;
-    while (lo + 1 < hi) {
-      const mid = (lo + hi) >> 1;
-      if (data[mid]!.time <= time) lo = mid;
-      else hi = mid;
-    }
-    const t0 = data[lo]!.time;
-    const t1 = data[hi]!.time;
-    const span = Math.max(1, t1 - t0);
-    return lo + (time - t0) / span;
+    return timeToLogical(projBarsRef.current, time, barPeriodSec());
   }
 
   function logicalIndexToTime(logical: number): number | null {
-    const data = barsRef.current;
-    if (!data.length) return null;
-    const period = barPeriodSec(data);
-    if (logical <= 0) {
-      return data[0]!.time + logical * period;
-    }
-    const last = data.length - 1;
-    if (logical >= last) {
-      return data[last]!.time + (logical - last) * period;
-    }
-    const i0 = Math.floor(logical);
-    const i1 = Math.min(last, i0 + 1);
-    const frac = logical - i0;
-    return data[i0]!.time + (data[i1]!.time - data[i0]!.time) * frac;
+    return logicalToTime(projBarsRef.current, logical, barPeriodSec());
   }
 
   function toXY(p: ChartPoint): { x: number; y: number } | null {
@@ -1289,18 +1302,20 @@ export function Chart({
     const price = handles.candles.coordinateToPrice(y);
     if (price == null) return null;
 
-    // Prefer LWC time-at-coordinate when it resolves to a series timestamp; otherwise
-    // continuous logical mapping so anchors stay absolute unix times (P4).
+    // CONTINUOUS time: screen x -> fractional logical index -> time. (coordinateToTime snaps to a bar open
+    // time, which made dragged/placed anchors jump in steps and drift away from the pointer.)
     let time: number | null = null;
-    const tAt = handles.chart.timeScale().coordinateToTime(x);
-    if (tAt != null) {
-      const n = typeof tAt === "number" ? tAt : Number((tAt as { timestamp?: number }).timestamp);
-      if (Number.isFinite(n)) time = n;
-    }
+    const logical = continuousLogicalAt(
+      x,
+      (px) => handles.chart.timeScale().coordinateToLogical(px) as unknown as number | null,
+      (l) => handles.chart.timeScale().logicalToCoordinate(l as never) as unknown as number | null
+    );
+    if (logical != null) time = logicalIndexToTime(logical);
     if (time == null) {
-      const logical = handles.chart.timeScale().coordinateToLogical(x);
-      if (logical != null && Number.isFinite(logical as number)) {
-        time = logicalIndexToTime(logical as number);
+      const tAt = handles.chart.timeScale().coordinateToTime(x);
+      if (tAt != null) {
+        const n = typeof tAt === "number" ? tAt : Number((tAt as { timestamp?: number }).timestamp);
+        if (Number.isFinite(n)) time = n;
       }
     }
     if (time == null) return null;
@@ -1386,7 +1401,13 @@ export function Chart({
 
     // P2: skip full clear + shape loop when nothing visual changed.
     const paintKey = overlayPaintKey();
-    if (paintKey === overlayPaintKeyRef.current) return;
+    const dbgHost = window as unknown as { __trDraw?: { paints: number; skips: number } };
+    const dbg = dbgHost.__trDraw || (dbgHost.__trDraw = { paints: 0, skips: 0 });
+    if (paintKey === overlayPaintKeyRef.current) {
+      dbg.skips += 1;
+      return;
+    }
+    dbg.paints += 1;
     overlayPaintKeyRef.current = paintKey;
     const dpr = window.devicePixelRatio || 1;
     const needW = Math.floor(w * dpr);
@@ -1400,19 +1421,30 @@ export function Chart({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
+    // Drawings live inside the plot area only (never over the price / time axes); "extend to the edge"
+    // means the edge of the plot, not of the whole canvas.
+    const pane = paneRect(w, h, readPaneInfo());
+    const paneBounds = { w: pane.x + pane.w, h: pane.y + pane.h };
+    const drawClipped = (shape: DrawingShape, env: Parameters<typeof drawShape>[2]) => {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(pane.x, pane.y, pane.w, pane.h);
+      ctx.clip();
+      const handled = drawShape(ctx, shape, env);
+      ctx.restore();
+      return handled;
+    };
+
     for (const s of shapesRef.current) {
       if ("visible" in s && s.visible === false) continue;
       ctx.setLineDash([]);
       // Professional drawing engine (trend/rect/measure/fib/channel/text)
       if (s.kind !== "position" && s.kind !== "hline" && s.kind !== "vline") {
-        const barSec =
-          barsRef.current.length >= 2
-            ? Math.max(1, (barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0))
-            : 60;
+        const barSec = displayBarSec();
         if (
-          drawShape(ctx, s as DrawingShape, {
+          drawClipped(s as DrawingShape, {
             project: toXY,
-            bounds: { w, h },
+            bounds: paneBounds,
             selected: selectedShapeIdRef.current === s.id,
             priceDecimals: instRef.current.decimals,
             barSec,
@@ -1624,24 +1656,20 @@ export function Chart({
       const tool = drawToolRef.current;
       const a = stepsRef.current[0]!;
       const b = crosshairRef.current;
-      const barSec =
-        barsRef.current.length >= 2
-          ? Math.max(1, (barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0))
-          : 60;
+      const barSec = displayBarSec();
       const previewEnv = {
         project: toXY,
-        bounds: { w, h },
+        bounds: paneBounds,
         selected: true,
         priceDecimals: instRef.current.decimals,
         barSec,
       };
       if (tool === "measure") {
-        drawShape(ctx, { id: "__preview__", kind: "measure", a, b } as DrawingShape, previewEnv);
+        drawClipped({ id: "__preview__", kind: "measure", a, b } as DrawingShape, previewEnv);
       } else if (tool === "rectangle") {
-        drawShape(ctx, { id: "__preview__", kind: "rectangle", a, b } as DrawingShape, previewEnv);
+        drawClipped({ id: "__preview__", kind: "rectangle", a, b } as DrawingShape, previewEnv);
       } else if (tool === "trendline" || tool === "ray" || tool === "extended") {
-        drawShape(
-          ctx,
+        drawClipped(
           {
             id: "__preview__",
             kind: tool,
@@ -1653,11 +1681,11 @@ export function Chart({
           previewEnv
         );
       } else if (tool === "fib") {
-        drawShape(ctx, { id: "__preview__", kind: "fib", a, b } as DrawingShape, previewEnv);
+        drawClipped({ id: "__preview__", kind: "fib", a, b } as DrawingShape, previewEnv);
       } else if (tool === "channel") {
         // 2-point preview: third point offset until final click
         const c = { time: a.time, price: a.price + (b.price - a.price) * 0.25 };
-        drawShape(ctx, { id: "__preview__", kind: "channel", a, b, c } as DrawingShape, previewEnv);
+        drawClipped({ id: "__preview__", kind: "channel", a, b, c } as DrawingShape, previewEnv);
       }
     } else if (stepsRef.current.length >= 1) {
       const P = toXY(stepsRef.current[0]!);
@@ -1905,10 +1933,7 @@ export function Chart({
       if (s.kind !== "position") continue;
       // P5: locked (incl. auto-lock on close) is select-only — never start a drag.
       if (s.locked) continue;
-      const barSec =
-        barsRef.current.length >= 2
-          ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
-          : 60;
+      const barSec = displayBarSec();
       const pos = normalizePosition(s as PositionShape, { barSec });
       const box = positionBox(pos as never, {
         xOf: (tm: number) => timeToX(tm),
@@ -2147,10 +2172,7 @@ export function Chart({
         if (xx != null && Math.abs(xx - x) <= threshold) return s.id;
       } else if (s.kind === "position") {
         // P5: select via finite position box (not a full-width price band that steals clicks).
-        const barSec =
-          barsRef.current.length >= 2
-            ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
-            : 60;
+        const barSec = displayBarSec();
         const pos = normalizePosition(s as PositionShape, { barSec });
         const box = positionBox(pos as never, {
           xOf: (tm: number) => timeToX(tm),
@@ -2284,8 +2306,34 @@ export function Chart({
     };
     chart.subscribeCrosshairMove(onMove);
 
+    // While a drag/placement owns the pointer (setPointerCapture) the chart no longer receives mouse events, so its
+    // crosshair froze and then jumped to catch up. Drive it from our own pointermove instead.
+    let nativeCrosshairActive = false;
+    const syncNativeCrosshair = (x: number, y: number) => {
+      try {
+        const pt = fromXY(x, y);
+        if (!pt) return;
+        const api = chart as unknown as { setCrosshairPosition?: (price: number, time: number, series: unknown) => void };
+        if (typeof api.setCrosshairPosition === "function") {
+          api.setCrosshairPosition(pt.price, pt.time, candles);
+          nativeCrosshairActive = true;
+        }
+      } catch {
+        /* chart busy / time outside the series */
+      }
+    };
+    const clearNativeCrosshair = () => {
+      if (!nativeCrosshairActive) return;
+      nativeCrosshairActive = false;
+      try {
+        (chart as unknown as { clearCrosshairPosition?: () => void }).clearCrosshairPosition?.();
+      } catch {
+        /* ignore */
+      }
+    };
+
     const onRange = () => {
-      scheduleRedraw();
+      redrawSoon();
       // P10: when the user pans/zooms into history outside the resident window, ask parent to load days.
       const fn = onNeedHistoricalBarsRef.current;
       if (!fn) return;
@@ -2421,6 +2469,7 @@ export function Chart({
       if (dragRef.current) {
         dragRef.current.shiftKey = !!ev.shiftKey;
         applyDragAt(x, y);
+        syncNativeCrosshair(x, y);
         const cur = resizeCursorForPart(dragRef.current.field);
         if (cur) el.style.cursor = cur;
         scheduleRedraw();
@@ -2442,6 +2491,7 @@ export function Chart({
       if (placing) {
         const pt = fromXY(x, y);
         if (pt) crosshairRef.current = applyMagnet(pt, magnetModeRef.current);
+        syncNativeCrosshair(x, y);
         el.style.cursor = "crosshair";
         // Block page scroll while rubber-band preview is active on touch.
         if (ev.pointerType === "touch") ev.preventDefault();
@@ -2549,6 +2599,7 @@ export function Chart({
     };
 
     const onPointerUp = (ev: PointerEvent) => {
+      clearNativeCrosshair();
       if (dragRef.current) {
         endDrag();
         downRef.current = null;
@@ -2673,8 +2724,11 @@ export function Chart({
     el.addEventListener("pointermove", onPointerMove);
     el.addEventListener("pointerup", onPointerUp);
     el.addEventListener("pointercancel", onPointerUp);
-    el.addEventListener("lostpointercapture", endDrag);
-    el.addEventListener("wheel", () => scheduleRedraw(), { passive: true });
+    el.addEventListener("lostpointercapture", () => {
+      endDrag();
+      clearNativeCrosshair();
+    });
+    el.addEventListener("wheel", () => redrawSoon(), { passive: true });
 
     const onDblClick = (ev: MouseEvent) => {
       ev.preventDefault();
@@ -2990,6 +3044,13 @@ export function Chart({
         stepSec,
       };
     }
+
+    // Projection source = what the chart now holds. Set AFTER setData/update (never during render) and force
+    // a repaint: the logical range can be numerically identical across a timeframe/window change.
+    projBarsRef.current = bars;
+    projStepRef.current = stepSec;
+    dataVersionRef.current += 1;
+    overlayPaintKeyRef.current = "";
 
     // Follow: keep last *played* candle in view; unplayed + pad whitespace fill to the right.
     if (shouldAutoFollowScroll(followRef.current, played.length)) {
@@ -3403,10 +3464,7 @@ export function Chart({
               {typeof window !== "undefined" &&
                 new URLSearchParams(window.location.search).has("posdebug") &&
                 (() => {
-                  const barSec =
-                    barsRef.current.length >= 2
-                      ? Math.abs((barsRef.current[1]?.time ?? 0) - (barsRef.current[0]?.time ?? 0)) || 60
-                      : 60;
+                  const barSec = displayBarSec();
                   const pos = normalizePosition(sel as PositionShape, { barSec });
                   const hnd = handlesRef.current;
                   const ww = containerRef.current?.clientWidth ?? 0;
@@ -3491,10 +3549,7 @@ export function Chart({
               );
             }}
             onClone={() => {
-              const barSec =
-                barsRef.current.length >= 2
-                  ? Math.max(1, barsRef.current[1].time - barsRef.current[0].time)
-                  : 60;
+              const barSec = displayBarSec();
               const prices = barsRef.current.map((b) => b.high);
               const range = prices.length ? Math.max(...prices) - Math.min(...prices) : 1;
               const c = cloneShape(sel as DrawingShape, uid(), 5 * barSec, range * 0.01);
