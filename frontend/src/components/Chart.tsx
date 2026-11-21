@@ -38,6 +38,7 @@ import {
 } from "../lib/drawingModel";
 import { mergeEngineShapeResult } from "../lib/chartShapesSync";
 import { shouldApplyParentShapes } from "../lib/shapesPropSync";
+import { crosshairMode, lwcMayWriteCrosshair } from "../lib/crosshairOwnership";
 import { drawShape } from "../lib/drawingRender";
 import { DrawingSettingsBar } from "./DrawingSettingsBar";
 import { PositionSettingsBar } from "./PositionSettingsBar";
@@ -1281,12 +1282,17 @@ export function Chart({
    * Map absolute market unix time → continuous logical index on the series the chart currently holds.
    * Anchors stay unix+price; only the projection is recomputed when TF/window changes.
    */
+  /** Bars used for time↔logical projection: prefer series-synced projBars; fall back to render bars. */
+  function projectionBars(): { time: number }[] {
+    return projBarsRef.current.length > 0 ? projBarsRef.current : barsRef.current;
+  }
+
   function timeToLogicalIndex(time: number): number | null {
-    return timeToLogical(projBarsRef.current, time, barPeriodSec());
+    return timeToLogical(projectionBars(), time, barPeriodSec());
   }
 
   function logicalIndexToTime(logical: number): number | null {
-    return logicalToTime(projBarsRef.current, logical, barPeriodSec());
+    return logicalToTime(projectionBars(), logical, barPeriodSec());
   }
 
   function toXY(p: ChartPoint): { x: number; y: number } | null {
@@ -2289,7 +2295,15 @@ export function Chart({
 
 
     const onMove = (param: MouseEventParams) => {
-      if (param.point && param.time != null) {
+      // Coordinate ownership (see crosshairOwnership.ts):
+      // - Normal hover: LWC subscribeCrosshairMove owns crosshairRef (bar-based time).
+      // - Placement / geometry drag: onPointerMove + continuous fromXY owns crosshairRef.
+      const mode = crosshairMode({
+        dragActive: !!dragRef.current,
+        placementSteps: stepsRef.current.length,
+      });
+      const drawingInteraction = mode === "pointer-draw";
+      if (lwcMayWriteCrosshair(mode) && param.point && param.time != null) {
         const price = candles.coordinateToPrice(param.point.y);
         if (price != null) {
           const time =
@@ -2300,12 +2314,9 @@ export function Chart({
         }
       }
 
-      // Drag updates are handled in pointermove (setPointerCapture). Crosshair
-      // alone is not reliable while the pointer is captured on desktop.
-
-      // P0-2: overlay only needs a frame while placing a tool or dragging handles.
+      // Overlay only needs a frame while placing a tool or dragging handles.
       // Native LWC crosshair paints independently — do not full-redraw drawings on hover.
-      if (stepsRef.current.length >= 1 || dragRef.current) {
+      if (drawingInteraction) {
         scheduleRedraw();
       }
 
