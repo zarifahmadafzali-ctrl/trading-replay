@@ -37,6 +37,7 @@ import {
   constrainSquarePx,
 } from "../lib/drawingModel";
 import { mergeEngineShapeResult } from "../lib/chartShapesSync";
+import { shouldApplyParentShapes } from "../lib/shapesPropSync";
 import { drawShape } from "../lib/drawingRender";
 import { DrawingSettingsBar } from "./DrawingSettingsBar";
 import { PositionSettingsBar } from "./PositionSettingsBar";
@@ -459,6 +460,8 @@ export function Chart({
   const shapesPropRef = useRef<Shape[] | null>(null);
   /** Bumps on every authoritative setShapes; helps detect concurrent engine publishes. */
   const shapesRevRef = useRef(0);
+  /** True after local setShapes/publish until parent shapes prop includes our live ids. */
+  const awaitingParentRef = useRef(false);
   const barsRef = useRef(bars);
   barsRef.current = bars;
   const barSecondsRef = useRef(barSeconds);
@@ -556,17 +559,29 @@ export function Chart({
 
   // P8: normalize only when the shapes prop identity changes (avoid per-render map alloc).
   // During general-drawing drag, shapesRef is authoritative — do not clobber with stale parent props.
+  // After setShapes/publish, awaitingParentRef blocks stale parent snapshots that omit newly committed ids.
   if (shapesPropRef.current !== shapes) {
     if (isGeneralDrawingDrag(dragRef.current)) {
       // keep live drag geometry; parent will catch up on pointerup commit
     } else {
-      shapesPropRef.current = shapes;
-      const barSec = displayBarSec();
-      shapesRef.current = shapes.map((s) =>
-        s.kind === "position"
-          ? (normalizePosition(s as PositionShape, { barSec }) as Shape)
-          : (normalizeShape(s as DrawingShape) as Shape)
-      );
+      const decision = shouldApplyParentShapes({
+        awaitingParent: awaitingParentRef.current,
+        isGeneralDrawingDrag: false,
+        liveIds: shapesRef.current.map((s) => s.id),
+        parentIds: shapes.map((s) => s.id),
+      });
+      if (decision.apply) {
+        if (decision.clearAwaiting) awaitingParentRef.current = false;
+        shapesPropRef.current = shapes;
+        const barSec = displayBarSec();
+        shapesRef.current = shapes.map((s) =>
+          s.kind === "position"
+            ? (normalizePosition(s as PositionShape, { barSec }) as Shape)
+            : (normalizeShape(s as DrawingShape) as Shape)
+        );
+        shapeFpCacheRef.current = { valid: false, prop: null, fp: "" };
+      }
+      // else awaiting parent still stale — keep shapesRef
     }
   }
   drawToolRef.current = drawTool;
@@ -583,12 +598,16 @@ export function Chart({
    */
   const overlayPaintKeyRef = useRef<string>("");
 
-  const shapeFpCacheRef = useRef<{ prop: Shape[] | null; fp: string }>({ prop: null, fp: "" });
+  const shapeFpCacheRef = useRef<{ valid: boolean; prop: Shape[] | null; fp: string }>({ valid: false, prop: null, fp: "" });
 
   function overlayPaintKey(): string {
     const arr = shapesRef.current;
     let fp: string;
-    if (shapeFpCacheRef.current.prop === shapesPropRef.current) {
+    // Only reuse cache when explicitly valid — null/null must not serve a stale empty fingerprint.
+    if (
+      shapeFpCacheRef.current.valid &&
+      shapeFpCacheRef.current.prop === shapesPropRef.current
+    ) {
       fp = shapeFpCacheRef.current.fp;
     } else {
       fp = String(arr.length);
@@ -613,7 +632,7 @@ export function Chart({
           if ("locked" in d && d.locked) fp += ":L";
         }
       }
-      shapeFpCacheRef.current = { prop: shapesPropRef.current, fp };
+      shapeFpCacheRef.current = { valid: true, prop: shapesPropRef.current, fp };
     }
     // Live open PnL labels depend on market price (not stored on the shape).
     const mpx = marketRef.current.price;
@@ -729,10 +748,14 @@ export function Chart({
   function setShapes(next: Shape[]) {
     const normalized = normalizeShapeList(next);
     shapesRef.current = normalized;
-    shapesPropRef.current = null;
-    shapeFpCacheRef.current = { prop: null, fp: "" };
+    // Keep prop sync pointer on the committed list (do NOT null). Null caused intermediate
+    // renders to treat any parent shapes as "new" and overwrite shapesRef with a stale list.
+    shapesPropRef.current = normalized;
+    shapeFpCacheRef.current = { valid: false, prop: null, fp: "" };
     shapesRevRef.current += 1;
+    awaitingParentRef.current = true;
     onShapesChangeRef.current(normalized);
+    scheduleRedraw();
   }
 
   /**
@@ -742,7 +765,7 @@ export function Chart({
   function setShapesLocal(next: Shape[]) {
     const normalized = normalizeShapeList(next);
     shapesRef.current = normalized;
-    shapeFpCacheRef.current = { prop: null, fp: "" };
+    shapeFpCacheRef.current = { valid: false, prop: null, fp: "" };
     scheduleRedraw();
   }
 
@@ -800,10 +823,12 @@ export function Chart({
   function publishEngineShapes(engineOut: Shape[], inputIds: Set<string>) {
     const merged = mergeEngineShapeResult(shapesRef.current, engineOut, inputIds) as Shape[];
     shapesRef.current = merged;
-    shapesPropRef.current = null;
-    shapeFpCacheRef.current = { prop: null, fp: "" };
+    shapesPropRef.current = merged;
+    shapeFpCacheRef.current = { valid: false, prop: null, fp: "" };
     shapesRevRef.current += 1;
+    awaitingParentRef.current = true;
     onShapesChangeRef.current(merged);
+    scheduleRedraw();
   }
 
   function updatePosition(id: string, patch: Partial<PositionShape>) {
@@ -2561,8 +2586,10 @@ export function Chart({
       setChartInteraction(true);
       // Commit local geometry drag to parent once (TV: update on release).
       if (wasGeneral) {
-        shapesPropRef.current = null;
+        shapesPropRef.current = shapesRef.current;
+        shapeFpCacheRef.current = { valid: false, prop: null, fp: "" };
         shapesRevRef.current += 1;
+        awaitingParentRef.current = true;
         onShapesChangeRef.current(shapesRef.current);
         scheduleRedraw();
       }
