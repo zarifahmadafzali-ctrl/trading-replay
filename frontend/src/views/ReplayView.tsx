@@ -225,6 +225,8 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   const [customStart, setCustomStart] = useState("09:30");
   const [customEnd, setCustomEnd] = useState("16:00");
   const [shapes, setShapes] = useState<Shape[]>(() => loadShapesFor(saved?.symbol ?? SYMBOLS[0]));
+  /** Bumped on undo/session/symbol so Chart does not treat intentional replaces as stale. */
+  const [shapesSyncEpoch, setShapesSyncEpoch] = useState(0);
   const [workspaceLog, setWorkspaceLog] = useState<{ t: number; text: string }[]>([]);
   const shapesRefForUndo = useRef(shapes);
   shapesRefForUndo.current = shapes;
@@ -239,6 +241,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     if (!prev) return;
     shapesRedoRef.current.push(shapesRefForUndo.current);
     shapesRefForUndo.current = prev;
+    setShapesSyncEpoch((e) => e + 1);
     setShapes(prev);
   }
   function redoShapes() {
@@ -246,6 +249,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
     if (!next) return;
     shapesUndoRef.current.push(shapesRefForUndo.current);
     shapesRefForUndo.current = next;
+    setShapesSyncEpoch((e) => e + 1);
     setShapes(next);
   }
   const [orderType, setOrderType] = useState<OrderType>(() => (saved?.orderType as OrderType) || "market");
@@ -425,6 +429,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
       setOrderType((rt.orderType as OrderType) || "market");
       setDrawTool((rt.drawTool as DrawTool) || "crosshair");
       setActiveIndicatorIds(rt.activeIndicatorIds || []);
+      setShapesSyncEpoch((e) => e + 1);
       setShapes(Array.isArray(sh) ? sh : []);
       // C5: reset tick engine state for this session (avoid cross-session bleed)
       setTickWindow([]);
@@ -1312,6 +1317,7 @@ export function ReplayView({ backendOnline }: { backendOnline: boolean | null })
   function handleSymbolChange(next: string) {
     setSymbol(next);
     setPlaying(false);
+    setShapesSyncEpoch((e) => e + 1);
     setShapes(loadShapesFor(next));
     setSelectedShapeId(null);
   }
@@ -2689,6 +2695,7 @@ const exitTickMode = useCallback(() => {
           execTicks={execTicks}
           followPrice={followPrice}
           shapes={shapes}
+          shapesSyncEpoch={shapesSyncEpoch}
           onShapesChange={pushShapes}
           magnetMode={magnetMode}
           selectedShapeId={selectedShapeId}

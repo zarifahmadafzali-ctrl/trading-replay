@@ -379,6 +379,8 @@ export function Chart({
   activeAccountId,
   indicators = [],
   magnetMode = "off" as MagnetMode,
+  /** Bumped by parent on undo/session/symbol so awaitingParent cannot block intentional replaces. */
+  shapesSyncEpoch = 0,
 }: {
   bars: Bar[];
   cursor: number;
@@ -421,6 +423,7 @@ export function Chart({
   activeAccountId?: string | null;
   indicators?: IndicatorSpec[];
   magnetMode?: MagnetMode;
+  shapesSyncEpoch?: number;
 }) {
   const inst = tickAndDecimals(tickSize);
   const instRef = useRef(inst);
@@ -463,6 +466,7 @@ export function Chart({
   const shapesRevRef = useRef(0);
   /** True after local setShapes/publish until parent shapes prop includes our live ids. */
   const awaitingParentRef = useRef(false);
+  const shapesSyncEpochRef = useRef(0);
   const barsRef = useRef(bars);
   barsRef.current = bars;
   const barSecondsRef = useRef(barSeconds);
@@ -570,6 +574,15 @@ export function Chart({
   // P8: normalize only when the shapes prop identity changes (avoid per-render map alloc).
   // During general-drawing drag, shapesRef is authoritative — do not clobber with stale parent props.
   // After setShapes/publish, awaitingParentRef blocks stale parent snapshots that omit newly committed ids.
+  // shapesSyncEpoch: parent bumps this on undo/session/symbol so intentional replaces always apply.
+  if (shapesSyncEpoch !== shapesSyncEpochRef.current) {
+    shapesSyncEpochRef.current = shapesSyncEpoch;
+    awaitingParentRef.current = false;
+  }
+  // Parent adopted our exact committed list (same reference from pushShapes) — clear latch.
+  if (awaitingParentRef.current && shapesPropRef.current === shapes) {
+    awaitingParentRef.current = false;
+  }
   if (shapesPropRef.current !== shapes) {
     if (isGeneralDrawingDrag(dragRef.current)) {
       // keep live drag geometry; parent will catch up on pointerup commit
