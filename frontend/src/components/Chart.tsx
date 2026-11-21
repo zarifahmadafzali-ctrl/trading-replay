@@ -558,6 +558,15 @@ export function Chart({
 
   const [hint, setHint] = useState("");
 
+  /**
+   * P2: overlay invalidation — coalesce to one rAF and skip the full clear/draw
+   * when the visual paint key is unchanged (spurious schedules from stacked effects).
+   * Single canvas still full-repaints when the key changes (safe; no dual-layer rewrite).
+   * Declared before the shapes prop-sync block which may invalidate the fingerprint cache.
+   */
+  const overlayPaintKeyRef = useRef<string>("");
+  const shapeFpCacheRef = useRef<{ valid: boolean; prop: Shape[] | null; fp: string }>({ valid: false, prop: null, fp: "" });
+
   // P8: normalize only when the shapes prop identity changes (avoid per-render map alloc).
   // During general-drawing drag, shapesRef is authoritative — do not clobber with stale parent props.
   // After setShapes/publish, awaitingParentRef blocks stale parent snapshots that omit newly committed ids.
@@ -591,15 +600,6 @@ export function Chart({
   replayBarRef.current = replayBar;
   followRef.current = followPrice;
   selectedShapeIdRef.current = selectedShapeId;
-
-  /**
-   * P2: overlay invalidation — coalesce to one rAF and skip the full clear/draw
-   * when the visual paint key is unchanged (spurious schedules from stacked effects).
-   * Single canvas still full-repaints when the key changes (safe; no dual-layer rewrite).
-   */
-  const overlayPaintKeyRef = useRef<string>("");
-
-  const shapeFpCacheRef = useRef<{ valid: boolean; prop: Shape[] | null; fp: string }>({ valid: false, prop: null, fp: "" });
 
   function overlayPaintKey(): string {
     const arr = shapesRef.current;
